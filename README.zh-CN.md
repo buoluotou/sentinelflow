@@ -36,7 +36,7 @@ Raw Event → Normalized Alert → Deduplicated Alert → Incident
 | ---- | ---- | ---- |
 | Step 1 | 工程骨架 | ✅ |
 | Step 2 | 数据模型 + Alert Ingestion | ✅ |
-| Step 3 | Alert Normalization | ⬜ |
+| Step 3 | Alert Normalization | ✅ |
 | Step 4 | Deduplication / Aggregation | ⬜ |
 | Step 5 | Scenario Simulator Runner | ⬜ |
 | Step 6 | Incident Management | ⬜ |

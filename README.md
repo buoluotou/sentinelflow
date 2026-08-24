@@ -15,7 +15,7 @@ Scenario Simulator  →  SentinelFlow Backend (FastAPI)  →  PostgreSQL  →  R
 ## Features (Phase 1)
 
 - Alert Ingestion via HTTP/JSON
-- Event Normalization
+- Event Normalization (unified event model, adapter-based: Simulator ready, Wazuh reserved)
 - Deduplication & Aggregation
 - Basic Incident Management
 - React Web Console (Dashboard, Alerts, Incidents)

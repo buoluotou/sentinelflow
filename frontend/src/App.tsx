@@ -10,7 +10,7 @@ interface HealthStatus {
 const roadmap = [
   { step: 'Step 1', name: '工程骨架', done: true },
   { step: 'Step 2', name: '数据模型 + Alert Ingestion', done: true },
-  { step: 'Step 3', name: 'Alert Normalization', done: false },
+  { step: 'Step 3', name: 'Alert Normalization', done: true },
   { step: 'Step 4', name: 'Deduplication / Aggregation', done: false },
   { step: 'Step 5', name: 'Scenario Simulator Runner', done: false },
   { step: 'Step 6', name: 'Incident Management', done: false },
