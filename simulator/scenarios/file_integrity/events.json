@@ -1,0 +1,25 @@
+{
+  "scenario": "file_integrity",
+  "description": "Critical file integrity change detected",
+  "events": [
+    {
+      "source": "scenario-simulator",
+      "event_type": "file_integrity_change",
+      "severity": "high",
+      "timestamp": "2026-08-24T11:00:00Z",
+      "host": {
+        "hostname": "web-server-02",
+        "ip": "192.168.1.20"
+      },
+      "source_ip": null,
+      "user": "www-data",
+      "message": "System binary modified unexpectedly",
+      "raw_data": {
+        "file_path": "/usr/bin/sshd",
+        "action": "modified",
+        "hash_before": "abc123",
+        "hash_after": "def456"
+      }
+    }
+  ]
+}

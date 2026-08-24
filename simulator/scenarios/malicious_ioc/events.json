@@ -1,0 +1,26 @@
+{
+  "scenario": "malicious_ioc",
+  "description": "Communication with known malicious IOC detected",
+  "events": [
+    {
+      "source": "scenario-simulator",
+      "event_type": "malicious_ioc",
+      "severity": "critical",
+      "timestamp": "2026-08-24T12:30:00Z",
+      "host": {
+        "hostname": "db-server-01",
+        "ip": "192.168.1.50"
+      },
+      "source_ip": "198.51.100.77",
+      "user": null,
+      "message": "Outbound connection to known C2 server",
+      "raw_data": {
+        "ioc_type": "ip",
+        "ioc_value": "198.51.100.77",
+        "threat_feed": "abuse-ch",
+        "destination_port": 8443,
+        "protocol": "TLS"
+      }
+    }
+  ]
+}

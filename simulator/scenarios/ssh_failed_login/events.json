@@ -1,0 +1,23 @@
+{
+  "scenario": "ssh_failed_login",
+  "description": "SSH brute force attack - multiple failed login attempts",
+  "events": [
+    {
+      "source": "scenario-simulator",
+      "event_type": "ssh_failed_login",
+      "severity": "medium",
+      "timestamp": "2026-08-24T10:30:00Z",
+      "host": {
+        "hostname": "server-01",
+        "ip": "192.168.1.10"
+      },
+      "source_ip": "10.0.0.55",
+      "user": "root",
+      "message": "Multiple SSH login failures detected",
+      "raw_data": {
+        "attempts": 8,
+        "time_window_seconds": 300
+      }
+    }
+  ]
+}

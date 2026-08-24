@@ -1,0 +1,25 @@
+{
+  "scenario": "web_anomaly",
+  "description": "Abnormal web request patterns detected",
+  "events": [
+    {
+      "source": "scenario-simulator",
+      "event_type": "web_anomaly",
+      "severity": "medium",
+      "timestamp": "2026-08-24T11:30:00Z",
+      "host": {
+        "hostname": "web-server-01",
+        "ip": "192.168.1.30"
+      },
+      "source_ip": "203.0.113.50",
+      "user": null,
+      "message": "Suspicious SQL injection attempt detected",
+      "raw_data": {
+        "request_path": "/api/login",
+        "request_method": "POST",
+        "payload": "' OR 1=1 --",
+        "status_code": 403
+      }
+    }
+  ]
+}
