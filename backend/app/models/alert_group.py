@@ -1,0 +1,63 @@
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, Integer, String, Uuid, text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+
+class AlertGroup(Base):
+    """Deduplicated group of alerts sharing the same fingerprint.
+
+    Phase 1 Step 4: repeated normalized alerts with the same fingerprint
+    inside the aggregation window are collapsed into one AlertGroup, while
+    every individual alert is kept as evidence (alerts.alert_group_id).
+    """
+
+    __tablename__ = "alert_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    # SHA256 hex digest (64 chars) of source + category + title + asset + actor.
+    # Intentionally NOT unique: after the aggregation window expires, the same
+    # fingerprint may open a brand new group.
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    category: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="open", index=True
+    )
+
+    alert_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now()
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(), index=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=lambda: datetime.now(),
+    )
+
+    alerts: Mapped[list["Alert"]] = relationship(back_populates="alert_group")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"<AlertGroup id={self.id} fingerprint={self.fingerprint[:12]}..."
+            f" count={self.alert_count}>"
+        )
+
+
+# Avoid circular import at module load time
+from app.models.alert import Alert  # noqa: E402,F401

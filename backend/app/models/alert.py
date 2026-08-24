@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, Uuid, text
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -48,6 +48,12 @@ class Alert(Base):
     )
     event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    # Deduplication group (Phase 1 Step 4). Nullable: legacy alerts have no
+    # group, and the link is only enforced from Step 4.4 onward.
+    alert_group_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("alert_groups.id"), nullable=True, index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )
@@ -64,9 +70,12 @@ class Alert(Base):
         order_by="AlertEvent.event_timestamp",
     )
 
+    alert_group: Mapped["AlertGroup | None"] = relationship(back_populates="alerts")
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Alert id={self.id} type={self.event_type} severity={self.severity}>"
 
 
 # Avoid circular import at module load time
 from app.models.alert_event import AlertEvent  # noqa: E402,F401
+from app.models.alert_group import AlertGroup  # noqa: E402,F401
