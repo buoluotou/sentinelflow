@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.services.ingestion import ingest_alert
+from app.services.deduplication import engine as dedup_engine
 from app.services.normalization import (
     AdapterNotImplementedError,
     MalformedRawEventError,
@@ -25,18 +25,22 @@ class NormalizeRequest(BaseModel):
 
 
 class NormalizeResponse(NormalizedAlert):
-    """Normalized alert plus the id of the Alert persisted downstream."""
+    """Normalized alert plus the ids of the Alert and AlertGroup persisted
+    downstream by the deduplication engine."""
 
     alert_id: uuid.UUID | None = None
+    group_id: uuid.UUID | None = None
+    group_alert_count: int | None = None
+    created_group: bool | None = None
 
 
 @router.post("", response_model=NormalizeResponse)
 def normalize_alert(
     payload: NormalizeRequest, db: Session = Depends(get_db)
 ) -> NormalizeResponse:
-    """Normalize a raw source event and ingest the result.
+    """Normalize a raw source event, deduplicate and ingest the result.
 
-    Pipeline: Raw Alert -> Normalization Engine -> Normalized Alert -> DB.
+    Pipeline: Raw Alert -> Normalization -> Deduplication -> DB.
     """
     try:
         normalized = engine.normalize(payload.source, payload.raw_data)
@@ -47,5 +51,11 @@ def normalize_alert(
     except MalformedRawEventError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    alert = ingest_alert(db, engine.to_alert_create(normalized))
-    return NormalizeResponse(**normalized.model_dump(), alert_id=alert.id)
+    result = dedup_engine.process(db, normalized, engine.to_alert_create(normalized))
+    return NormalizeResponse(
+        **normalized.model_dump(),
+        alert_id=result.alert.id,
+        group_id=result.group.id,
+        group_alert_count=result.group.alert_count,
+        created_group=result.created_group,
+    )
