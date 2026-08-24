@@ -58,6 +58,8 @@ class AlertRead(BaseModel):
     title: str | None = None
     message: str | None = None
 
+    alert_group_id: uuid.UUID | None = None
+
     host_name: str | None = None
     host_ip: str | None = None
     source_ip: str | None = None
