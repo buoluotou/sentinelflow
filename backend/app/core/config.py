@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = 8000
     DEBUG: bool = True
 
+    # Phase 1 Step 4: deduplication aggregation window (seconds)
+    DEDUP_WINDOW_SECONDS: int = 300
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )
