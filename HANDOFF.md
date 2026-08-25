@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 7.5 完成后（Dashboard Summary API）
+> 最后更新：2026-08-25 · Phase 1 Step 8 完成后（React Web Console：Dashboard / Events / Incidents 全链路）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -24,8 +24,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
-| 7 | Incident Management | 🔄 7.1–7.5 ✅（模型/Service/API/自动创建/Dashboard），下一步 Step 8 | `1e98fab` `57bd981` `0f1b31d` `3c58681`，7.5 待提交 |
-| 8 | React Web Console | ⬜ |
+| 7 | Incident Management | ✅ 7.1–7.5（模型/Service/API/自动创建/Dashboard） | `1e98fab` `57bd981` `0f1b31d` `3c58681` `09049d1` |
+| 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E），前端代码待提交 | — |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -81,7 +81,21 @@ backend/app/
 
 关键语义（Step 4 定形）：**fingerprint ≠ group**。fingerprint 标识"事件种类"（跨时间稳定，不含时间戳/原文），AlertGroup 是 fingerprint + 5 分钟窗口切出的"一次事件"；同一指纹可对应多个组。两个入口（/alerts 与 /normalize）统一走 Normalization → Deduplication → DB；每条 Alert 全量保留为证据，`alert_events` 存原始报文。
 
-其他：`frontend/`（React 19 + TS + Vite，页面目录占位在 `src/pages/`）、`simulator/scenarios/*/events.json`（5 个场景，信封 `{scenario, description, events}`，事件已是 AlertCreate 统一格式）、`simulator/runner/run.py`（Step 6.1：纯标准库 CLI，扫描→本地校验→直发 POST /alerts→实时打印→GET /events 摘要→失败非零退出；不走 /normalize 避免 source 指纹分裂；默认 `--timestamps now` 改写当前 UTC，`file` 为确定性重放）、`docker-compose.yml`（仅 PostgreSQL 16）。
+其他：`simulator/scenarios/*/events.json`（5 个场景，信封 `{scenario, description, events}`，事件已是 AlertCreate 统一格式）、`simulator/runner/run.py`（Step 6.1：纯标准库 CLI，扫描→本地校验→直发 POST /alerts→实时打印→GET /events 摘要→失败非零退出；不走 /normalize 避免 source 指纹分裂；默认 `--timestamps now` 改写当前 UTC，`file` 为确定性重放）、`docker-compose.yml`（仅 PostgreSQL 16）。
+
+**frontend/**（Step 8 落地，React 19 + TS + Vite + react-router-dom，无 UI 库，纯手写深色 SOC 主题）：
+
+```
+frontend/
+├── vite.config.ts              # dev 代理 /api + /health → localhost:8000（后端须先起）
+└── src/
+    ├── api/                    # 唯一数据入口：client.ts（fetch 包装，ApiError 透传 FastAPI detail）+ dashboard/events/incidents 三模块，含分页/筛选参数拼接与 PATCH 状态流转
+    ├── types/                  # 与后端 schema 字段级一一对应的 TS 镜像（dashboard/event/incident）；UUID/datetime 一律 string；前端零业务规则计算，只渲染后端返回值（案件状态按钮只镜像冻结矩阵做展示，合法性仍由后端状态机裁决）
+    ├── layouts/ConsoleLayout.tsx  # 侧边栏导航壳（Dashboard/Events/Incidents）+ Outlet
+    ├── components/common.tsx   # LevelBadge/StatusBadge/formatTime/Panel/Loading/ErrorBanner 展示原子
+    ├── pages/                  # DashboardPage（仅绑 /dashboard/summary，15s 自动刷新，风险分布条形图）/ EventsPage（?level= 筛选+分页）/ EventDetailPage（fingerprint+风险因子表+证据告警）/ IncidentsPage（?status= 筛选+分页）/ IncidentDetailPage（生命周期动作按钮：open→3 选、in_progress→3 选、resolved/false_positive→closed）
+    └── App.tsx                 # BrowserRouter 路由；index.css 为深色主题设计令牌（严重度四色+生命周期五色）
+```
 
 Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.add(alert)` 后、`commit()` 前，与告警落库同一事务），GET /events 是纯读路径，不做任何评分计算；`event_risk` 每事件唯一一行（唯一约束），重算原地更新 `score/level/factors/updated_at`。
 
@@ -102,7 +116,7 @@ $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
 Remove-Item Env:DATABASE_URL                                # 用完清环境变量
 cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链路（需后端在 8000 端口）
-# 前端（sentinelflow\frontend）：npm run build / npm run dev
+# 前端（sentinelflow\frontend）：npm install → npm run dev（http://localhost:5173，后端须先在 8000 端口）；npm run build = tsc 类型检查 + vite 构建
 ```
 
 ## 六、必须遵守的约定与踩过的坑
@@ -119,28 +133,27 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、下一步任务：Step 7.5 已完成，下一步 Step 8 React Web Console
+## 七、下一步任务：Step 8 已完成，Phase 1 全链路闭环可演示；待用户冻结下一步（验证优化）
 
-Step 7.5 落地：`services/dashboard/service.py`（get_summary，纯实时聚合）+
-`schemas/dashboard.py` + `api/v1/dashboard.py`（GET /api/v1/dashboard/summary）。
-不新增表、不缓存；前端绑定单端点，不自行拼 /events + /incidents + 风险计算。
-冻结指标语义：open_incidents = open+in_progress 活跃案件；severity 三项只统计活跃案件；
-today_* 从今天 00:00 UTC 起；risk_distribution 统计全量事件当前风险级别。
-测试 202 passed（7 个新增：空数据全 0 / 5 组风险分布 / 昨天告警不计入 / 自动建案联动 /
-in_progress 仍计活跃 / closed 后归零 / 混合严重度）。冒烟已过：--repeat 30 后
-summary = open_incidents=3, critical=1, high=2, medium=0, today_alerts=150,
-today_events=5, risk_distribution={high:1, medium:4}。
-建议提交：`feat(backend): add dashboard summary api`（用户已指定）。
-**Phase 1 后端至此基本冻结**（Step 1–7.5 全列）。
+Step 8 落地：前端从占位骨架升级为真实业务控制台（新增依赖仅 react-router-dom）。
+原则：React → api client → FastAPI，前端不拼数据库字段、不算业务规则。
+E2E 已过（全新临时库）：Simulator --repeat 30 → Dashboard 精确显示 3/150/5、
+1c/2h/0m、分布 {high:1, medium:4}；Events 5 条，?level=high 筛出 1 条（90 分）；
+事件详情指纹+因子表+30 条证据；Incident 3 案件，UI 走完 open→in_progress→
+resolved→closed 全链路（closed 后动作面板关闭）。构建 `npm run build` 通过；
+后端回归 202 passed（前端无独立测试套件，验收靠构建+浏览器 E2E）。
+已知语义（非缺陷）：IOC 案件风险快照 70 非 90——快照取首次越阈时（第 1 条告警，
+critical 基础分 70），正是 7.4 冻结语义，前端如实展示后端值。
+建议提交（待用户确认）：`feat(frontend): add react web console (dashboard, events, incidents)`。
 
-下一步（用户已冻结顺序）：Step 8 React Web Console（首页直接绑定 /dashboard/summary）。
+下一步（待用户冻结）：验证优化搭建（后端已全面冻结，预期为回归/性能/部署类收尾）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 7.4（3c58681）与 0f1b31d / 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git status            # 后端应无变更；Step 8 前端文件待提交前属未跟踪/已修改（含 HANDOFF.md，随代码一并提交；提交后应 clean）
+git log --oneline     # 应见最新 7.5（09049d1）与 3c58681 / 0f1b31d / 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
 .\.venv\Scripts\python.exe -m pytest -q   # 应为 202 passed
 ```
