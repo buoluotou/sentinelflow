@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 7.3 完成后（Incident Management API）
+> 最后更新：2026-08-25 · Phase 1 Step 7.4 完成后（Incident 自动创建策略 + 管道接入）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -24,7 +24,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
-| 7 | Incident Management | 🔄 7.1–7.3 ✅（模型/Service/API），7.4–7.5 ⬜ 下一步 | `1e98fab` `57bd981`，7.3 待提交 |
+| 7 | Incident Management | 🔄 7.1–7.4 ✅（模型/Service/API/自动创建），7.5 ⬜ 下一步 | `1e98fab` `57bd981` `0f1b31d`，7.4 待提交 |
 | 8 | React Web Console | ⬜ |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
@@ -62,16 +62,17 @@ backend/app/
     ├── deduplication/          # Step 4 核心
     │   ├── fingerprint.py      # FingerprintGenerator：SHA256(source+category+title+asset+actor)，sort_keys 保序
     │   ├── rules.py            # AggregationRule + DEFAULT_WINDOW_SECONDS（来自 DEDUP_WINDOW_SECONDS）
-    │   ├── engine.py           # DeduplicationEngine.process(db, normalized, alert_create)：查窗口内组→合并/新建→存证据→【commit 前调 risk_service.recalculate】→commit
+    │   ├── engine.py           # DeduplicationEngine.process(db, normalized, alert_create)：查窗口内组→合并/新建→存证据→【commit 前调 risk_service.recalculate，再调 auto_create_from_risk（Step 7.4，同事务）】→commit
     │   └── models.py           # DeduplicationResult(group, alert, created_group)
     ├── risk/                   # Step 5 核心（5.1–5.3）
     │   ├── rules.py            # 冻结规则 v1.0：severity 基础分 10/30/50/70；频率分段 +0/10/20/30/40；公网 +20（每事件一次）；封顶 100；等级 0-30 low / 31-70 medium / 71-90 high / 91-100 critical
     │   ├── factors.py          # severity/frequency/public_source 三因子；is_public_ip 用显式排除清单（不用 is_global，Python 3.12.2 多播/TEST-NET/CGNAT 有盲区）
     │   ├── engine.py           # RiskEngine.calculate(group, alerts) -> RiskResult，纯计算不落库；factors = [{name, score, reason}]
     │   └── service.py          # RiskService.recalculate(db, group)：有则原地更新、无则创建 EventRisk
-    ├── incidents/              # Step 7 核心（7.2）
+    ├── incidents/              # Step 7 核心（7.2–7.4）
     │   ├── models.py           # IncidentStatus/IncidentDisposition 枚举 + ALLOWED_TRANSITIONS 冻结矩阵 + 4 个业务异常（全部报错不静默）；InvalidIncidentTransition 携带 current/target 供 API 渲染稳定文案
-    │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API 层
+    │   ├── policy.py           # Step 7.4 创建策略 v1.0：AUTO_CREATE_THRESHOLD=70，should_create_incident(score)。按 score 不按 severity（Risk Engine 是唯一权重源）；只在写路径评估，不回填存量事件
+    │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。auto_create_from_risk(db, group)：管道钩子，已有案件跳过（幂等），风险未达阈值不动作。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API/管道
     └── events/service.py       # list_events(db, page, size, level=None) / get_event(db, group_id)；Step 5.4 起 selectinload risk（列表 1 次子查询），?level= 时 JOIN event_risk（无风险记录的事件被排除）
 ```
 
@@ -92,7 +93,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 183 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 195 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -113,28 +114,29 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 8. 冒烟用临时 SQLite 库时：**先停服务进程再删库**，否则文件锁定导致删除静默失败、出现"库被重建"假象；用完 `Remove-Item Env:DATABASE_URL`（shell 复用会残留，pydantic-settings 会优先读它）。
 9. Python 3.12.2 的 `ipaddress`：多播地址 `is_global=True`、TEST-NET `is_private=True`、CGNAT `is_private=False`——判定公网 IP 必须用显式排除清单（见 `risk/factors.py`），不要只信 `is_global`/`is_private`。
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
-11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界）。
+11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、下一步任务：Step 7.3 已完成，下一步 Step 7.4
+## 七、下一步任务：Step 7.4 已完成，下一步 Step 7.5
 
-Step 7.3 落地：`api/v1/incidents.py`（POST 201 / GET 列表分页+?status= / GET 详情 /
-PATCH /{id}/status）+ `schemas/incident.py`。API 是纯薄层，状态机只在 Service；
-异常映射：IncidentNotFound→404；AlreadyExists/RiskMissing/InvalidTransition→409
-（文案固定为 `Invalid incident status transition: {from} -> {to}`）；?status= 非法值 422（与 events ?level= 一致）。
-端到端冒烟已过：Runner 15 告警→5 事件→建案（风险快照一致）→
-open→in_progress→resolved→closed 全链路→closed→open 409 拒绝。测试 183 passed（15 个新增）。
-建议提交：`feat(backend): add incident management api`（用户已指定）。
+Step 7.4 落地：`services/incidents/policy.py`（AUTO_CREATE_THRESHOLD=70，按 score 不按
+severity）+ `auto_create_from_risk(db, group)` 管道钩子，接入去重引擎 `recalculate` 之后
+`commit` 之前（与告警落库同事务）。冻结语义：幂等（100 告警→1 组→1 案件）；
+快照取首次越阈时（后续重算不影响案件）；后来越阈也建（如 high 50 加频 21 条达 70）；
+只走写路径不回填存量；已有案件时手动创建仍 409。冒烟已过：Runner --repeat 30 →
+150 告警/5 事件/恰好 3 自动案件（70/70/70）。测试 195 passed（12 个新增）。
+建议提交：`feat(backend): auto create incident from risk events`（用户已指定）。
 
-Step 7 剩余：7.4 Event→Incident 创建/关联流程 → 7.5 测试 + 端到端验证；之后 Step 8 React Web Console（业务 API 已稳定可直接绑定）。
+下一步（用户已冻结顺序）：7.5 Dashboard Backend 聚合接口（GET /api/v1/dashboard/summary：
+open_incidents/critical/high/today_alerts，供 React 直接绑定）→ Step 8 React Web Console。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 7.2（57bd981）与 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 7.3（0f1b31d）与 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 183 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 195 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。

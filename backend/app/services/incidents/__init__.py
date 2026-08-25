@@ -15,7 +15,9 @@ from app.services.incidents.models import (
     IncidentStatus,
     InvalidIncidentTransition,
 )
+from app.services.incidents.policy import AUTO_CREATE_THRESHOLD, should_create_incident
 from app.services.incidents.service import (
+    auto_create_from_risk,
     create_incident,
     get_incident,
     list_incidents,
@@ -24,6 +26,7 @@ from app.services.incidents.service import (
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "AUTO_CREATE_THRESHOLD",
     "IncidentAlreadyExists",
     "IncidentDisposition",
     "IncidentError",
@@ -31,8 +34,10 @@ __all__ = [
     "IncidentRiskMissing",
     "IncidentStatus",
     "InvalidIncidentTransition",
+    "auto_create_from_risk",
     "create_incident",
     "get_incident",
     "list_incidents",
+    "should_create_incident",
     "transition_status",
 ]

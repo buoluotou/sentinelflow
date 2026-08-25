@@ -22,6 +22,7 @@ from app.services.deduplication.models import DeduplicationResult
 from app.services.deduplication.rules import DEFAULT_RULE, AggregationRule
 from app.services.normalization.models import NormalizedAlert
 from app.services.risk.service import service as risk_service
+from app.services.incidents.service import auto_create_from_risk
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -75,6 +76,10 @@ class DeduplicationEngine:
         # its current risk snapshot in the same transaction. Reading the
         # lazy alerts relationship flushes the pending alert first.
         risk_service.recalculate(db, group)
+        # Step 7.4: the creation policy runs on the fresh snapshot; opens
+        # the SOC case automatically when the threshold is crossed (no-op
+        # otherwise; idempotent — one current incident per event).
+        auto_create_from_risk(db, group)
         db.commit()
         db.refresh(group)
         db.refresh(alert)

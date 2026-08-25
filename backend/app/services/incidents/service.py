@@ -33,6 +33,7 @@ from app.services.incidents.models import (
     IncidentStatus,
     InvalidIncidentTransition,
 )
+from app.services.incidents.policy import should_create_incident
 
 MAX_PAGE_SIZE = 100
 
@@ -70,6 +71,23 @@ def create_incident(db: Session, alert_group_id: uuid.UUID) -> Incident:
     db.add(incident)
     db.flush()
     return incident
+
+
+def auto_create_from_risk(db: Session, group: AlertGroup) -> Incident | None:
+    """Pipeline hook (Step 7.4): open the case when the event's CURRENT
+    risk crosses the policy threshold; no-op otherwise.
+
+    Called by the deduplication engine right after risk recalculation,
+    inside the same transaction as the alert write. Idempotent by design:
+    an event that already has a case is skipped, so repeated alerts never
+    spawn duplicate incidents.
+    """
+    if group.incident is not None:
+        return None
+    risk = group.risk
+    if risk is None or not should_create_incident(risk.score):
+        return None
+    return create_incident(db, group.id)
 
 
 def transition_status(
