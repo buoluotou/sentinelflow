@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     # Phase 1 Step 4: deduplication aggregation window (seconds)
     DEDUP_WINDOW_SECONDS: int = 300
 
+    # Phase 2 Step 9: AI provider selection. Defaults to "mock" so the
+    # platform always runs (tests/demo/air-gapped); switch to ollama or
+    # cloud via .env without touching business code.
+    AI_PROVIDER: str = "mock"
+    AI_MODEL: str = ""
+    AI_BASE_URL: str = "http://localhost:11434"
+    AI_API_KEY: str | None = None
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )

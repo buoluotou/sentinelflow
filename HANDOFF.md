@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · **Phase 1 正式冻结：Release Hardening 完成，tag v1.0.0-phase1**
+> 最后更新：2026-08-25 · Phase 1 已冻结（tag v1.0.0-phase1，GitHub 推送待用户建仓）；**Phase 2 Step 9 完成：AI Provider Architecture**
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -27,6 +27,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 7 | Incident Management | ✅ 7.1–7.5（模型/Service/API/自动创建/Dashboard） | `1e98fab` `57bd981` `0f1b31d` `3c58681` `09049d1` |
 | 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E） | `4a7f5d5` |
 | — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
+| 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅，待提交 | — |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -77,6 +78,16 @@ backend/app/
     │   ├── policy.py           # Step 7.4 创建策略 v1.0：AUTO_CREATE_THRESHOLD=70，should_create_incident(score)。按 score 不按 severity（Risk Engine 是唯一权重源）；只在写路径评估，不回填存量事件
     │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。auto_create_from_risk(db, group)：管道钩子，已有案件跳过（幂等），风险未达阈值不动作。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API/管道
     ├── dashboard/service.py    # Step 7.5：get_summary(db) 纯实时聚合不建表不缓存。冻结指标语义：open_incidents = 活跃案件（status in open+in_progress）；severity 三项仅统计活跃案件；today_alerts/today_events 从今天 00:00 UTC 起（aware 比较，SQLite/PG 双兼容）；risk_distribution = 全量事件的 EventRisk.level（无风险记录的事件不计入）
+    ├── ai/                     # Phase 2 Step 9：AI Provider 层（本步不碰真实模型，不碰 ollama-main）
+    │   ├── base.py             # AIProvider 抽象契约：explain(AIRequest) -> AIAnalysis；SYSTEM_PROMPT/build_user_prompt 全部 Provider 共用（冻结提示词合同）
+    │   ├── models.py           # AIRequest（task/event/severity/risk/factors/evidence）+ AIAnalysis 冻结结构化协议 {summary, attack_type, why_risky[], confidence 0..1}，extra=forbid 防漂移
+    │   ├── protocol.py         # parse_analysis：容忍 ```json 围栏/前后文案，schema 校验严格；坏输出→AIResponseParseError，绝不伪造兼容结果
+    │   ├── exceptions.py       # AIProviderError 基类 + Config/Unavailable/Parse 三子类，调用方只捕基类，失败全部显式上抛
+    │   ├── transport.py        # 默认 HTTP 层（stdlib urllib，零新依赖），可注入替换；网络类故障统一映射 AIProviderUnavailable
+    │   ├── mock.py             # MockProvider：确定性输出（同输入同输出），默认提供者，支持 fail_with 注入故障；永不伪装真模型（name 恒为 mock）
+    │   ├── ollama.py           # OllamaProvider：/api/chat + format=json + stream=false；接口就绪，Step 10 才接真实例；需 AI_MODEL（空则 ConfigError）
+    │   ├── openai_compatible.py# /chat/completions + response_format=json_object + Bearer 头；"cloud" 不是独立代码路径，只是部署配置（AI_PROVIDER=cloud）；model/api_key/base_url 缺一即 ConfigError
+    │   └── registry.py         # create_provider(settings)：mock/ollama/openai_compatible/cloud → 具体实现，未知名→ConfigError；业务代码只见 AIProvider 契约，换模型不改 Incident/Risk 代码
     └── events/service.py       # list_events(db, page, size, level=None) / get_event(db, group_id)；Step 5.4 起 selectinload risk（列表 1 次子查询），?level= 时 JOIN event_risk（无风险记录的事件被排除）
 ```
 
@@ -111,7 +122,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 202 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 228 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -134,32 +145,34 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、Phase 1 已冻结：下一步是 Phase 2 Step 9（待用户正式下达）
+## 七、当前任务：Phase 2 Step 9 已完成，下一步 Step 10 AI Alert Explanation
 
-Release Hardening 已完成（发布前验收）：
-1. 全量回归：202 passed + `npm run build`（tsc）✅
-2. Git：工作区 clean，提交链完整（见自检清单）✅
-3. README：双语重写（开源首页水准，含 Roadmap 三里程碑）✅
-4–7. docs/：architecture（数据模型/管道/冻结规则/状态机）+ api（端点总表+错误契约）+ demo（10 分钟演示脚本含预期值）+ deployment（Docker/迁移/nginx/备份/升级）✅
-8–9. 安全与 Secrets：全仓扫描仅 `.env.example` 占位符；`.env` 已忽略未跟踪；无 CORS 暴露面；“无认证”已作为已知限制写入 README/CHANGELOG/部署清单 ✅
-10. tag：`v1.0.0-phase1`（annotated）；仓库暂无 remote，推送待用户配 GitHub。
-   版本号已同步：FastAPI version=1.0.0-phase1、frontend package.json 1.0.0。
+Step 9 落地（用户冻结范围：统一接口/配置/错误处理/结构化输出协议/Mock Provider，
+不碰真实 Ollama）：`services/ai/` 九个模块。冻结语义：
+- 契约：`AIProvider.explain(AIRequest) -> AIAnalysis`，业务层只见接口，换本地/云模型不改代码；
+- 协议：AIAnalysis = {summary, attack_type, why_risky[], confidence∈[0,1]}，extra=forbid；
+  解析容忍 ```json 围栏与前后文案，schema 越界→AIResponseParseError，绝不伪造兼容输出；
+- 错误分类：Config/Unavailable/Parse 三子类，网络层（stdlib urllib，可注入 transport）全部映射 Unavailable；
+- 配置：AI_PROVIDER（mock 默认，离线可跑）/AI_MODEL/AI_BASE_URL/AI_API_KEY 入 Settings 与 .env.example；
+- “CloudProvider”不是独立类：cloud 是 openai_compatible 的部署别名；
+- 测试 26 个（协议 7 + Mock 3 + Ollama 5 + OpenAICompatible 5 + 注册表 6+），全部用注入 FakeTransport，零真实网络。
+测试 228 passed（202+26）。建议提交（待用户确认）：`feat(backend): add ai provider architecture (step 9)`。
 
-Phase 2 已规划（用户方案，未开工）：Step 9 AIProvider 统一接口（Ollama/Cloud/OpenAICompatible）→
-Step 10 告警解释（结构化 summary/attack_type/why_risky/confidence）→ Step 11 风险摘要 →
-Step 12 处置建议（AI ≠ 执行器）→ Step 13 Approval Queue（Phase 2 最关键安全边界）→
-Step 14 AI 与 Incident 全链路。硬原则不变：上游项目（Ollama/Shuffle/TheHive/Wazuh）只做接口目标，
-不 vendor 源码；现阶段不动 ollama-main。
+下一步（用户已定顺序）：Step 10 AI Alert Explanation（Event+Risk Factors+Evidence → 结构化解释，
+首次接真实 Ollama）→ Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
+（Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
+另待办：用户在 GitHub 建空仓 sentinelflow 后，add remote + push main + push tags（仓库已就绪，
+tag v1.0.0-phase1 在本地）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为 clean（含 HANDOFF.md，随代码提交）
+git status            # 应为 clean（含 HANDOFF.md；Step 9 提交前属未跟踪/已修改）
 git log --oneline     # 应见最新 release hardening 提交与 4a7f5d5 / 09049d1 / 3c58681 / 0f1b31d / ...
 git tag               # 应见 v1.0.0-phase1
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 202 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 228 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。
