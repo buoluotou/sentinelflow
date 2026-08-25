@@ -21,6 +21,7 @@ from app.services.deduplication.fingerprint import FingerprintGenerator
 from app.services.deduplication.models import DeduplicationResult
 from app.services.deduplication.rules import DEFAULT_RULE, AggregationRule
 from app.services.normalization.models import NormalizedAlert
+from app.services.risk.service import service as risk_service
 
 
 def _ensure_aware(dt: datetime) -> datetime:
@@ -70,6 +71,10 @@ class DeduplicationEngine:
 
         alert = self._build_alert(alert_create, event_time, group)
         db.add(alert)
+        # Step 5.3: the event changed (new evidence / count++), so refresh
+        # its current risk snapshot in the same transaction. Reading the
+        # lazy alerts relationship flushes the pending alert first.
+        risk_service.recalculate(db, group)
         db.commit()
         db.refresh(group)
         db.refresh(alert)

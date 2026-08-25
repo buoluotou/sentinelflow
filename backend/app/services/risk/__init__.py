@@ -7,5 +7,6 @@ AI layers) can audit exactly why an event was rated the way it was.
 
 from app.services.risk.engine import RiskEngine, engine
 from app.services.risk.models import RiskFactor, RiskResult
+from app.services.risk.service import RiskService, service
 
-__all__ = ["RiskEngine", "RiskFactor", "RiskResult", "engine"]
+__all__ = ["RiskEngine", "RiskFactor", "RiskResult", "RiskService", "engine", "service"]
