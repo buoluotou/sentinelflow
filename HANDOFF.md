@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 7.1 完成后（Incident 数据模型）
+> 最后更新：2026-08-25 · Phase 1 Step 7.2 完成后（Incident Service + 生命周期状态机）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -24,7 +24,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
-| 7 | Incident Management | 🔄 7.1 ✅（数据模型），7.2–7.5 ⬜ 下一步 | 7.1 待提交 |
+| 7 | Incident Management | 🔄 7.1 ✅（数据模型）7.2 ✅（Service+状态机），7.3–7.5 ⬜ 下一步 | `1e98fab`，7.2 待提交 |
 | 8 | React Web Console | ⬜ |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
@@ -67,6 +67,9 @@ backend/app/
     │   ├── factors.py          # severity/frequency/public_source 三因子；is_public_ip 用显式排除清单（不用 is_global，Python 3.12.2 多播/TEST-NET/CGNAT 有盲区）
     │   ├── engine.py           # RiskEngine.calculate(group, alerts) -> RiskResult，纯计算不落库；factors = [{name, score, reason}]
     │   └── service.py          # RiskService.recalculate(db, group)：有则原地更新、无则创建 EventRisk
+    ├── incidents/              # Step 7 核心（7.2）
+    │   ├── models.py           # IncidentStatus/IncidentDisposition 枚举 + ALLOWED_TRANSITIONS 冻结矩阵 + 4 个业务异常（全部报错不静默）
+    │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。两者只 flush 不 commit，事务边界留给上层（7.3 API / 7.4 管道）
     └── events/service.py       # list_events(db, page, size, level=None) / get_event(db, group_id)；Step 5.4 起 selectinload risk（列表 1 次子查询），?level= 时 JOIN event_risk（无风险记录的事件被排除）
 ```
 
@@ -87,7 +90,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 137 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 168 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -110,25 +113,27 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界）。
 
-## 七、下一步任务：Step 7.1 已完成，下一步 Step 7.2
+## 七、下一步任务：Step 7.2 已完成，下一步 Step 7.3
 
-Step 7.1 落地：`Incident` ORM（incidents 表，alert_group_id 唯一 + CASCADE FK）+
-迁移 0004（upgrade/downgrade 已验证）+ AlertGroup `incident` 1:1 关系 +
-10 个模型层测试。设计要点：`risk_score` 是创建时从 EventRisk 复制的快照，
-不是链接——自动重算不影响案件记录；状态机（open/in_progress/resolved/
-closed/false_positive）暂不做，留给 Step 7.2 Service 层。
-建议提交：`feat: add incident data model`（用户已指定）。
+Step 7.2 落地：`services/incidents/`（models.py 状态词汇 + 冻结转换矩阵 +
+4 个业务异常；service.py `create_incident` / `transition_status`）。冻结语义：
+状态机在 Service 层不在 ORM 层；非法转换抛 `InvalidIncidentTransition`；
+无 EventRisk 拒绝建案（不造 score=0 假案）；Service 只 flush 不 commit；
+disposition 只能由转换写入（与 status 永远一致，不可绕过）；
+`open→resolved` 非法（必经 in_progress）。测试 168 passed（31 个新增，
+含 8 条合法转换 + 7 条非法转换参数化）。
+建议提交：`feat(backend): add incident service and lifecycle state machine`（用户已指定）。
 
-Step 7 剩余拆分：7.2 Incident Service + 生命周期状态机 → 7.3 Incident API（POST/GET/PATCH status）→ 7.4 Event→Incident 创建流程 → 7.5 测试 + 端到端验证。
+Step 7 剩余拆分：7.3 Incident API（POST/GET/PATCH status，业务异常→HTTP 码映射）→ 7.4 Event→Incident 创建流程 → 7.5 测试 + 端到端验证。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 6（abdb469）与 ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 7.1（1e98fab）与 abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 137 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 168 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。
