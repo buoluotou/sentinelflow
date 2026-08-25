@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 5 完成后（Risk Engine 5.1–5.4 全部落地）
+> 最后更新：2026-08-25 · Phase 1 Step 6 完成后（Scenario Simulator Runner 6.1）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -22,8 +22,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 2 | 数据模型 + Alert Ingestion | ✅ | `2e94813` |
 | 3 | Alert Normalization | ✅ | `868c02b` |
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
-| 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a`，5.4 待提交 |
-| 6 | Scenario Simulator Runner | ⬜ |
+| 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
+| 6 | Scenario Simulator Runner | ✅ 6.1 CLI | 待提交 |
 | 7 | Incident Management | ⬜ |
 | 8 | React Web Console | ⬜ |
 
@@ -71,7 +71,7 @@ backend/app/
 
 关键语义（Step 4 定形）：**fingerprint ≠ group**。fingerprint 标识"事件种类"（跨时间稳定，不含时间戳/原文），AlertGroup 是 fingerprint + 5 分钟窗口切出的"一次事件"；同一指纹可对应多个组。两个入口（/alerts 与 /normalize）统一走 Normalization → Deduplication → DB；每条 Alert 全量保留为证据，`alert_events` 存原始报文。
 
-其他：`frontend/`（React 19 + TS + Vite，页面目录占位在 `src/pages/`）、`simulator/scenarios/*/events.json`（5 个场景数据）、`docker-compose.yml`（仅 PostgreSQL 16）。
+其他：`frontend/`（React 19 + TS + Vite，页面目录占位在 `src/pages/`）、`simulator/scenarios/*/events.json`（5 个场景，信封 `{scenario, description, events}`，事件已是 AlertCreate 统一格式）、`simulator/runner/run.py`（Step 6.1：纯标准库 CLI，扫描→本地校验→直发 POST /alerts→实时打印→GET /events 摘要→失败非零退出；不走 /normalize 避免 source 指纹分裂；默认 `--timestamps now` 改写当前 UTC，`file` 为确定性重放）、`docker-compose.yml`（仅 PostgreSQL 16）。
 
 Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.add(alert)` 后、`commit()` 前，与告警落库同一事务），GET /events 是纯读路径，不做任何评分计算；`event_risk` 每事件唯一一行（唯一约束），重算原地更新 `score/level/factors/updated_at`。
 
@@ -86,11 +86,12 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 112 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 127 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
 Remove-Item Env:DATABASE_URL                                # 用完清环境变量
+cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链路（需后端在 8000 端口）
 # 前端（sentinelflow\frontend）：npm run build / npm run dev
 ```
 
@@ -105,27 +106,28 @@ Remove-Item Env:DATABASE_URL                                # 用完清环境变
 7. **ORM relationship 赋值必须赋对象**（如 `alert_group=group`），不能赋 flush 前尚为 None 的 `group.id`——此坑已犯过两次，测试 helper 尤其注意。
 8. 冒烟用临时 SQLite 库时：**先停服务进程再删库**，否则文件锁定导致删除静默失败、出现"库被重建"假象；用完 `Remove-Item Env:DATABASE_URL`（shell 复用会残留，pydantic-settings 会优先读它）。
 9. Python 3.12.2 的 `ipaddress`：多播地址 `is_global=True`、TEST-NET `is_private=True`、CGNAT `is_private=False`——判定公网 IP 必须用显式排除清单（见 `risk/factors.py`），不要只信 `is_global`/`is_private`。
+10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
+11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界）。
 
-## 七、下一步任务：Step 5 已完成，候选方向（以用户指令为准）
+## 七、下一步任务：Step 6 已完成，候选方向（以用户指令为准）
 
-Step 5 全部落地（5.1 模型 → 5.2 规则引擎 → 5.3 管道集成 → 5.4 Risk API）：
-风险在写路径重算（去重引擎同事务），Events API 纯读 JOIN `event_risk`；
-列表项附 `risk_score`/`risk_level`（无风险记录为 `null`），详情返回 `risk`
-（score/level/factors 三因子明细/updated_at），`?level=` 筛选（422 校验非法值）。
-测试 112 passed（tests/test_risk_api.py 9 例）；冒烟：100 条公网 medium 告警 →
-1 事件，列表 80/high，?level=high 命中 1 条，详情三因子 30+30+20。
-提交建议：`feat(backend): expose risk score in events api (Step 5.4)`（待用户确认后提交）。
+Step 6.1 落地：`simulator/runner/run.py`（纯标准库，无第三方依赖）。
+链路：扫描场景 → 本地校验（快速失败）→ 直发 `POST /api/v1/alerts` →
+实时打印 → `GET /api/v1/events` 摘要（alert_count / risk_score / risk_level）→
+失败非零退出。冻结验收已通过：`--repeat 30 --timestamps now` →
+5 组 × 30 alerts，风险分全部命中（见六-11）。测试 127 passed。
+提交建议：`feat(simulator): add scenario runner cli (Step 6)`（待用户确认后提交）。
 
-候选方向：Step 6 Scenario Simulator Runner 或 Incident Management（以用户指令为准）。
+候选方向：Step 7 Incident Management 或 Step 8 React Web Console（以用户指令为准）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 5.4（ff4aa70）与 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 112 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 127 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。
