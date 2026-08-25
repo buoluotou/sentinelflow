@@ -27,7 +27,11 @@ def create_provider(settings: Settings) -> AIProvider:
     if name == "mock":
         return MockProvider()
     if name == "ollama":
-        return OllamaProvider(model=settings.AI_MODEL, base_url=settings.AI_BASE_URL)
+        return OllamaProvider(
+            model=settings.AI_MODEL,
+            base_url=settings.AI_BASE_URL,
+            timeout=settings.AI_TIMEOUT_SECONDS,
+        )
     if name in ("openai_compatible", "cloud"):
         return OpenAICompatibleProvider(
             name=name,

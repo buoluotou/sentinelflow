@@ -28,12 +28,14 @@ class OllamaProvider(AIProvider):
         model: str,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         transport: Transport = http_post_json,
+        timeout: float | None = None,
     ):
         if not model:
             raise AIProviderConfigError("OllamaProvider requires AI_MODEL to be set")
         super().__init__(model)
         self._base_url = base_url.rstrip("/")
         self._transport = transport
+        self._timeout = timeout
 
     def explain(self, request: AIRequest) -> AIAnalysis:
         payload = {
@@ -47,7 +49,8 @@ class OllamaProvider(AIProvider):
             "stream": False,
         }
         try:
-            body = self._transport(f"{self._base_url}/api/chat", payload)
+            kwargs = {} if self._timeout is None else {"timeout": self._timeout}
+            body = self._transport(f"{self._base_url}/api/chat", payload, None, **kwargs)
         except AIProviderUnavailable:
             raise
         except Exception as exc:  # injected transports may raise raw types

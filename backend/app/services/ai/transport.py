@@ -18,11 +18,18 @@ DEFAULT_TIMEOUT_SECONDS = 60.0
 Transport = Callable[[str, dict, "dict[str, str] | None"], str]
 
 
-def http_post_json(url: str, payload: dict, headers: dict[str, str] | None = None) -> str:
+def http_post_json(
+    url: str,
+    payload: dict,
+    headers: dict[str, str] | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
     """POST JSON and return the response body as text.
 
     All network-layer failures (refused, DNS, HTTP >= 400, timeout) map to
-    AIProviderUnavailable — callers never see raw urllib types.
+    AIProviderUnavailable — callers never see raw urllib types. Local
+    models can take minutes per analysis (Step 10.4: qwen3:4b needs ~40s),
+    so the timeout is configurable via AI_TIMEOUT_SECONDS.
     """
     request = urllib.request.Request(
         url,
@@ -31,7 +38,7 @@ def http_post_json(url: str, payload: dict, headers: dict[str, str] | None = Non
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=DEFAULT_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         raise AIProviderUnavailable(f"HTTP {exc.code} from {url}") from exc

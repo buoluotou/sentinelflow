@@ -1,8 +1,11 @@
-/** Event detail (Step 8.3): fingerprint, risk factor breakdown, evidence. */
+/** Event detail (Step 8.3): fingerprint, risk factor breakdown, evidence.
+ * Step 10.7 adds the AI Alert Explanation panel (display + explicit trigger).
+ */
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getEvent } from '../api/events'
 import type { EventDetailResponse } from '../types/event'
+import { AiAnalysisPanel } from '../components/AiAnalysisPanel'
 import { ErrorBanner, LevelBadge, Loading, Panel, formatTime } from '../components/common'
 
 export function EventDetailPage() {
@@ -100,6 +103,8 @@ export function EventDetailPage() {
           </p>
         </Panel>
       )}
+
+      {id && <AiAnalysisPanel eventId={id} />}
 
       <Panel title={`Alert Evidence (${alerts.length})`}>
         <table className="data">

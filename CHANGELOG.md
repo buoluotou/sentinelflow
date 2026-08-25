@@ -4,6 +4,15 @@ All notable changes to SentinelFlow are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **AI Provider Architecture (Phase 2 Step 9)** — unified `AIProvider` contract with Mock (default, offline-safe), Ollama (`/api/chat`) and OpenAI-compatible providers ("cloud" is a deployment alias); frozen structured-output protocol `{summary, attack_type, why_risky[], confidence}`; typed error taxonomy (config / unavailable / parse); settings-based registry (`AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`). AI output is advisory only — no execution.
+- **AI alert-explanation data layer (Step 10.1–10.3, unreleased work-in-progress)** — `ai_analyses` history table (migration 0005; indexed, non-unique `alert_group_id`), evidence-bounded AIRequest builder (max 20 alerts) and `AIAnalysisService` (flush-only, typed errors).
+- **AI alert-explanation API (Step 10.4–10.6, unreleased work-in-progress)** — explicit-trigger endpoints `POST/GET /api/v1/events/{id}/ai-analysis` (201 with full analysis / latest read); error contract 404 (unknown event or no analysis), 503 (provider misconfigured/unreachable), 502 (protocol violation, never persisted). Real Ollama integration verified against local `qwen3:4b` (native JSON mode, configurable `AI_TIMEOUT_SECONDS`); tests stay on the mock provider.
+- **Event Detail AI panel (Step 10.7, unreleased work-in-progress)** — "AI Alert Explanation" panel on the event detail page: latest analysis on load (attack type, summary, why-risky list, confidence, provider/model), explicit "Analyze with AI" trigger with disabled analyzing state and slow-model hint, backend error detail surfaced verbatim; re-analysis appends history, never edits. Browser E2E verified against real `qwen3:4b` and the mock provider.
+
 ## [1.0.0-phase1] - 2026-08-25
 
 Phase 1: the complete detection-to-incident SOC platform.

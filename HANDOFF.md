@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 已冻结（tag v1.0.0-phase1，GitHub 推送待用户建仓）；**Phase 2 Step 9 完成：AI Provider Architecture**
+> 最后更新：2026-08-25 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9 已提交（`f7edcc1`）；**Step 10 已完成 10.1–10.8（含真实 Ollama + Mock 全部 E2E），等待用户确认后一次性提交 `feat(ai): add alert explanation`**
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -27,7 +27,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 7 | Incident Management | ✅ 7.1–7.5（模型/Service/API/自动创建/Dashboard） | `1e98fab` `57bd981` `0f1b31d` `3c58681` `09049d1` |
 | 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E） | `4a7f5d5` |
 | — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
-| 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅，待提交 | — |
+| 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅ | `f7edcc1`（已推送 GitHub） |
+| 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E）；待一次性提交 | 未提交 |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -122,7 +123,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 228 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 253 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -145,34 +146,74 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、当前任务：Phase 2 Step 9 已完成，下一步 Step 10 AI Alert Explanation
+## 七、当前任务：Step 10 AI Alert Explanation（10.1–10.8 全部完成，待一次性提交）
 
-Step 9 落地（用户冻结范围：统一接口/配置/错误处理/结构化输出协议/Mock Provider，
-不碰真实 Ollama）：`services/ai/` 九个模块。冻结语义：
-- 契约：`AIProvider.explain(AIRequest) -> AIAnalysis`，业务层只见接口，换本地/云模型不改代码；
-- 协议：AIAnalysis = {summary, attack_type, why_risky[], confidence∈[0,1]}，extra=forbid；
-  解析容忍 ```json 围栏与前后文案，schema 越界→AIResponseParseError，绝不伪造兼容输出；
-- 错误分类：Config/Unavailable/Parse 三子类，网络层（stdlib urllib，可注入 transport）全部映射 Unavailable；
-- 配置：AI_PROVIDER（mock 默认，离线可跑）/AI_MODEL/AI_BASE_URL/AI_API_KEY 入 Settings 与 .env.example；
-- “CloudProvider”不是独立类：cloud 是 openai_compatible 的部署别名；
-- 测试 26 个（协议 7 + Mock 3 + Ollama 5 + OpenAICompatible 5 + 注册表 6+），全部用注入 FakeTransport，零真实网络。
-测试 228 passed（202+26）。建议提交（待用户确认）：`feat(backend): add ai provider architecture (step 9)`。
+Step 9 已提交 `f7edcc1` 并随 main 推送至 GitHub（仓库：buoluotou/sentinelflow，Release 基于
+tag v1.0.0-phase1，正文取自 CHANGELOG）。Step 9 冻结语义不变：契约 `AIProvider.explain(AIRequest)
+-> AIAnalysis`；协议 {summary, attack_type, why_risky[], confidence∈[0,1]} extra=forbid；
+错误三子类 Config/Unavailable/Parse；cloud 是 openai_compatible 的部署别名；默认 mock 离线可跑。
 
-下一步（用户已定顺序）：Step 10 AI Alert Explanation（Event+Risk Factors+Evidence → 结构化解释，
-首次接真实 Ollama）→ Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
+Step 10 已落地（用户冻结范围 10.1–10.3，**未接真实 Ollama**，AI 只分析不执行）：
+- 10.1 `models/ai_analysis.py` + 迁移 0005：`ai_analyses` **历史表**（alert_group_id 只建索引，
+  无唯一约束——重复分析追加记录，模型会换）；与 EventRisk/Incident 职责隔离，互不覆盖；
+  `JSONVariant` 已迁至 `models/types.py` 打破循环导入（alert.py 保留兼容再导出）；
+- 10.2 `services/ai/request_builder.py`：AlertGroup+EventRisk+Alerts → 冻结 AIRequest；
+  证据硬上限 `MAX_EVIDENCE=20`（最早的 20 条，JSON 投影、丢弃 None 字段、不含内部 id）；
+  无 EventRisk 时降级为 score 0/level "unassessed"，不报错；
+- 10.3 `services/ai/service.py`：`AIAnalysisService.explain_event(db, event_id)`，
+  flush 不 commit（事务边界在 API 层）；未知事件抛 `AIEventNotFound`；provider 错误原样上抛，
+  绝不伪造成功；另有 `latest_analysis` 读最近一次。默认 provider 由 settings 构造（.env 未设 AI_PROVIDER → mock）。
+- 测试 15 个（builder 5 + service 10，全 MockProvider，零网络）。迁移 0005 已在临时 SQLite 完成 upgrade→downgrade→upgrade 往返验证。
+- 10.5 `api/v1/ai_analysis.py` + `schemas/ai_analysis.py`：显式触发，两个端点：
+  `POST /api/v1/events/{id}/ai-analysis` → 201 + 完整分析体（id/alert_group_id/provider/model/
+  summary/attack_type/why_risky/confidence/created_at）；`GET 同路径` → 最近一次（历史列表接口延后）。
+  错误契约：AIEventNotFound→404（含非法 UUID）、Config/Unavailable→503、Parse→502；
+  失败绝不落库（service 在 add 前抛出）。服务经 `get_ai_analysis_service` 依赖注入，测试可换坏 provider。
+- 10.6 测试 10 个（创建字段校验/最新读取/无分析 404/未知与非法 id 404/503×2/502/失败不落库且恢复后可再分析）。
+- 10.4 真实 Ollama 联调**已通过**（2026-08-25，本机 qwen3:4b）：
+  `.env` 现为 `AI_PROVIDER=ollama / AI_MODEL=qwen3:4b / AI_BASE_URL=http://localhost:11434 /
+  AI_TIMEOUT_SECONDS=180`（`.env.example` 补了 AI_TIMEOUT_SECONDS，默认 60）。
+  真实链路验证：Simulator 造事件（risk=50）→ POST /ai-analysis → 201，约 45s，
+  返回 provider=ollama / model=qwen3:4b / summary / attack_type / why_risky[3] /
+  confidence=0.95，ai_analyses 恰 1 行。异常注入：伪 Ollama 服务返回违协议文本 → 502 且 0 行；
+  AI_BASE_URL 指死端口 → 503 且 0 行。**模型适配 Parser，Schema 未放宽**（OllamaProvider 加
+  `format:"json"` 原生 JSON 模式 + transport 超时可配 `AI_TIMEOUT_SECONDS`）。
+  测试隔离：`tests/conftest.py` 顶部强制 `os.environ["AI_PROVIDER"]="mock"`，
+  pytest 永不碰真模型。全量 253 passed。docs/api.md 端点表待 10.8 一并补。
+  Ollama 进程为系统托盘服务（`%LOCALAPPDATA%\Programs\Ollama`），CLI 不在 PATH，验证走 HTTP API。
+- 10.7 前端 AI 面板（无 Chat）：
+  `frontend/src/types/aiAnalysis.ts`（与 AIAnalysisRead 字段级一致）；
+  `frontend/src/api/aiAnalysis.ts`（getLatestAnalysis："No AI analysis" 的 404 → null，
+  其余错误上抛；createAnalysis：POST 201）；
+  `frontend/src/components/AiAnalysisPanel.tsx`（idle/loading/success/error 四态；
+  Analyzing… 禁用防连点 + “可能需 60 秒”提示；错误横幅直透后端 detail 不另加前缀
+  【503/502 后端文案已含人类可读前缀】；历史语义注释：重新分析追加记录，面板只展最新）；
+  集成在 `EventDetailPage.tsx` Risk 面板之后、Evidence 之前。
+- 10.8 真实浏览器 E2E（五 Case 全过）：
+  Case1 无分析→点击→Analyzing→成功（qwen3:4b 约 20–30s）；
+  Case2 刷新→直接展示最近分析，无自动模型调用（仅 GET）；
+  Case3 再次分析→DB count 2 且页面展示最新（新 created_at）；
+  Case4 AI_BASE_URL 指死端口（等价模拟 Ollama 停服，Ollama 未注册为 Windows 服务无法 Stop-Service）
+  → 503 横幅“AI provider unavailable: ...”单一前缀，旧分析保留无假成功，DB 不增长；
+  Case5 AI_PROVIDER=mock → 即时成功 provider=mock/model=mock-deterministic（CI/offline 路径）。
+  验收终态：253 passed + npm run build ✅ + 真实 qwen3:4b ✅ + Mock ✅ + E2E ✅。
+
+下一步：用户确认后一次性提交（提交名已按用户要求改为覆盖整个 Step 10）：
+`git add . && git commit -m "feat(ai): add alert explanation"`，随后推送 + docs/api.md 端点表补齐可随下一轮。
+
+更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
-另待办：用户在 GitHub 建空仓 sentinelflow 后，add remote + push main + push tags（仓库已就绪，
-tag v1.0.0-phase1 在本地）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为 clean（含 HANDOFF.md；Step 9 提交前属未跟踪/已修改）
-git log --oneline     # 应见最新 release hardening 提交与 4a7f5d5 / 09049d1 / 3c58681 / 0f1b31d / ...
+git status            # 应为 clean 或仅含 Step 10 未提交改动（含 HANDOFF.md，已跟踪）
+git log --oneline     # 应见 f7edcc1(step 9) / 3794cc0(release hardening) / 4a7f5d5 / 09049d1 / ...
+git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
 git tag               # 应见 v1.0.0-phase1
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 228 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 253 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。

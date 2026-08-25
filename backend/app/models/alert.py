@@ -1,14 +1,14 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-# JSONB on PostgreSQL, plain JSON on other dialects (e.g. SQLite in tests)
-JSONVariant = JSON().with_variant(JSONB(), "postgresql")
+# Backward-compatible re-export; the canonical definition moved to
+# app.models.types so AIAnalysis can import it without a circular chain.
+from app.models.types import JSONVariant  # noqa: F401
 
 
 class Alert(Base):

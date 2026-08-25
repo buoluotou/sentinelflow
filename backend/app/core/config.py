@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     AI_MODEL: str = ""
     AI_BASE_URL: str = "http://localhost:11434"
     AI_API_KEY: str | None = None
+    # Local models can take tens of seconds per analysis (qwen3:4b ~40s);
+    # raise for larger models, keep tests/fast providers at the default.
+    AI_TIMEOUT_SECONDS: float = 60.0
 
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"

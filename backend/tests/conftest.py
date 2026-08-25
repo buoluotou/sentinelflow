@@ -1,4 +1,10 @@
+import os
 from collections.abc import Generator
+
+# Tests must never call a real model, regardless of the deployment .env:
+# force the deterministic mock before app/core/config builds the settings
+# singleton (env vars win over .env in pydantic-settings).
+os.environ["AI_PROVIDER"] = "mock"
 
 import pytest
 from fastapi.testclient import TestClient
