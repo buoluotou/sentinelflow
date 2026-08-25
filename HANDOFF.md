@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9 已提交（`f7edcc1`）；**Step 10 已完成 10.1–10.8（含真实 Ollama + Mock 全部 E2E），等待用户确认后一次性提交 `feat(ai): add alert explanation`**
+> 最后更新：2026-08-25 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；**下一步 Step 11 AI Risk Summary**（不打新 tag，v1.1.0 等 Step 11–14 全部完成后统一发布）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -28,7 +28,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E） | `4a7f5d5` |
 | — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
 | 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅ | `f7edcc1`（已推送 GitHub） |
-| 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E）；待一次性提交 | 未提交 |
+| 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E） | `c946ae7`（已推送） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -146,7 +146,7 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、当前任务：Step 10 AI Alert Explanation（10.1–10.8 全部完成，待一次性提交）
+## 七、当前任务：Step 10 AI Alert Explanation（✅ 已提交 `c946ae7` 并推送，工作树干净）
 
 Step 9 已提交 `f7edcc1` 并随 main 推送至 GitHub（仓库：buoluotou/sentinelflow，Release 基于
 tag v1.0.0-phase1，正文取自 CHANGELOG）。Step 9 冻结语义不变：契约 `AIProvider.explain(AIRequest)
@@ -198,8 +198,11 @@ Step 10 已落地（用户冻结范围 10.1–10.3，**未接真实 Ollama**，A
   Case5 AI_PROVIDER=mock → 即时成功 provider=mock/model=mock-deterministic（CI/offline 路径）。
   验收终态：253 passed + npm run build ✅ + 真实 qwen3:4b ✅ + Mock ✅ + E2E ✅。
 
-下一步：用户确认后一次性提交（提交名已按用户要求改为覆盖整个 Step 10）：
-`git add . && git commit -m "feat(ai): add alert explanation"`，随后推送 + docs/api.md 端点表补齐可随下一轮。
+下一步：Step 11 AI Risk Summary（用户冻结：不是再让 AI 生成一段闲话，而是把
+Event + Risk Factors + 多条 Evidence 压缩成 SOC 分析师真正可用的风险摘要），
+随后 Step 12 Response Recommendation → Step 13 Approval Queue（Phase 2 最关键安全边界）
+→ Step 14 Incident AI Integration；全部完成后统一打 v1.1.0 tag。安全边界不变：
+AI 只解释/总结/辅助判断，绝不执行响应。docs/api.md 端点表可随 Step 11 一并补齐。
 
 更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
@@ -208,8 +211,8 @@ Step 10 已落地（用户冻结范围 10.1–10.3，**未接真实 Ollama**，A
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为 clean 或仅含 Step 10 未提交改动（含 HANDOFF.md，已跟踪）
-git log --oneline     # 应见 f7edcc1(step 9) / 3794cc0(release hardening) / 4a7f5d5 / 09049d1 / ...
+git status            # 应为 clean（Step 10 已提交 c946ae7）
+git log --oneline     # 应见 c946ae7(step 10) / f7edcc1(step 9) / 3794cc0(release hardening) / ...
 git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
 git tag               # 应见 v1.0.0-phase1
 cd backend
