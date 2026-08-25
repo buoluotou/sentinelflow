@@ -59,6 +59,13 @@ class AlertGroup(Base):
         uselist=False,
     )
 
+    # Current SOC case (Phase 1 Step 7), at most one per group.
+    incident: Mapped["Incident | None"] = relationship(
+        back_populates="alert_group",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AlertGroup id={self.id} fingerprint={self.fingerprint[:12]}..."
@@ -69,3 +76,4 @@ class AlertGroup(Base):
 # Avoid circular import at module load time
 from app.models.alert import Alert  # noqa: E402,F401
 from app.models.event_risk import EventRisk  # noqa: E402,F401
+from app.models.incident import Incident  # noqa: E402,F401

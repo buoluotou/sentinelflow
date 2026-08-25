@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 6 完成后（Scenario Simulator Runner 6.1）
+> 最后更新：2026-08-25 · Phase 1 Step 7.1 完成后（Incident 数据模型）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -23,8 +23,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 3 | Alert Normalization | ✅ | `868c02b` |
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
-| 6 | Scenario Simulator Runner | ✅ 6.1 CLI | 待提交 |
-| 7 | Incident Management | ⬜ |
+| 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
+| 7 | Incident Management | 🔄 7.1 ✅（数据模型），7.2–7.5 ⬜ 下一步 | 7.1 待提交 |
 | 8 | React Web Console | ⬜ |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
@@ -43,7 +43,8 @@ backend/app/
 │   ├── alert.py                # alerts 表：含 alert_group_id（nullable FK → alert_groups）+ alert_group 关系
 │   ├── alert_event.py          # alert_events 表：raw_data 为 JSONB（with_variant 兼容 SQLite）
 │   ├── alert_group.py          # alert_groups 表：fingerprint 只建索引【不建 unique】（窗口过期后同指纹要能建新组）；含 1:1 risk 关系
-│   └── event_risk.py           # event_risk 表（Step 5.1）：alert_group_id 唯一约束（每事件一份当前风险快照），score/level/factors(JSONB)/updated_at
+│   ├── event_risk.py           # event_risk 表（Step 5.1）：alert_group_id 唯一约束（每事件一份当前风险快照），score/level/factors(JSONB)/updated_at
+│   └── incident.py             # incidents 表（Step 7.1）：alert_group_id 唯一（每事件一个当前案件），title/description/severity/risk_score（创建时从 EventRisk 快照）/status/disposition/resolved_at/closed_at；状态机在 Step 7.2 的 Service 层
 ├── schemas/
 │   ├── alert.py                # AlertCreate/AlertRead/AlertDetail，AlertRead 含 alert_group_id
 │   └── event.py                # EventListItem/EventListResponse/EventInfo/EventAlertItem/EventDetailResponse；Step 5.4 新增 RiskFactorItem/EventRiskDetail，EventListItem 加 risk_score/risk_level（无风险记录时为 None）
@@ -86,7 +87,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 127 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 137 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -109,25 +110,25 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界）。
 
-## 七、下一步任务：Step 6 已完成，候选方向（以用户指令为准）
+## 七、下一步任务：Step 7.1 已完成，下一步 Step 7.2
 
-Step 6.1 落地：`simulator/runner/run.py`（纯标准库，无第三方依赖）。
-链路：扫描场景 → 本地校验（快速失败）→ 直发 `POST /api/v1/alerts` →
-实时打印 → `GET /api/v1/events` 摘要（alert_count / risk_score / risk_level）→
-失败非零退出。冻结验收已通过：`--repeat 30 --timestamps now` →
-5 组 × 30 alerts，风险分全部命中（见六-11）。测试 127 passed。
-提交建议：`feat(simulator): add scenario runner cli (Step 6)`（待用户确认后提交）。
+Step 7.1 落地：`Incident` ORM（incidents 表，alert_group_id 唯一 + CASCADE FK）+
+迁移 0004（upgrade/downgrade 已验证）+ AlertGroup `incident` 1:1 关系 +
+10 个模型层测试。设计要点：`risk_score` 是创建时从 EventRisk 复制的快照，
+不是链接——自动重算不影响案件记录；状态机（open/in_progress/resolved/
+closed/false_positive）暂不做，留给 Step 7.2 Service 层。
+建议提交：`feat: add incident data model`（用户已指定）。
 
-候选方向：Step 7 Incident Management 或 Step 8 React Web Console（以用户指令为准）。
+Step 7 剩余拆分：7.2 Incident Service + 生命周期状态机 → 7.3 Incident API（POST/GET/PATCH status）→ 7.4 Event→Incident 创建流程 → 7.5 测试 + 端到端验证。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 5.4（ff4aa70）与 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 6（abdb469）与 ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 127 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 137 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。
