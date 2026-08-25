@@ -52,6 +52,13 @@ class AlertGroup(Base):
 
     alerts: Mapped[list["Alert"]] = relationship(back_populates="alert_group")
 
+    # Current risk assessment (Phase 1 Step 5), at most one per group.
+    risk: Mapped["EventRisk | None"] = relationship(
+        back_populates="alert_group",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AlertGroup id={self.id} fingerprint={self.fingerprint[:12]}..."
@@ -61,3 +68,4 @@ class AlertGroup(Base):
 
 # Avoid circular import at module load time
 from app.models.alert import Alert  # noqa: E402,F401
+from app.models.event_risk import EventRisk  # noqa: E402,F401
