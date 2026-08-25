@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 7.4 完成后（Incident 自动创建策略 + 管道接入）
+> 最后更新：2026-08-25 · Phase 1 Step 7.5 完成后（Dashboard Summary API）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -24,7 +24,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
-| 7 | Incident Management | 🔄 7.1–7.4 ✅（模型/Service/API/自动创建），7.5 ⬜ 下一步 | `1e98fab` `57bd981` `0f1b31d`，7.4 待提交 |
+| 7 | Incident Management | 🔄 7.1–7.5 ✅（模型/Service/API/自动创建/Dashboard），下一步 Step 8 | `1e98fab` `57bd981` `0f1b31d` `3c58681`，7.5 待提交 |
 | 8 | React Web Console | ⬜ |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
@@ -36,7 +36,8 @@ backend/app/
 │   ├── alerts.py               # POST/GET /api/v1/alerts（Step 2；Step 4.4 起走统一去重链路）
 │   ├── normalize.py            # POST /api/v1/normalize（Step 3；响应含 group_id/group_alert_count/created_group）
 │   ├── events.py               # GET /api/v1/events 列表 + /{id} 详情（Step 4.4）；Step 5.4 起列表项带 risk_score/risk_level，详情带 risk 因子明细，支持 ?level= 筛选（Literal 校验，非法值 422）
-│   └── incidents.py            # Step 7.3：POST /incidents（201，案件记录自动填充）/ GET 列表（分页 + ?status=，非法值 422）/ GET /{id} / PATCH /{id}/status（显式动作路由，非法转换 409，文案固定）；业务异常→404/409 映射，状态机零复制
+│   ├── incidents.py            # Step 7.3：POST /incidents（201，案件记录自动填充）/ GET 列表（分页 + ?status=，非法值 422）/ GET /{id} / PATCH /{id}/status（显式动作路由，非法转换 409，文案固定）；业务异常→404/409 映射，状态机零复制
+│   └── dashboard.py            # Step 7.5：GET /dashboard/summary —— 纯读实时聚合快照，前端绑定单端点不自行拼 API
 ├── core/
 │   ├── config.py               # pydantic-settings，.env 从 monorepo 根读取；DEDUP_WINDOW_SECONDS=300
 │   └── database.py             # engine / SessionLocal / Base / get_db
@@ -49,7 +50,8 @@ backend/app/
 ├── schemas/
 │   ├── alert.py                # AlertCreate/AlertRead/AlertDetail，AlertRead 含 alert_group_id
 │   ├── event.py                # EventListItem/EventListResponse/EventInfo/EventAlertItem/EventDetailResponse；Step 5.4 新增 RiskFactorItem/EventRiskDetail，EventListItem 加 risk_score/risk_level（无风险记录时为 None）
-│   └── incident.py             # IncidentCreate（仅 alert_group_id）/IncidentStatusUpdate（status 为 str，由服务层状态机判合法性）/IncidentRead（含全部生命周期字段）/IncidentListResponse
+│   ├── incident.py             # IncidentCreate（仅 alert_group_id）/IncidentStatusUpdate（status 为 str，由服务层状态机判合法性）/IncidentRead（含全部生命周期字段）/IncidentListResponse
+│   └── dashboard.py            # RiskDistribution（critical/high/medium/low）+ DashboardSummary（7 项指标 + 分布）
 └── services/
     ├── ingestion/service.py    # ingest_alert(db, payload) —— 唯一落库入口；Step 4.4 起内部走 Normalized→Dedup
     ├── normalization/          # Step 3 核心
@@ -73,6 +75,7 @@ backend/app/
     │   ├── models.py           # IncidentStatus/IncidentDisposition 枚举 + ALLOWED_TRANSITIONS 冻结矩阵 + 4 个业务异常（全部报错不静默）；InvalidIncidentTransition 携带 current/target 供 API 渲染稳定文案
     │   ├── policy.py           # Step 7.4 创建策略 v1.0：AUTO_CREATE_THRESHOLD=70，should_create_incident(score)。按 score 不按 severity（Risk Engine 是唯一权重源）；只在写路径评估，不回填存量事件
     │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。auto_create_from_risk(db, group)：管道钩子，已有案件跳过（幂等），风险未达阈值不动作。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API/管道
+    ├── dashboard/service.py    # Step 7.5：get_summary(db) 纯实时聚合不建表不缓存。冻结指标语义：open_incidents = 活跃案件（status in open+in_progress）；severity 三项仅统计活跃案件；today_alerts/today_events 从今天 00:00 UTC 起（aware 比较，SQLite/PG 双兼容）；risk_distribution = 全量事件的 EventRisk.level（无风险记录的事件不计入）
     └── events/service.py       # list_events(db, page, size, level=None) / get_event(db, group_id)；Step 5.4 起 selectinload risk（列表 1 次子查询），?level= 时 JOIN event_risk（无风险记录的事件被排除）
 ```
 
@@ -93,7 +96,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 195 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 202 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -116,27 +119,30 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、下一步任务：Step 7.4 已完成，下一步 Step 7.5
+## 七、下一步任务：Step 7.5 已完成，下一步 Step 8 React Web Console
 
-Step 7.4 落地：`services/incidents/policy.py`（AUTO_CREATE_THRESHOLD=70，按 score 不按
-severity）+ `auto_create_from_risk(db, group)` 管道钩子，接入去重引擎 `recalculate` 之后
-`commit` 之前（与告警落库同事务）。冻结语义：幂等（100 告警→1 组→1 案件）；
-快照取首次越阈时（后续重算不影响案件）；后来越阈也建（如 high 50 加频 21 条达 70）；
-只走写路径不回填存量；已有案件时手动创建仍 409。冒烟已过：Runner --repeat 30 →
-150 告警/5 事件/恰好 3 自动案件（70/70/70）。测试 195 passed（12 个新增）。
-建议提交：`feat(backend): auto create incident from risk events`（用户已指定）。
+Step 7.5 落地：`services/dashboard/service.py`（get_summary，纯实时聚合）+
+`schemas/dashboard.py` + `api/v1/dashboard.py`（GET /api/v1/dashboard/summary）。
+不新增表、不缓存；前端绑定单端点，不自行拼 /events + /incidents + 风险计算。
+冻结指标语义：open_incidents = open+in_progress 活跃案件；severity 三项只统计活跃案件；
+today_* 从今天 00:00 UTC 起；risk_distribution 统计全量事件当前风险级别。
+测试 202 passed（7 个新增：空数据全 0 / 5 组风险分布 / 昨天告警不计入 / 自动建案联动 /
+in_progress 仍计活跃 / closed 后归零 / 混合严重度）。冒烟已过：--repeat 30 后
+summary = open_incidents=3, critical=1, high=2, medium=0, today_alerts=150,
+today_events=5, risk_distribution={high:1, medium:4}。
+建议提交：`feat(backend): add dashboard summary api`（用户已指定）。
+**Phase 1 后端至此基本冻结**（Step 1–7.5 全列）。
 
-下一步（用户已冻结顺序）：7.5 Dashboard Backend 聚合接口（GET /api/v1/dashboard/summary：
-open_incidents/critical/high/today_alerts，供 React 直接绑定）→ Step 8 React Web Console。
+下一步（用户已冻结顺序）：Step 8 React Web Console（首页直接绑定 /dashboard/summary）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 7.3（0f1b31d）与 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 7.4（3c58681）与 0f1b31d / 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 195 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 202 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。
