@@ -20,6 +20,10 @@ class EventListItem(BaseModel):
     alert_count: int
     first_seen: datetime
     last_seen: datetime
+    # Current risk assessment (Step 5.4) — None for legacy events without
+    # a risk record; populated by the API layer from group.risk.
+    risk_score: int | None = None
+    risk_level: str | None = None
 
 
 class EventListResponse(BaseModel):
@@ -60,8 +64,28 @@ class EventInfo(BaseModel):
     updated_at: datetime
 
 
+class RiskFactorItem(BaseModel):
+    """One explainable contribution to the risk score ({name, score, reason})."""
+
+    name: str
+    score: int
+    reason: str
+
+
+class EventRiskDetail(BaseModel):
+    """Full risk assessment of an event, including the factor breakdown."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    score: int
+    level: str
+    factors: list[RiskFactorItem]
+    updated_at: datetime
+
+
 class EventDetailResponse(BaseModel):
-    """GET /events/{id}: event summary + its evidence alerts."""
+    """GET /events/{id}: event summary + evidence alerts + risk detail."""
 
     event: EventInfo
     alerts: list[EventAlertItem]
+    risk: EventRiskDetail | None = None
