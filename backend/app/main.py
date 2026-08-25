@@ -8,7 +8,7 @@ from app.core.database import get_db
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="0.1.0",
+    version="1.0.0-phase1",
 )
 
 app.include_router(v1_router, prefix=settings.API_V1_PREFIX)

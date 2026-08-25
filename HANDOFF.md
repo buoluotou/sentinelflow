@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 8 完成后（React Web Console：Dashboard / Events / Incidents 全链路）
+> 最后更新：2026-08-25 · **Phase 1 正式冻结：Release Hardening 完成，tag v1.0.0-phase1**
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -25,7 +25,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
 | 7 | Incident Management | ✅ 7.1–7.5（模型/Service/API/自动创建/Dashboard） | `1e98fab` `57bd981` `0f1b31d` `3c58681` `09049d1` |
-| 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E），前端代码待提交 | — |
+| 8 | React Web Console | ✅ 8.1–8.5（API Client/Dashboard/Events/Incidents/E2E） | `4a7f5d5` |
+| — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -81,7 +82,7 @@ backend/app/
 
 关键语义（Step 4 定形）：**fingerprint ≠ group**。fingerprint 标识"事件种类"（跨时间稳定，不含时间戳/原文），AlertGroup 是 fingerprint + 5 分钟窗口切出的"一次事件"；同一指纹可对应多个组。两个入口（/alerts 与 /normalize）统一走 Normalization → Deduplication → DB；每条 Alert 全量保留为证据，`alert_events` 存原始报文。
 
-其他：`simulator/scenarios/*/events.json`（5 个场景，信封 `{scenario, description, events}`，事件已是 AlertCreate 统一格式）、`simulator/runner/run.py`（Step 6.1：纯标准库 CLI，扫描→本地校验→直发 POST /alerts→实时打印→GET /events 摘要→失败非零退出；不走 /normalize 避免 source 指纹分裂；默认 `--timestamps now` 改写当前 UTC，`file` 为确定性重放）、`docker-compose.yml`（仅 PostgreSQL 16）。
+其他：`simulator/scenarios/*/events.json`（5 个场景，信封 `{scenario, description, events}`，事件已是 AlertCreate 统一格式）、`simulator/runner/run.py`（Step 6.1：纯标准库 CLI，扫描→本地校验→直发 POST /alerts→实时打印→GET /events 摘要→失败非零退出；不走 /normalize 避免 source 指纹分裂；默认 `--timestamps now` 改写当前 UTC，`file` 为确定性重放）、`docker-compose.yml`（仅 PostgreSQL 16）、`docs/`（architecture/api/demo/deployment 四篇 + README 双语 + CHANGELOG，v1.0.0-phase1 发布物）。
 
 **frontend/**（Step 8 落地，React 19 + TS + Vite + react-router-dom，无 UI 库，纯手写深色 SOC 主题）：
 
@@ -133,27 +134,30 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh/web 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界；Step 7.4 起恰好 3 个自动案件，快照均为首次越阈时的 70 分）。
 
-## 七、下一步任务：Step 8 已完成，Phase 1 全链路闭环可演示；待用户冻结下一步（验证优化）
+## 七、Phase 1 已冻结：下一步是 Phase 2 Step 9（待用户正式下达）
 
-Step 8 落地：前端从占位骨架升级为真实业务控制台（新增依赖仅 react-router-dom）。
-原则：React → api client → FastAPI，前端不拼数据库字段、不算业务规则。
-E2E 已过（全新临时库）：Simulator --repeat 30 → Dashboard 精确显示 3/150/5、
-1c/2h/0m、分布 {high:1, medium:4}；Events 5 条，?level=high 筛出 1 条（90 分）；
-事件详情指纹+因子表+30 条证据；Incident 3 案件，UI 走完 open→in_progress→
-resolved→closed 全链路（closed 后动作面板关闭）。构建 `npm run build` 通过；
-后端回归 202 passed（前端无独立测试套件，验收靠构建+浏览器 E2E）。
-已知语义（非缺陷）：IOC 案件风险快照 70 非 90——快照取首次越阈时（第 1 条告警，
-critical 基础分 70），正是 7.4 冻结语义，前端如实展示后端值。
-建议提交（待用户确认）：`feat(frontend): add react web console (dashboard, events, incidents)`。
+Release Hardening 已完成（发布前验收）：
+1. 全量回归：202 passed + `npm run build`（tsc）✅
+2. Git：工作区 clean，提交链完整（见自检清单）✅
+3. README：双语重写（开源首页水准，含 Roadmap 三里程碑）✅
+4–7. docs/：architecture（数据模型/管道/冻结规则/状态机）+ api（端点总表+错误契约）+ demo（10 分钟演示脚本含预期值）+ deployment（Docker/迁移/nginx/备份/升级）✅
+8–9. 安全与 Secrets：全仓扫描仅 `.env.example` 占位符；`.env` 已忽略未跟踪；无 CORS 暴露面；“无认证”已作为已知限制写入 README/CHANGELOG/部署清单 ✅
+10. tag：`v1.0.0-phase1`（annotated）；仓库暂无 remote，推送待用户配 GitHub。
+   版本号已同步：FastAPI version=1.0.0-phase1、frontend package.json 1.0.0。
 
-下一步（待用户冻结）：验证优化搭建（后端已全面冻结，预期为回归/性能/部署类收尾）。
+Phase 2 已规划（用户方案，未开工）：Step 9 AIProvider 统一接口（Ollama/Cloud/OpenAICompatible）→
+Step 10 告警解释（结构化 summary/attack_type/why_risky/confidence）→ Step 11 风险摘要 →
+Step 12 处置建议（AI ≠ 执行器）→ Step 13 Approval Queue（Phase 2 最关键安全边界）→
+Step 14 AI 与 Incident 全链路。硬原则不变：上游项目（Ollama/Shuffle/TheHive/Wazuh）只做接口目标，
+不 vendor 源码；现阶段不动 ollama-main。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 后端应无变更；Step 8 前端文件待提交前属未跟踪/已修改（含 HANDOFF.md，随代码一并提交；提交后应 clean）
-git log --oneline     # 应见最新 7.5（09049d1）与 3c58681 / 0f1b31d / 57bd981 / 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git status            # 应为 clean（含 HANDOFF.md，随代码提交）
+git log --oneline     # 应见最新 release hardening 提交与 4a7f5d5 / 09049d1 / 3c58681 / 0f1b31d / ...
+git tag               # 应见 v1.0.0-phase1
 cd backend
 .\.venv\Scripts\python.exe -m pytest -q   # 应为 202 passed
 ```
