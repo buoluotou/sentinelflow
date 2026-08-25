@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 Step 7.2 完成后（Incident Service + 生命周期状态机）
+> 最后更新：2026-08-25 · Phase 1 Step 7.3 完成后（Incident Management API）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -24,7 +24,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 4 | Deduplication / Aggregation + Events API | ✅ | `533616f` `8bd8b91` `2fb947d` `9537096` `4c7235e` |
 | 5 | Risk Engine（可解释风险评分）+ Risk API | ✅ 5.1–5.4 | `81b36f7` `3c1f539` `959fc4a` `ff4aa70` |
 | 6 | Scenario Simulator Runner | ✅ 6.1 CLI | `abdb469` |
-| 7 | Incident Management | 🔄 7.1 ✅（数据模型）7.2 ✅（Service+状态机），7.3–7.5 ⬜ 下一步 | `1e98fab`，7.2 待提交 |
+| 7 | Incident Management | 🔄 7.1–7.3 ✅（模型/Service/API），7.4–7.5 ⬜ 下一步 | `1e98fab` `57bd981`，7.3 待提交 |
 | 8 | React Web Console | ⬜ |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
@@ -35,7 +35,8 @@ backend/app/
 ├── api/v1/
 │   ├── alerts.py               # POST/GET /api/v1/alerts（Step 2；Step 4.4 起走统一去重链路）
 │   ├── normalize.py            # POST /api/v1/normalize（Step 3；响应含 group_id/group_alert_count/created_group）
-│   └── events.py               # GET /api/v1/events 列表 + /{id} 详情（Step 4.4）；Step 5.4 起列表项带 risk_score/risk_level，详情带 risk 因子明细，支持 ?level= 筛选（Literal 校验，非法值 422）
+│   ├── events.py               # GET /api/v1/events 列表 + /{id} 详情（Step 4.4）；Step 5.4 起列表项带 risk_score/risk_level，详情带 risk 因子明细，支持 ?level= 筛选（Literal 校验，非法值 422）
+│   └── incidents.py            # Step 7.3：POST /incidents（201，案件记录自动填充）/ GET 列表（分页 + ?status=，非法值 422）/ GET /{id} / PATCH /{id}/status（显式动作路由，非法转换 409，文案固定）；业务异常→404/409 映射，状态机零复制
 ├── core/
 │   ├── config.py               # pydantic-settings，.env 从 monorepo 根读取；DEDUP_WINDOW_SECONDS=300
 │   └── database.py             # engine / SessionLocal / Base / get_db
@@ -47,7 +48,8 @@ backend/app/
 │   └── incident.py             # incidents 表（Step 7.1）：alert_group_id 唯一（每事件一个当前案件），title/description/severity/risk_score（创建时从 EventRisk 快照）/status/disposition/resolved_at/closed_at；状态机在 Step 7.2 的 Service 层
 ├── schemas/
 │   ├── alert.py                # AlertCreate/AlertRead/AlertDetail，AlertRead 含 alert_group_id
-│   └── event.py                # EventListItem/EventListResponse/EventInfo/EventAlertItem/EventDetailResponse；Step 5.4 新增 RiskFactorItem/EventRiskDetail，EventListItem 加 risk_score/risk_level（无风险记录时为 None）
+│   ├── event.py                # EventListItem/EventListResponse/EventInfo/EventAlertItem/EventDetailResponse；Step 5.4 新增 RiskFactorItem/EventRiskDetail，EventListItem 加 risk_score/risk_level（无风险记录时为 None）
+│   └── incident.py             # IncidentCreate（仅 alert_group_id）/IncidentStatusUpdate（status 为 str，由服务层状态机判合法性）/IncidentRead（含全部生命周期字段）/IncidentListResponse
 └── services/
     ├── ingestion/service.py    # ingest_alert(db, payload) —— 唯一落库入口；Step 4.4 起内部走 Normalized→Dedup
     ├── normalization/          # Step 3 核心
@@ -68,8 +70,8 @@ backend/app/
     │   ├── engine.py           # RiskEngine.calculate(group, alerts) -> RiskResult，纯计算不落库；factors = [{name, score, reason}]
     │   └── service.py          # RiskService.recalculate(db, group)：有则原地更新、无则创建 EventRisk
     ├── incidents/              # Step 7 核心（7.2）
-    │   ├── models.py           # IncidentStatus/IncidentDisposition 枚举 + ALLOWED_TRANSITIONS 冻结矩阵 + 4 个业务异常（全部报错不静默）
-    │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。两者只 flush 不 commit，事务边界留给上层（7.3 API / 7.4 管道）
+    │   ├── models.py           # IncidentStatus/IncidentDisposition 枚举 + ALLOWED_TRANSITIONS 冻结矩阵 + 4 个业务异常（全部报错不静默）；InvalidIncidentTransition 携带 current/target 供 API 渲染稳定文案
+    │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API 层
     └── events/service.py       # list_events(db, page, size, level=None) / get_event(db, group_id)；Step 5.4 起 selectinload risk（列表 1 次子查询），?level= 时 JOIN event_risk（无风险记录的事件被排除）
 ```
 
@@ -90,7 +92,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 168 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 183 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -113,27 +115,26 @@ cd ..\.. ; python simulator/runner/run.py --repeat 30      # 一键演示全链�
 10. 本机存在拦截 localhost 流量的代理（urllib 直连会被 502）——Runner 用 `ProxyHandler({})` 绕过；写任何直连本地服务的脚本同理。
 11. 场景数据的 `203.0.113.50` / `198.51.100.77` 是文档保留段，按排除清单判非公网，不会触发 +20 公网加成——冒烟期望值按此设定（如 --repeat 30：ssh 50/medium、malicious_ioc 90/high、file_integrity/suspicious_process 70/medium 边界）。
 
-## 七、下一步任务：Step 7.2 已完成，下一步 Step 7.3
+## 七、下一步任务：Step 7.3 已完成，下一步 Step 7.4
 
-Step 7.2 落地：`services/incidents/`（models.py 状态词汇 + 冻结转换矩阵 +
-4 个业务异常；service.py `create_incident` / `transition_status`）。冻结语义：
-状态机在 Service 层不在 ORM 层；非法转换抛 `InvalidIncidentTransition`；
-无 EventRisk 拒绝建案（不造 score=0 假案）；Service 只 flush 不 commit；
-disposition 只能由转换写入（与 status 永远一致，不可绕过）；
-`open→resolved` 非法（必经 in_progress）。测试 168 passed（31 个新增，
-含 8 条合法转换 + 7 条非法转换参数化）。
-建议提交：`feat(backend): add incident service and lifecycle state machine`（用户已指定）。
+Step 7.3 落地：`api/v1/incidents.py`（POST 201 / GET 列表分页+?status= / GET 详情 /
+PATCH /{id}/status）+ `schemas/incident.py`。API 是纯薄层，状态机只在 Service；
+异常映射：IncidentNotFound→404；AlreadyExists/RiskMissing/InvalidTransition→409
+（文案固定为 `Invalid incident status transition: {from} -> {to}`）；?status= 非法值 422（与 events ?level= 一致）。
+端到端冒烟已过：Runner 15 告警→5 事件→建案（风险快照一致）→
+open→in_progress→resolved→closed 全链路→closed→open 409 拒绝。测试 183 passed（15 个新增）。
+建议提交：`feat(backend): add incident management api`（用户已指定）。
 
-Step 7 剩余拆分：7.3 Incident API（POST/GET/PATCH status，业务异常→HTTP 码映射）→ 7.4 Event→Incident 创建流程 → 7.5 测试 + 端到端验证。
+Step 7 剩余：7.4 Event→Incident 创建/关联流程 → 7.5 测试 + 端到端验证；之后 Step 8 React Web Console（业务 API 已稳定可直接绑定）。
 
 ## 八、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
 git status            # 应为 clean（HANDOFF.md 未跟踪属正常）
-git log --oneline     # 应见最新 7.1（1e98fab）与 abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
+git log --oneline     # 应见最新 7.2（57bd981）与 1e98fab / abdb469 / ff4aa70 / 959fc4a / 3c1f539 / 81b36f7 / 4c7235e / 9537096 / 2fb947d / 8bd8b91 / 533616f / 868c02b / 2e94813
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 168 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 183 passed
 ```
 
 任一项不符，先向用户报告差异，再动手。

@@ -58,4 +58,19 @@ class IncidentRiskMissing(IncidentError):
 
 
 class InvalidIncidentTransition(IncidentError):
-    """The requested status change violates the lifecycle matrix."""
+    """The requested status change violates the lifecycle matrix.
+
+    Carries ``current`` / ``target`` so the API layer can render a stable
+    message ("Invalid incident status transition: closed -> open") without
+    re-parsing text.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        current: str | None = None,
+        target: str | None = None,
+    ):
+        super().__init__(message)
+        self.current = current
+        self.target = target

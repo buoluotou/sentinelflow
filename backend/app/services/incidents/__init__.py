@@ -15,7 +15,12 @@ from app.services.incidents.models import (
     IncidentStatus,
     InvalidIncidentTransition,
 )
-from app.services.incidents.service import create_incident, transition_status
+from app.services.incidents.service import (
+    create_incident,
+    get_incident,
+    list_incidents,
+    transition_status,
+)
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
@@ -27,5 +32,7 @@ __all__ = [
     "IncidentStatus",
     "InvalidIncidentTransition",
     "create_incident",
+    "get_incident",
+    "list_incidents",
     "transition_status",
 ]

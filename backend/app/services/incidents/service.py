@@ -20,6 +20,7 @@ Frozen semantics:
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import AlertGroup, EventRisk, Incident
@@ -32,6 +33,8 @@ from app.services.incidents.models import (
     IncidentStatus,
     InvalidIncidentTransition,
 )
+
+MAX_PAGE_SIZE = 100
 
 
 def create_incident(db: Session, alert_group_id: uuid.UUID) -> Incident:
@@ -90,13 +93,17 @@ def transition_status(
         target_status = IncidentStatus(target)
     except ValueError:
         raise InvalidIncidentTransition(
-            f"'{target}' is not an incident status"
+            f"'{target}' is not an incident status",
+            current=incident.status,
+            target=target,
         ) from None
 
     current = IncidentStatus(incident.status)
     if target_status not in ALLOWED_TRANSITIONS[current]:
         raise InvalidIncidentTransition(
-            f"cannot transition from '{current.value}' to '{target_status.value}'"
+            f"cannot transition from '{current.value}' to '{target_status.value}'",
+            current=current.value,
+            target=target_status.value,
         )
 
     incident.status = target_status.value
@@ -114,6 +121,38 @@ def transition_status(
 
     db.flush()
     return incident
+
+
+def get_incident(db: Session, incident_id: uuid.UUID) -> Incident | None:
+    """Read one case; None when unknown (the API maps it to 404)."""
+    return db.get(Incident, incident_id)
+
+
+def list_incidents(
+    db: Session,
+    page: int = 1,
+    size: int = 20,
+    status: str | None = None,
+) -> tuple[int, list[Incident]]:
+    """Return (total, page of incidents) newest first.
+
+    Pure read. With ``status`` set, only cases at that lifecycle position
+    are returned.
+    """
+    size = min(size, MAX_PAGE_SIZE)
+    total_stmt = select(func.count(Incident.id))
+    items_stmt = select(Incident)
+    if status is not None:
+        total_stmt = total_stmt.where(Incident.status == status)
+        items_stmt = items_stmt.where(Incident.status == status)
+
+    total = db.execute(total_stmt).scalar_one()
+    items = db.execute(
+        items_stmt.order_by(Incident.created_at.desc(), Incident.id.desc())
+        .offset((page - 1) * size)
+        .limit(size)
+    ).scalars().all()
+    return total, list(items)
 
 
 def _case_description(group: AlertGroup, risk: EventRisk) -> str:
