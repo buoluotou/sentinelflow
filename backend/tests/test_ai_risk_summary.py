@@ -123,7 +123,7 @@ class TestRiskSummaryProtocol:
         summary = parse_task_output("risk_summary", json.dumps(_summary_dict()))
         assert isinstance(summary, RiskSummary)
         with pytest.raises(AIResponseParseError, match="Unknown AI task"):
-            parse_task_output("response_recommendation", "{}")
+            parse_task_output("auto_block_ip", "{}")
 
     def test_analysis_protocol_untouched(self):
         # Step 10 parser still enforces its own schema independently.

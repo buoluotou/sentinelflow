@@ -11,8 +11,12 @@ live in exactly one place.
 """
 import json
 
-from app.models import AIAnalysis, Alert, AlertGroup, EventRisk
-from app.services.ai.models import AIRequest, TASK_RISK_SUMMARY
+from app.models import AIAnalysis, AIRiskSummary, Alert, AlertGroup, EventRisk
+from app.services.ai.models import (
+    AIRequest,
+    TASK_RESPONSE_RECOMMENDATION,
+    TASK_RISK_SUMMARY,
+)
 
 #: Hard cap on evidence alerts handed to the model.
 MAX_EVIDENCE = 20
@@ -67,6 +71,34 @@ def build_risk_summary_request(
     )
 
 
+def build_response_recommendation_request(
+    group: AlertGroup,
+    risk: EventRisk | None,
+    alerts: list[Alert],
+    latest_summary: AIRiskSummary | None = None,
+) -> AIRequest:
+    """Assemble the response-recommendation request for one event (Step 12).
+
+    Same degradation as the other tasks when ``risk`` is None. The Step 11
+    risk summary is an optional enrichment — a missing summary must never
+    block recommendation generation (each layer stays independently
+    generatable). The task is fixed here: callers cannot steer the task
+    vocabulary. The request describes the event only; it never carries
+    anything executable, and the protocol only ever returns advice.
+    """
+    return AIRequest(
+        task=TASK_RESPONSE_RECOMMENDATION,
+        event_title=group.title,
+        event_category=group.category,
+        severity=group.severity,
+        risk_score=risk.score if risk is not None else 0,
+        risk_level=risk.level if risk is not None else "unassessed",
+        risk_factors=_factors(risk),
+        evidence=_build_evidence(alerts),
+        prior_summary=_prior_summary(latest_summary),
+    )
+
+
 def _build_evidence(alerts: list[Alert]) -> list[str]:
     """Bounded evidence sample: earliest MAX_EVIDENCE alerts, JSON projection.
 
@@ -92,6 +124,24 @@ def _prior_explanation(analysis: AIAnalysis | None) -> dict | None:
         "attack_type": analysis.attack_type,
         "why_risky": list(analysis.why_risky or []),
         "confidence": analysis.confidence,
+    }
+
+
+def _prior_summary(summary: AIRiskSummary | None) -> dict | None:
+    """Structured projection of the latest Step 11 risk summary, or None.
+
+    Same discipline as _prior_explanation: only protocol fields are
+    forwarded — never ids, timestamps or provider metadata, so the model
+    cannot echo internal state back.
+    """
+    if summary is None:
+        return None
+    return {
+        "summary": summary.summary,
+        "key_findings": list(summary.key_findings or []),
+        "risk_drivers": list(summary.risk_drivers or []),
+        "analyst_priority": summary.analyst_priority,
+        "confidence": summary.confidence,
     }
 
 

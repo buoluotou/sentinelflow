@@ -11,11 +11,14 @@ import json
 from abc import ABC, abstractmethod
 
 from app.services.ai.models import (
+    RESPONSE_ACTIONS,
     RISK_DRIVERS,
     TASK_ALERT_EXPLANATION,
+    TASK_RESPONSE_RECOMMENDATION,
     TASK_RISK_SUMMARY,
     AIAnalysis,
     AIRequest,
+    ResponseRecommendation,
     RiskSummary,
 )
 
@@ -50,11 +53,40 @@ SYSTEM_PROMPT_RISK_SUMMARY = (
     "instead of re-deriving everything."
 )
 
+#: Frozen system prompt (response_recommendation, Step 12): advisory-only
+#: response guidance. The action vocabulary is enumerated inline; parsing
+#: enforces it. Hard boundary baked into the prompt: the assistant only
+#: RECOMMENDS — a human approves (Step 13) before anything is ever
+#: executed, so the model must never phrase recommendations as commands or
+#: claim any action was taken.
+SYSTEM_PROMPT_RESPONSE_RECOMMENDATION = (
+    "You are a security operations analyst assistant. Based on the provided "
+    "security event, its risk assessment and evidence, propose response "
+    "RECOMMENDATIONS for a human SOC analyst. You only advise: you never "
+    "execute, block, isolate, disable or change anything yourself, and a "
+    "human must approve every action before it can ever happen. Answer "
+    "ONLY with a JSON object — no markdown, no prose — using exactly these "
+    "fields:\n"
+    '{"overall_rationale": string (one short paragraph on the recommended '
+    'posture), "recommendations": array of 0 to 5 objects, each exactly '
+    '{"action": string chosen ONLY from this list: '
+    f"{', '.join(sorted(RESPONSE_ACTIONS))}, \"target\": string (the "
+    "specific analyst-facing subject such as an IP, hostname or account; "
+    "empty string when nothing specific applies), \"rationale\": string "
+    "(why this action helps)}, \"confidence\": number between 0 and 1}. "
+    "If no response action is warranted, return an empty recommendations "
+    "array — never invent actions to fill space. Do not recompute the risk "
+    "score and never phrase a recommendation as an already-performed "
+    "action. If a prior_summary from an earlier risk summary is included, "
+    "build on it instead of re-deriving everything."
+)
+
 #: Task -> frozen system prompt. Adding a task means adding one entry here
 #: plus one protocol model/parser — never a provider-specific code path.
 SYSTEM_PROMPTS: dict[str, str] = {
     TASK_ALERT_EXPLANATION: SYSTEM_PROMPT,
     TASK_RISK_SUMMARY: SYSTEM_PROMPT_RISK_SUMMARY,
+    TASK_RESPONSE_RECOMMENDATION: SYSTEM_PROMPT_RESPONSE_RECOMMENDATION,
 }
 
 
@@ -85,11 +117,12 @@ class AIProvider(ABC):
         self.model = model
 
     @abstractmethod
-    def generate(self, request: AIRequest) -> AIAnalysis | RiskSummary:
+    def generate(self, request: AIRequest) -> AIAnalysis | RiskSummary | ResponseRecommendation:
         """Run one task; raises AIProviderError subclasses on failure.
 
         The output type follows request.task (alert_explanation -> AIAnalysis,
-        risk_summary -> RiskSummary). Never returns a fabricated result for a
+        risk_summary -> RiskSummary, response_recommendation ->
+        ResponseRecommendation). Never returns a fabricated result for a
         broken provider output."""
 
     def explain(self, request: AIRequest) -> AIAnalysis:

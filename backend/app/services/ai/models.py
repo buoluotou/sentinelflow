@@ -3,7 +3,8 @@
 AIRequest is the provider-agnostic description of an analysis job, built by
 the caller from an Event + its EventRisk + evidence. AIAnalysis is the
 frozen structured-output protocol every provider must produce for
-alert_explanation; RiskSummary is the Step 11 protocol for risk_summary.
+alert_explanation; RiskSummary is the Step 11 protocol for risk_summary;
+ResponseRecommendation is the Step 12 protocol for response_recommendation.
 """
 from typing import Literal
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 #: Task vocabulary: providers are task-aware but task-agnostic in transport.
 TASK_ALERT_EXPLANATION = "alert_explanation"
 TASK_RISK_SUMMARY = "risk_summary"
+TASK_RESPONSE_RECOMMENDATION = "response_recommendation"
 
 
 class AIRequest(BaseModel):
@@ -34,6 +36,11 @@ class AIRequest(BaseModel):
     #: Structured projection {summary, attack_type, why_risky, confidence}
     #: or None; stays absent from the alert_explanation prompt (exclude_none).
     prior_explanation: dict | str | None = None
+    #: Optional Step 11 risk summary, so response_recommendation can build on
+    #: the SOC-level synthesis (never a hard dependency). Structured
+    #: projection {summary, key_findings, risk_drivers, analyst_priority,
+    #: confidence} or None; absent from the other tasks' prompts.
+    prior_summary: dict | None = None
 
 
 class AIAnalysis(BaseModel):
@@ -93,4 +100,59 @@ class RiskSummary(BaseModel):
     key_findings: list[str] = Field(min_length=1, max_length=5)
     risk_drivers: list[str] = Field(min_length=1)
     analyst_priority: AnalystPriority
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+#: Frozen response-action vocabulary v1 (Step 12): what the AI is ALLOWED TO
+#: SUGGEST. Advisory only end-to-end — nothing in this layer executes, and
+#: Step 13 keeps human approval between a recommendation and any action.
+#: "monitor_only" lets the AI say "watch, don't act". Extending means
+#: updating this set (and the parser rejects anything else).
+RESPONSE_ACTIONS = frozenset(
+    {
+        "block_source_ip",
+        "isolate_host",
+        "disable_account",
+        "hunt_related_activity",
+        "escalate_to_incident",
+        "monitor_only",
+    }
+)
+
+
+class RecommendationItem(BaseModel):
+    """One frozen recommended action (Step 12).
+
+    action comes from RESPONSE_ACTIONS (checked by the parser, like risk
+    drivers); target is a structured analyst-facing string (e.g. the source
+    IP or hostname — may be empty when nothing specific applies, e.g.
+    monitor_only); rationale explains WHY in analyst terms. Never an
+    executable payload: no commands, no API calls, no parameters for
+    automation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1)
+    target: str
+    rationale: str = Field(min_length=1)
+
+
+class ResponseRecommendation(BaseModel):
+    """Frozen response-recommendation protocol (Step 12):
+
+    {"overall_rationale": str, "recommendations": [0..5 RecommendationItem],
+     "confidence": 0..1}
+
+    An EMPTY recommendations list is a first-class answer: it means the AI
+    advises no response action right now (the model must never invent
+    actions to fill space). Strict mode like the other protocols: unknown
+    fields, empty rationales or out-of-vocabulary actions fail validation
+    and surface as AIResponseParseError (502, never persisted).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    overall_rationale: str = Field(min_length=1)
+    recommendations: list[RecommendationItem] = Field(max_length=5)
     confidence: float = Field(ge=0.0, le=1.0)

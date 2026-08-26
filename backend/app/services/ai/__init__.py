@@ -25,23 +25,34 @@ from app.services.ai.exceptions import (
 )
 from app.services.ai.mock import MockProvider
 from app.services.ai.models import (
+    RESPONSE_ACTIONS,
     RISK_DRIVERS,
     TASK_ALERT_EXPLANATION,
+    TASK_RESPONSE_RECOMMENDATION,
     TASK_RISK_SUMMARY,
     AIAnalysis,
     AIRequest,
+    RecommendationItem,
+    ResponseRecommendation,
     RiskSummary,
 )
 from app.services.ai.ollama import OllamaProvider
 from app.services.ai.openai_compatible import OpenAICompatibleProvider
-from app.services.ai.protocol import parse_analysis, parse_risk_summary, parse_task_output
+from app.services.ai.protocol import (
+    parse_analysis,
+    parse_response_recommendation,
+    parse_risk_summary,
+    parse_task_output,
+)
 from app.services.ai.registry import create_provider
 from app.services.ai.request_builder import (
     MAX_EVIDENCE,
     build_alert_explanation,
+    build_response_recommendation_request,
     build_risk_summary_request,
 )
-from app.services.ai.risk_summary_service import AIRiskSummaryService
+from app.services.ai.response_recommendation_service import AIResponseRecommendationService
+from app.services.ai.risk_summary_service import AIRiskSummaryService, latest_summary_for
 from app.services.ai.service import AIAnalysisService, AIEventNotFound
 
 __all__ = [
@@ -54,19 +65,27 @@ __all__ = [
     "AIProviderUnavailable",
     "AIRequest",
     "AIResponseParseError",
+    "AIResponseRecommendationService",
     "AIRiskSummaryService",
     "MAX_EVIDENCE",
     "MockProvider",
     "OllamaProvider",
     "OpenAICompatibleProvider",
+    "RESPONSE_ACTIONS",
     "RISK_DRIVERS",
+    "RecommendationItem",
+    "ResponseRecommendation",
     "RiskSummary",
     "TASK_ALERT_EXPLANATION",
+    "TASK_RESPONSE_RECOMMENDATION",
     "TASK_RISK_SUMMARY",
     "build_alert_explanation",
+    "build_response_recommendation_request",
     "build_risk_summary_request",
     "create_provider",
+    "latest_summary_for",
     "parse_analysis",
+    "parse_response_recommendation",
     "parse_risk_summary",
     "parse_task_output",
 ]

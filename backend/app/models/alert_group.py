@@ -80,6 +80,14 @@ class AlertGroup(Base):
         order_by="AIRiskSummary.created_at",
     )
 
+    # AI response-recommendation history (Phase 2 Step 12): many per group,
+    # newest last. Advisory only — nothing here ever executes an action.
+    ai_response_recommendations: Mapped[list["AIResponseRecommendation"]] = relationship(
+        back_populates="alert_group",
+        cascade="all, delete-orphan",
+        order_by="AIResponseRecommendation.created_at",
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AlertGroup id={self.id} fingerprint={self.fingerprint[:12]}..."
@@ -89,6 +97,7 @@ class AlertGroup(Base):
 
 # Avoid circular import at module load time
 from app.models.ai_analysis import AIAnalysis  # noqa: E402,F401
+from app.models.ai_response_recommendation import AIResponseRecommendation  # noqa: E402,F401
 from app.models.ai_risk_summary import AIRiskSummary  # noqa: E402,F401
 from app.models.alert import Alert  # noqa: E402,F401
 from app.models.event_risk import EventRisk  # noqa: E402,F401

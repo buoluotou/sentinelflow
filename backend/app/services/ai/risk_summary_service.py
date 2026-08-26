@@ -28,6 +28,20 @@ from app.services.ai.request_builder import build_risk_summary_request
 from app.services.ai.service import AIEventNotFound, latest_analysis_for
 
 
+def latest_summary_for(db: Session, event_id: uuid.UUID) -> AIRiskSummary | None:
+    """Most recent risk summary of an event; None when never generated.
+
+    Module-level so other services (response recommendation) reuse the
+    exact same latest-record semantics without constructing a provider.
+    """
+    return db.execute(
+        select(AIRiskSummary)
+        .where(AIRiskSummary.alert_group_id == event_id)
+        .order_by(AIRiskSummary.created_at.desc(), AIRiskSummary.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 class AIRiskSummaryService:
     """Runs the risk_summary task against an event and records it."""
 
@@ -92,9 +106,4 @@ class AIRiskSummaryService:
 
     def latest_summary(self, db: Session, event_id: uuid.UUID) -> AIRiskSummary | None:
         """Most recent risk summary of an event; None when never generated."""
-        return db.execute(
-            select(AIRiskSummary)
-            .where(AIRiskSummary.alert_group_id == event_id)
-            .order_by(AIRiskSummary.created_at.desc(), AIRiskSummary.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        return latest_summary_for(db, event_id)

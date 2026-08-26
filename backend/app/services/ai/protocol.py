@@ -12,10 +12,13 @@ from pydantic import ValidationError
 
 from app.services.ai.exceptions import AIResponseParseError
 from app.services.ai.models import (
+    RESPONSE_ACTIONS,
     RISK_DRIVERS,
     TASK_ALERT_EXPLANATION,
+    TASK_RESPONSE_RECOMMENDATION,
     TASK_RISK_SUMMARY,
     AIAnalysis,
+    ResponseRecommendation,
     RiskSummary,
 )
 
@@ -71,10 +74,38 @@ def parse_risk_summary(raw: str) -> RiskSummary:
     return summary
 
 
-def parse_task_output(task: str, raw: str) -> AIAnalysis | RiskSummary:
+def parse_response_recommendation(raw: str) -> ResponseRecommendation:
+    """Parse and validate a response-recommendation output (Step 12).
+
+    Same strictness as the other parsers: fenced/prose wrapping tolerated,
+    everything semantic enforced — schema, per-item rationale, and the
+    frozen response-action vocabulary. An EMPTY recommendations list is
+    valid (the advisory "no action warranted" answer).
+    """
+    try:
+        payload = json.loads(extract_json(raw))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise AIResponseParseError(f"Provider output is not valid JSON: {exc}") from exc
+    try:
+        recommendation = ResponseRecommendation.model_validate(payload)
+    except ValidationError as exc:
+        raise AIResponseParseError(
+            f"Provider output violates the response-recommendation schema: {exc}"
+        ) from exc
+    unknown = sorted({item.action for item in recommendation.recommendations} - RESPONSE_ACTIONS)
+    if unknown:
+        raise AIResponseParseError(
+            f"Provider output contains unknown response actions: {', '.join(unknown)}"
+        )
+    return recommendation
+
+
+def parse_task_output(task: str, raw: str) -> AIAnalysis | RiskSummary | ResponseRecommendation:
     """Dispatch raw provider output to the frozen parser of its task."""
     if task == TASK_ALERT_EXPLANATION:
         return parse_analysis(raw)
     if task == TASK_RISK_SUMMARY:
         return parse_risk_summary(raw)
+    if task == TASK_RESPONSE_RECOMMENDATION:
+        return parse_response_recommendation(raw)
     raise AIResponseParseError(f"Unknown AI task: {task}")
