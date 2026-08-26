@@ -27,6 +27,20 @@ class AIEventNotFound(Exception):
     """The requested event (AlertGroup) does not exist — API maps to 404."""
 
 
+def latest_analysis_for(db: Session, event_id: uuid.UUID) -> AIAnalysis | None:
+    """Most recent analysis of an event; None when never analysed.
+
+    Module-level so other services (risk summary) reuse the exact same
+    latest-record semantics without constructing a provider.
+    """
+    return db.execute(
+        select(AIAnalysis)
+        .where(AIAnalysis.alert_group_id == event_id)
+        .order_by(AIAnalysis.created_at.desc(), AIAnalysis.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 class AIAnalysisService:
     """Runs one analysis capability against an event and records it."""
 
@@ -77,9 +91,4 @@ class AIAnalysisService:
 
     def latest_analysis(self, db: Session, event_id: uuid.UUID) -> AIAnalysis | None:
         """Most recent analysis of an event; None when never analysed."""
-        return db.execute(
-            select(AIAnalysis)
-            .where(AIAnalysis.alert_group_id == event_id)
-            .order_by(AIAnalysis.created_at.desc(), AIAnalysis.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
+        return latest_analysis_for(db, event_id)

@@ -24,12 +24,24 @@ from app.services.ai.exceptions import (
     AIResponseParseError,
 )
 from app.services.ai.mock import MockProvider
-from app.services.ai.models import AIAnalysis, AIRequest
+from app.services.ai.models import (
+    RISK_DRIVERS,
+    TASK_ALERT_EXPLANATION,
+    TASK_RISK_SUMMARY,
+    AIAnalysis,
+    AIRequest,
+    RiskSummary,
+)
 from app.services.ai.ollama import OllamaProvider
 from app.services.ai.openai_compatible import OpenAICompatibleProvider
-from app.services.ai.protocol import parse_analysis
+from app.services.ai.protocol import parse_analysis, parse_risk_summary, parse_task_output
 from app.services.ai.registry import create_provider
-from app.services.ai.request_builder import MAX_EVIDENCE, build_alert_explanation
+from app.services.ai.request_builder import (
+    MAX_EVIDENCE,
+    build_alert_explanation,
+    build_risk_summary_request,
+)
+from app.services.ai.risk_summary_service import AIRiskSummaryService
 from app.services.ai.service import AIAnalysisService, AIEventNotFound
 
 __all__ = [
@@ -42,11 +54,19 @@ __all__ = [
     "AIProviderUnavailable",
     "AIRequest",
     "AIResponseParseError",
+    "AIRiskSummaryService",
     "MAX_EVIDENCE",
     "MockProvider",
     "OllamaProvider",
     "OpenAICompatibleProvider",
+    "RISK_DRIVERS",
+    "RiskSummary",
+    "TASK_ALERT_EXPLANATION",
+    "TASK_RISK_SUMMARY",
     "build_alert_explanation",
+    "build_risk_summary_request",
     "create_provider",
     "parse_analysis",
+    "parse_risk_summary",
+    "parse_task_output",
 ]

@@ -73,6 +73,13 @@ class AlertGroup(Base):
         order_by="AIAnalysis.created_at",
     )
 
+    # AI risk-summary history (Phase 2 Step 11): many per group, newest last.
+    ai_risk_summaries: Mapped[list["AIRiskSummary"]] = relationship(
+        back_populates="alert_group",
+        cascade="all, delete-orphan",
+        order_by="AIRiskSummary.created_at",
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AlertGroup id={self.id} fingerprint={self.fingerprint[:12]}..."
@@ -82,6 +89,7 @@ class AlertGroup(Base):
 
 # Avoid circular import at module load time
 from app.models.ai_analysis import AIAnalysis  # noqa: E402,F401
+from app.models.ai_risk_summary import AIRiskSummary  # noqa: E402,F401
 from app.models.alert import Alert  # noqa: E402,F401
 from app.models.event_risk import EventRisk  # noqa: E402,F401
 from app.models.incident import Incident  # noqa: E402,F401

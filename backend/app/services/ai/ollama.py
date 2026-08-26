@@ -7,14 +7,14 @@ tests replace the network wholesale.
 """
 import json
 
-from app.services.ai.base import AIProvider, SYSTEM_PROMPT, build_user_prompt
+from app.services.ai.base import AIProvider, build_system_prompt, build_user_prompt
 from app.services.ai.exceptions import (
     AIProviderConfigError,
     AIProviderUnavailable,
     AIResponseParseError,
 )
-from app.services.ai.models import AIAnalysis, AIRequest
-from app.services.ai.protocol import parse_analysis
+from app.services.ai.models import AIAnalysis, AIRequest, RiskSummary
+from app.services.ai.protocol import parse_task_output
 from app.services.ai.transport import Transport, http_post_json
 
 DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434"
@@ -37,11 +37,11 @@ class OllamaProvider(AIProvider):
         self._transport = transport
         self._timeout = timeout
 
-    def explain(self, request: AIRequest) -> AIAnalysis:
+    def generate(self, request: AIRequest) -> AIAnalysis | RiskSummary:
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": build_system_prompt(request.task)},
                 {"role": "user", "content": build_user_prompt(request)},
             ],
             # Ollama-native JSON mode: the model is constrained to emit JSON.
@@ -61,4 +61,4 @@ class OllamaProvider(AIProvider):
             content = envelope["message"]["content"]
         except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise AIResponseParseError(f"Unexpected Ollama response shape: {exc}") from exc
-        return parse_analysis(content)
+        return parse_task_output(request.task, content)

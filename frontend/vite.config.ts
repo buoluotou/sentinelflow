@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -10,5 +11,10 @@ export default defineConfig({
       '/api': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
     },
+  },
+  // Step 11.6: frontend unit tests (jsdom). Browser E2E stays separate.
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
   },
 })

@@ -15,6 +15,19 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.main import app
 
+# Real-model E2E lives under tests/e2e/ and is never collected by the
+# default run (explicit paths still work): plain `pytest tests` stays
+# mock-only and offline-safe. The `ollama` marker selects those tests.
+collect_ignore_glob = ["e2e/*"]
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "ollama: real-model end-to-end tests against a live local Ollama "
+        "(qwen3:4b); never collected or run by the default suite",
+    )
+
 
 @pytest.fixture()
 def db_session() -> Generator[Session, None, None]:

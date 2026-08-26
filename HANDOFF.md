@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-25 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；**下一步 Step 11 AI Risk Summary**（不打新 tag，v1.1.0 等 Step 11–14 全部完成后统一发布）
+> 最后更新：2026-08-26 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；**Step 11 AI Risk Summary 全部完成（11.1–11.8：协议+Provider+ORM+迁移+Builder+Service+API+Mock/协议回归+真实 Ollama E2E+前端面板+Browser E2E 双链+最终回归）**，一次性提交 `feat(ai): add risk summary`（hash 见 `git log -1`，未推送）；不打新 tag，v1.1.0 等 Step 12–14 全部完成后统一发布
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -29,6 +29,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
 | 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅ | `f7edcc1`（已推送 GitHub） |
 | 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E） | `c946ae7`（已推送） |
+| 11 | AI Risk Summary | ✅ 11.1–11.8 全部完成（后端全链路+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `feat(ai): add risk summary`（见 `git log -1`） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -80,9 +81,9 @@ backend/app/
     │   └── service.py          # create_incident(db, alert_group_id)：自动填 title/severity/description，risk_score 快照复制；无组/已有案件/无风险均拒绝。auto_create_from_risk(db, group)：管道钩子，已有案件跳过（幂等），风险未达阈值不动作。transition_status(db, incident_id, target)：严格状态机；→resolved 写 resolved_at+disposition=resolved；→false_positive 写 disposition；→closed 写 closed_at 保留原 disposition。另含只读 list_incidents(db, page, size, status)（created_at DESC）/get_incident。写操作只 flush 不 commit，事务边界在 API/管道
     ├── dashboard/service.py    # Step 7.5：get_summary(db) 纯实时聚合不建表不缓存。冻结指标语义：open_incidents = 活跃案件（status in open+in_progress）；severity 三项仅统计活跃案件；today_alerts/today_events 从今天 00:00 UTC 起（aware 比较，SQLite/PG 双兼容）；risk_distribution = 全量事件的 EventRisk.level（无风险记录的事件不计入）
     ├── ai/                     # Phase 2 Step 9：AI Provider 层（本步不碰真实模型，不碰 ollama-main）
-    │   ├── base.py             # AIProvider 抽象契约：explain(AIRequest) -> AIAnalysis；SYSTEM_PROMPT/build_user_prompt 全部 Provider 共用（冻结提示词合同）
-    │   ├── models.py           # AIRequest（task/event/severity/risk/factors/evidence）+ AIAnalysis 冻结结构化协议 {summary, attack_type, why_risky[], confidence 0..1}，extra=forbid 防漂移
-    │   ├── protocol.py         # parse_analysis：容忍 ```json 围栏/前后文案，schema 校验严格；坏输出→AIResponseParseError，绝不伪造兼容结果
+    │   ├── base.py             # AIProvider 抽象契约：generate(AIRequest) -> AIAnalysis | RiskSummary（按 request.task 分派）；explain() 为 Step 10 兼容别名（仅接受 alert_explanation）；SYSTEM_PROMPTS 按任务注册（alert_explanation/risk_summary），build_user_prompt 用 exclude_none 保证 Step 10 提示词字节级冻结
+    │   ├── models.py           # AIRequest（task/event/severity/risk/factors/evidence/prior_explanation 可选）+ 双协议：AIAnalysis {summary, attack_type, why_risky[], confidence}（Step 10）、RiskSummary {summary, key_findings[1..5], risk_drivers[词表], analyst_priority(low/medium/high/critical), confidence 0..1}（Step 11），均 extra=forbid；RISK_DRIVERS 冻结 10 词表；AI 绝不输出新 risk_score
+    │   ├── protocol.py         # parse_analysis / parse_risk_summary / parse_task_output：容忍 ```json 围栏/前后文案，schema 校验严格，risk_drivers 显式词表校验；坏输出→AIResponseParseError，绝不伪造兼容结果
     │   ├── exceptions.py       # AIProviderError 基类 + Config/Unavailable/Parse 三子类，调用方只捕基类，失败全部显式上抛
     │   ├── transport.py        # 默认 HTTP 层（stdlib urllib，零新依赖），可注入替换；网络类故障统一映射 AIProviderUnavailable
     │   ├── mock.py             # MockProvider：确定性输出（同输入同输出），默认提供者，支持 fail_with 注入故障；永不伪装真模型（name 恒为 mock）
@@ -198,11 +199,133 @@ Step 10 已落地（用户冻结范围 10.1–10.3，**未接真实 Ollama**，A
   Case5 AI_PROVIDER=mock → 即时成功 provider=mock/model=mock-deterministic（CI/offline 路径）。
   验收终态：253 passed + npm run build ✅ + 真实 qwen3:4b ✅ + Mock ✅ + E2E ✅。
 
-下一步：Step 11 AI Risk Summary（用户冻结：不是再让 AI 生成一段闲话，而是把
-Event + Risk Factors + 多条 Evidence 压缩成 SOC 分析师真正可用的风险摘要），
-随后 Step 12 Response Recommendation → Step 13 Approval Queue（Phase 2 最关键安全边界）
-→ Step 14 Incident AI Integration；全部完成后统一打 v1.1.0 tag。安全边界不变：
-AI 只解释/总结/辅助判断，绝不执行响应。docs/api.md 端点表可随 Step 11 一并补齐。
+Step 11.1（已完成，未提交）：AI Risk Summary 协议与 Provider 任务化。
+  审计结论（先审计后最小改动）：Step 9/10 三 provider 共用单一 SYSTEM_PROMPT、
+  explain 硬编码 parse_analysis、AIRequest.task 从未被消费 → 决策：generate()
+  升为唯一抽象方法按 task 选提示词/解析器，explain() 降为基类兼容别名，
+  Step 10 全部调用方与既有测试（274 行，全走 explain）零改动。
+  协议冻结：RiskSummary = {summary, key_findings[1..5], risk_drivers[RISK_DRIVERS
+  10 词表], analyst_priority 枚举, confidence 0..1}，extra=forbid；未知 driver/
+  未知字段（如 risk_score）一律 ParseError。AI 绝不输出新 risk_score：
+  EventRisk.score 是唯一正式分，analyst_priority 仅运营优先级。
+  落库：ai_risk_summaries 独立历史表（迁移 0006，alert_group_id 索引非唯一，
+  往返验证 upgrade/downgrade/upgrade 通过）；AIRequest.prior_explanation 可选
+  携带 Step 10 结果（exclude_none 保证不泄漏进 Step 10 提示词）。
+  验收：281 passed（253 旧 + 28 新，test_ai_provider.py 全绿证明向后兼容）。
+
+Step 11.2（已完成，未提交）：Risk Summary Request Builder。
+  request_builder.py 新增 build_risk_summary_request(group, risk, alerts,
+  latest_analysis=None)：task 在 builder 内固定为 risk_summary（签名无 task 参数，
+  调用方无法改写）；无 Step 10 分析时 prior_explanation=None 照常构造，绝不拒绝。
+  证据复用：抽出 _build_evidence() 两个任务共享同一投影（MAX_EVIDENCE=20、最早在前、
+  None 字段丢弃），改上限只需改一处。prior_explanation 为结构化投影 {summary,
+  attack_type, why_risky, confidence}（AIRequest.prior_explanation 类型放宽为
+dict|str|None）——不含 id/provider/时间戳；exclude_none 保证 Step 10 提示词仍不含它。
+  风险因子完整透传（_factors 共用）；risk 缺失时同样降级 0/unassessed。
+  risk_summary 系统提示词补一句 prior_explanation 使用引导（11.1 未提交，顺手修正）。
+  验收：290 passed（281 + 9 新，tests/test_ai_risk_summary_request_builder.py 覆盖
+  8 Case：无分析/注入最新/只取一条/50→20 条/None 清理/因子完整/task 固定/Step 10 不漂移）。
+
+Step 11.3（已完成，未提交）：Risk Summary Service。
+  risk_summary_service.py：AIRiskSummaryService(provider 可注入，默认 create_provider)。
+  generate_risk_summary(db, event_id) 严格按序：查 AlertGroup(selectinload risk/alerts，
+  不存在抛 AIEventNotFound）→ alerts 按 first_seen_at 最早在前 → latest_analysis_for
+  取最近 Step 10 分析（从 AIAnalysisService 抽出的模块级函数，避免第二套语义）→
+  build_risk_summary_request → provider.generate → isinstance(RiskSummary) 任务守卫
+  （错协议抛 AIResponseParseError 绝不落库）→ AIRiskSummary 落库 → flush 不 commit。
+  另含 latest_summary（created_at desc, id desc）。错误边界与 Step 10 完全一致：
+  404/503/502，失败一律不落库。安全边界：不碰 EventRisk/Incident，不产生执行动作。
+  验收：301 passed（290 + 11 新，tests/test_ai_risk_summary_service.py 覆盖 9 Case：
+  全字段落库/无分析成功/注入最新分析/历史追加/无 Risk 降级/503 不落库/502 不落库/
+  flush+rollback 归零，另加错协议守卫与 404）；Step 10 三文件（41 用例）单独全绿。
+  补录：11.4 回归发现 11.2 测试 flaky（两次 _alert(0) 各自取 datetime.now() 跨时钟 tick
+  时 first_seen_at 漂移）→ 改为共享同一 alert 实例，已修。
+
+Step 11.4（已完成，未提交）：Risk Summary API。
+  api/v1/ai_risk_summary.py：POST /api/v1/events/{id}/ai-risk-summary → 201（service
+  flush 后 API commit+refresh）；GET → 最新一条（created_at desc, id desc），无记录 404。
+  错误映射与 Step 10 逐字一致：404（不存在/非法 UUID）/503（Config/Unavailable）/
+  502（ParseError，含错协议守卫），任何失败不落脏数据。依赖注入 get_ai_risk_summary_service
+  供测试覆写。schemas/ai_risk_summary.py：AIRiskSummaryRead 11 字段（含 updated_at，
+  from_attributes，ORM→Schema→JSON 不直返 ORM）；响应体无 risk_score 字段（测试断言）。
+  验收：313 passed（301 + 12 新，tests/test_ai_risk_summary_api.py 覆盖 8 Case：
+  201 五核心字段/GET 取最新/无记录 404/双 404/503×2 不落库/502 不落库/错协议 502/历史 2 行）。
+  四个必过文件（provider/request_builder/analysis_service/risk_summary_service）全绿。
+
+Step 11.5（已完成，未提交）：Mock/协议回归 + 真实 Ollama 联调。
+  tests/test_ai_risk_summary_provider_regression.py（34 用例）：合法协议/ risk_score
+  注入被 extra=forbid 拒绝 / 非法 driver 无自动转换 / confidence [0,1] 边界 /
+  key_findings 1..5 / analyst_priority 枚举 / Config+Unavailable+Parse 三类失败
+  一律 count==0。全量默认套件 347 passed（313+34），e2e 不被默认收集。
+  tests/conftest.py 新增 ollama marker + collect_ignore_glob=["e2e/*"]；
+  tests/e2e/test_ai_risk_summary_ollama.py（2 用例，模块级 skip 保护）：
+  真实 qwen3:4b 全链路（30 条高危 SSH 告警→201→协议断言只查结构不查文案→
+  落库+1→GET id 一致）与死地址故障注入（503 + count==0），78s 全绿。
+  人工 HTTP 闭环（uvicorn+临时 SQLite）：POST 201（64.3s，180s 超时生效）/
+  GET 200 / ai_risk_summaries 恰好 1 行 / 响应无 risk_score；验证后清理。
+  环境坑：Ollama 旧 llama-server 子进程 CUDA 初始化失败后残留 → 所有推理返回
+  500/502 空 body；Stop-Process llama-server 后重新加载即恢复。另：shell 代理环境
+  变量会让 urllib 把 localhost 请求走代理 → 跑真实测试前必须清 HTTP_PROXY 并设
+  NO_PROXY=localhost,127.0.0.1。
+
+Step 11.6（已完成，未提交）：Event Detail Risk Summary UI。严格克隆 Step 10.7
+  AiAnalysisPanel 模式，未重构前端：
+  types/aiRiskSummary.ts（镜像 AIRiskSummaryRead，故意无 risk_score 字段）；
+  api/aiRiskSummary.ts：getRiskSummary（404 "No AI risk summary" → null，其余透传）
+  + generateRiskSummary（POST）；components/RiskSummaryPanel.tsx：加载只 GET
+  绝不自动 POST，404 = 正常空态（"No risk summary generated yet." 非红色报错），
+  POST 201 直接用响应体 setSummary 不追加 GET，生成中按钮 disabled + 防连点，
+  503/502 detail 原样透传；展示 Analyst Priority（LevelBadge）/Confidence/Summary/
+  Key Findings/Risk Drivers/Provider/Model/Generated At。EventDetailPage 在
+  AI Alert Explanation 面板后集成。前端测试基建首次引入：vitest + jsdom +
+  @testing-library/react + jest-dom（vite.config.ts test 段，npm test），
+  RiskSummaryPanel.test.tsx 8 用例：200 渲染且仅一次 GET 无自动 POST / 404 空态 /
+  点击触发 POST / 201 直接渲染无额外 GET / 503 detail / 502 detail /
+  飞行中 disabled 且双击只产生一次 POST / payload 偷渡 risk_score=93 也不渲染。
+  8 passed + tsc 零错误 + vite build 成功；后端 347 基线未动仍全绿。
+  坑：未开 vitest globals 时 RTL 自动 cleanup 不会注册 → 跨用例 DOM 残留报
+  "Found multiple elements"，需显式 afterEach cleanup()。
+
+Step 11.7（已完成，未提交）：Browser E2E 双链（真实浏览器，无新增脚本，
+  uvicorn + vite dev + Browser Agent 驱动，临时库/脚本验证后全部清理）。
+  链路 A（Mock）：空态→点击生成→面板全字段渲染→刷新仅 GET 不自动 POST→
+  再次生成。后端访问日志铁证：总共恰好 2 次 POST（均 201），刷新/首次加载只
+  GET；DB：2 条独立 id 记录（第一条未覆盖，仅追加）、EventRisk 仍 60/medium、
+  incidents=0；页面无 risk_score 字样。注意 mock priority=medium 是冻结行为
+  （priority=risk_level，该事件 60/medium）。
+  链路 B（真实 qwen3:4b）：空态→点击→捕捉到 disabled+"Generating risk
+  summary…"→约 33s 后 201→面板渲染：Provider=ollama/Model=qwen3:4b、5 个
+  drivers 全属冻结词表、priority=high、confidence 95%、findings 4 条、无
+  risk_score；DB 1 行，EventRisk/Incident 未变。timeout=180 生效（33s 推理
+  未超时）。坑再现：shell 复用残留 $env:AI_PROVIDER='mock' 覆盖了 .env 的
+  ollama 导致链路 B 首跑返回 mock 结果（Browser Agent 发现）→ 重启时显式设
+  全部 AI_* 变量修复。另：空态下生成提示显示 "the configured model" 而非
+  模型名，因无已有 summary 可取（与 Step 10 同款 fallback，非 bug）。
+
+Step 11.8（已完成）：最终验收 + 工作区审计 + 一次提交，零功能改动。
+  后端全量 347 passed（0 failed/0 skipped）；前端 8 passed + tsc 零错误 +
+  vite build 成功。Browser E2E 双链重执行全绿：Mock 链（空态→生成→五字段渲染→
+  刷新仅 GET→二次生成；日志恰好 2 次 POST 201；DB 2 行追加、EventRisk 60/medium
+  未变、incidents=0）；真实 qwen3:4b 链（空态→约 40s 推理→201；priority=high、
+  confidence=85%、4 drivers 全属冻结词表、findings 4 条、无 risk_score；DB 1 行、
+  EventRisk/Incident 未变）。`tests/e2e/` 显式 `-m ollama` 实跑最终 2 passed
+  （故障注入恒过；全链路因 qwen3:4b thinking 模式偶发输出越界被协议 502 正确拒绝，
+  重试后全绿——生成式模型非 fixture，协议拒绝即冻结契约生效）。
+  迁移审计：0006_add_ai_risk_summaries.py 存在且 `alembic upgrade head` 到 0006，
+  生产路径（app/）无任何 create_all。默认收集策略复核：默认 `pytest backend/tests`
+  收集恰 347（`collect_ignore_glob = ["e2e/*"]` 排除真实模型测试，不依赖本地
+  Ollama）；Ollama 不可达时显式跑整模块 skip 不失败。git 审计：`git diff --check`
+  干净（无 trailing whitespace/冲突标记），35 项变更全部归属 11.1–11.8，无敏感文件。
+  坑：会话切换后 venv 缺 aiosqlite（临时装，未进 requirements；应用为同步引擎，
+  运行时用 `sqlite:///` 同步 URL，`sqlite+aiosqlite` 仅用于旧记录且本应用不兼容）；
+  ollama.exe 不在新终端 PATH（完整路径启动 `ollama serve`）；Invoke-WebRequest/
+  urllib 探活前必须清代理变量并加 `-Proxy ''`。
+
+下一步：Step 12 Response Recommendation（AI≠执行器，只出建议）→
+  Step 13 Approval Queue（Phase 2 最关键安全边界）→ Step 14 Incident AI Integration；
+  全部完成后统一打 v1.1.0 tag。安全边界不变：AI 只解释/总结/辅助判断，绝不执行响应；
+  Step 11 不改 EventRisk.score/level、Incident.status/disposition。docs/api.md
+  端点表可随后续 Step 一并补齐。
 
 更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
