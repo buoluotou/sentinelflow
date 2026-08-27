@@ -5,6 +5,7 @@ Incident. EventRisk is the automatic assessment, the Incident is the
 human-driven investigation/disposition context.
 """
 
+from app.services.incidents.ai_context import get_incident_ai_context
 from app.services.incidents.models import (
     ALLOWED_TRANSITIONS,
     IncidentAlreadyExists,
@@ -37,6 +38,7 @@ __all__ = [
     "auto_create_from_risk",
     "create_incident",
     "get_incident",
+    "get_incident_ai_context",
     "list_incidents",
     "should_create_incident",
     "transition_status",

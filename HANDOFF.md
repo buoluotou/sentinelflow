@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-26 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11 AI Risk Summary（`aa2af98 feat(ai): add risk summary`）与 **Step 12 Response Recommendation（`0c7041c feat(ai): add response recommendation`）均已完成并一次性原子提交，未推送**；不打新 tag，v1.1.0 等 Step 13–14 全部完成后统一发布；当前正在进入 Step 13 Approval Queue（Approve≠Execute，审批只改 Approval 状态）
+> 最后更新：2026-08-27 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11 AI Risk Summary（`aa2af98 feat(ai): add risk summary`）、Step 12 Response Recommendation（`0c7041c feat(ai): add response recommendation`）与 **Step 13 Approval Queue（`c958263 feat(ai): add approval queue`）均已完成并一次性原子提交，未推送**；不打新 tag，v1.1.0 随 Step 14.8 原子提交发布（本地，未推送）；Step 14 Incident AI Integration 已全部完成（关联协议/服务/API/跨层回归/React 只读视图/真实浏览器 E2E/最终回归/原子提交，Approve≠Execute 边界延续：关联/展示/审计，不是执行）；Phase 2 收官，下一步为 v1.1.0 发布前最终审计与 Phase 3 规划
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -31,6 +31,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E） | `c946ae7`（已推送） |
 | 11 | AI Risk Summary | ✅ 11.1–11.8 全部完成（后端全链路+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `aa2af98 feat(ai): add risk summary`（未推送） |
 | 12 | Response Recommendation（AI≠执行器，只出建议） | ✅ 12.1–12.8 全部完成（协议+词表+Service+API+跨层回归+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `0c7041c feat(ai): add response recommendation`（未推送） |
+| 13 | Approval Queue（Approve≠Execute，审批只记录人类决定） | ✅ 13.1–13.8 全部完成（模型+迁移 0008+Service+API+跨层回归+React 队列页+Playwright Browser E2E+最终回归），一次性原子提交；后端 505 passed / 前端 35 passed / E2E 10 passed | `c958263 feat(ai): add approval queue`（未推送） |
+| 14 | Incident AI Integration（案件视图关联 AI 结果，不做执行器） | ✅ 14.1–14.8 全部完成（关联协议/服务/只读 API/跨层回归/React 只读视图/真实浏览器 E2E 9 旅程/最终回归验收/原子提交），后端 538 passed / 前端 43 passed / tsc 0 错误 / build 成功 / E2E 9/9 三轮全绿 / 迁移 0001→0008 往返含 downgrade base；零新迁移、零 Phase 3 执行码、风险分零回写、审批仅 approved/rejected、浏览器层零变更流量 | `feat(incident): add incident ai integration` + tag `v1.1.0`（未推送；hash 待补） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -41,7 +43,7 @@ backend/app/
 │   ├── alerts.py               # POST/GET /api/v1/alerts（Step 2；Step 4.4 起走统一去重链路）
 │   ├── normalize.py            # POST /api/v1/normalize（Step 3；响应含 group_id/group_alert_count/created_group）
 │   ├── events.py               # GET /api/v1/events 列表 + /{id} 详情（Step 4.4）；Step 5.4 起列表项带 risk_score/risk_level，详情带 risk 因子明细，支持 ?level= 筛选（Literal 校验，非法值 422）
-│   ├── incidents.py            # Step 7.3：POST /incidents（201，案件记录自动填充）/ GET 列表（分页 + ?status=，非法值 422）/ GET /{id} / PATCH /{id}/status（显式动作路由，非法转换 409，文案固定）；业务异常→404/409 映射，状态机零复制
+│   ├── incidents.py            # Step 7.3：POST /incidents（201，案件记录自动填充）/ GET 列表（分页 + ?status=，非法值 422）/ GET /{id} / PATCH /{id}/status（显式动作路由，非法转换 409，文案固定）；Step 14.3：GET /{id}/ai-context（纯透传 14.2 只读聚合，404 复用统一语义，零副作用）；业务异常→404/409 映射，状态机零复制
 │   └── dashboard.py            # Step 7.5：GET /dashboard/summary —— 纯读实时聚合快照，前端绑定单端点不自行拼 API
 ├── core/
 │   ├── config.py               # pydantic-settings，.env 从 monorepo 根读取；DEDUP_WINDOW_SECONDS=300
@@ -108,7 +110,7 @@ frontend/
     ├── types/                  # 与后端 schema 字段级一一对应的 TS 镜像（dashboard/event/incident）；UUID/datetime 一律 string；前端零业务规则计算，只渲染后端返回值（案件状态按钮只镜像冻结矩阵做展示，合法性仍由后端状态机裁决）
     ├── layouts/ConsoleLayout.tsx  # 侧边栏导航壳（Dashboard/Events/Incidents）+ Outlet
     ├── components/common.tsx   # LevelBadge/StatusBadge/formatTime/Panel/Loading/ErrorBanner 展示原子
-    ├── pages/                  # DashboardPage（仅绑 /dashboard/summary，15s 自动刷新，风险分布条形图）/ EventsPage（?level= 筛选+分页）/ EventDetailPage（fingerprint+风险因子表+证据告警）/ IncidentsPage（?status= 筛选+分页）/ IncidentDetailPage（生命周期动作按钮：open→3 选、in_progress→3 选、resolved/false_positive→closed）
+    ├── pages/                  # DashboardPage（仅绑 /dashboard/summary，15s 自动刷新，风险分布条形图）/ EventsPage（?level= 筛选+分页）/ EventDetailPage（fingerprint+风险因子表+证据告警）/ IncidentsPage（?status= 筛选+分页）/ IncidentDetailPage（生命周期动作按钮：open→3 选、in_progress→3 选、resolved/false_positive→closed；Step 14.5 起含只读 AI Investigation 面板：完整 AI 历史 + Approval 审计，零按钮无执行入口）
     └── App.tsx                 # BrowserRouter 路由；index.css 为深色主题设计令牌（严重度四色+生命周期五色）
 ```
 

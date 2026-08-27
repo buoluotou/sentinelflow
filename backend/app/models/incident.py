@@ -23,6 +23,23 @@ class Incident(Base):
 
     Status vocabulary (state machine enforced in Step 7.2, not here):
     open / in_progress / resolved / closed / false_positive.
+
+    Phase 2 Step 14.1 — the incident-centric case view. The AI results are
+    NOT properties of the incident; they remain the AlertGroup's append-only
+    AI history. The Incident merely CONNECTS the chain, it never swallows it:
+
+        Incident -> alert_group -> ai_analyses          (Step 10)
+                                 -> ai_risk_summaries    (Step 11)
+                                 -> ai_response_recommendations (Step 12)
+                                       -> approval       (Step 13)
+
+    The convenience traversals below are viewonly READ projections over the
+    same alert_group_id — no new foreign key, no cascade, no write path.
+    Frozen Step 14 boundaries:
+    - ``risk_score`` stays the creation-time snapshot of EventRisk.score;
+      no AI result ever writes it back
+    - an ``approved`` decision is displayed/audited, never auto-consumed
+      (no Shuffle / Wazuh / TheHive execution — that is Phase 3)
     """
 
     __tablename__ = "incidents"
@@ -78,9 +95,38 @@ class Incident(Base):
 
     alert_group: Mapped["AlertGroup"] = relationship(back_populates="incident")
 
+    # Step 14.1 read-only case-view traversals (see class docstring). They
+    # join on the SAME alert_group_id the AlertGroup relationships use, are
+    # viewonly (never persisted/cascaded through the Incident) and mirror
+    # the AlertGroup ordering: history, oldest first.
+    ai_analyses: Mapped[list["AIAnalysis"]] = relationship(
+        "AIAnalysis",
+        primaryjoin="Incident.alert_group_id == foreign(AIAnalysis.alert_group_id)",
+        viewonly=True,
+        order_by="AIAnalysis.created_at",
+    )
+    ai_risk_summaries: Mapped[list["AIRiskSummary"]] = relationship(
+        "AIRiskSummary",
+        primaryjoin="Incident.alert_group_id == foreign(AIRiskSummary.alert_group_id)",
+        viewonly=True,
+        order_by="AIRiskSummary.created_at",
+    )
+    ai_response_recommendations: Mapped[list["AIResponseRecommendation"]] = relationship(
+        "AIResponseRecommendation",
+        primaryjoin=(
+            "Incident.alert_group_id == "
+            "foreign(AIResponseRecommendation.alert_group_id)"
+        ),
+        viewonly=True,
+        order_by="AIResponseRecommendation.created_at",
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Incident id={self.id} group={self.alert_group_id} status={self.status}>"
 
 
 # Avoid circular import at module load time
+from app.models.ai_analysis import AIAnalysis  # noqa: E402,F401
+from app.models.ai_response_recommendation import AIResponseRecommendation  # noqa: E402,F401
+from app.models.ai_risk_summary import AIRiskSummary  # noqa: E402,F401
 from app.models.alert_group import AlertGroup  # noqa: E402,F401

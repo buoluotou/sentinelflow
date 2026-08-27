@@ -23,6 +23,7 @@ from app.schemas.incident import (
     IncidentRead,
     IncidentStatusUpdate,
 )
+from app.schemas.incident_ai_context import IncidentAIContext
 from app.services.incidents import (
     IncidentAlreadyExists,
     IncidentNotFound,
@@ -30,6 +31,7 @@ from app.services.incidents import (
     InvalidIncidentTransition,
     create_incident,
     get_incident,
+    get_incident_ai_context,
     list_incidents,
     transition_status,
 )
@@ -87,6 +89,20 @@ def incident_detail(incident_id: str, db: Session = Depends(get_db)) -> Incident
     """Get one case record with its full lifecycle fields."""
     incident = _load_incident(db, incident_id)
     return IncidentRead.model_validate(incident)
+
+
+@router.get("/{incident_id}/ai-context", response_model=IncidentAIContext)
+def incident_ai_context(
+    incident_id: str, db: Session = Depends(get_db)
+) -> IncidentAIContext:
+    """The complete read-only AI history of one incident (Phase 2 Step 14.3).
+
+    Pure HTTP passthrough into ``get_incident_ai_context``: this route never
+    queries AI tables itself, never generates/refreshes AI data, never
+    recomputes risk and never touches approvals or the incident state.
+    """
+    incident = _load_incident(db, incident_id)
+    return get_incident_ai_context(db, incident.id)
 
 
 @router.patch("/{incident_id}/status", response_model=IncidentRead)

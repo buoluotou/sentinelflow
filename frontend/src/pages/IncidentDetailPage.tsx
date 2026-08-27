@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getIncident, updateIncidentStatus } from '../api/incidents'
 import type { Incident, IncidentStatus } from '../types/incident'
+import { IncidentAIContextPanel } from '../components/IncidentAIContextPanel'
 import { ErrorBanner, LevelBadge, Loading, Panel, StatusBadge, formatTime } from '../components/common'
 
 const TRANSITIONS: Record<IncidentStatus, IncidentStatus[]> = {
@@ -143,6 +144,10 @@ export function IncidentDetailPage() {
           )}
         </div>
       </Panel>
+
+      {/* Step 14.5: read-only AI case context — observe/review/audit only,
+          never decide/execute (the Approval Queue owns decisions). */}
+      <IncidentAIContextPanel incidentId={data.id} />
     </>
   )
 }

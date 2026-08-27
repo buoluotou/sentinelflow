@@ -28,3 +28,20 @@ export interface ApprovalDecision {
   reviewer: string
   review_comment?: string | null
 }
+
+/** One recorded human decision — field-level mirror of backend
+ * AIResponseApprovalRead (Step 14.5).
+ *
+ * INSERT-only audit record: status is a TERMINAL decision. "pending" never
+ * appears here — it is the derived state of a recommendation whose approval
+ * field is null (Step 13.2), computed nowhere and stored nowhere. */
+export interface AIResponseApproval {
+  id: string
+  recommendation_id: string
+  status: 'approved' | 'rejected'
+  reviewer: string
+  reviewed_at: string
+  review_comment: string | null
+  created_at: string
+  updated_at: string
+}
