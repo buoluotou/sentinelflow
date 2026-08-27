@@ -32,7 +32,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 11 | AI Risk Summary | ✅ 11.1–11.8 全部完成（后端全链路+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `aa2af98 feat(ai): add risk summary`（未推送） |
 | 12 | Response Recommendation（AI≠执行器，只出建议） | ✅ 12.1–12.8 全部完成（协议+词表+Service+API+跨层回归+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `0c7041c feat(ai): add response recommendation`（未推送） |
 | 13 | Approval Queue（Approve≠Execute，审批只记录人类决定） | ✅ 13.1–13.8 全部完成（模型+迁移 0008+Service+API+跨层回归+React 队列页+Playwright Browser E2E+最终回归），一次性原子提交；后端 505 passed / 前端 35 passed / E2E 10 passed | `c958263 feat(ai): add approval queue`（未推送） |
-| 14 | Incident AI Integration（案件视图关联 AI 结果，不做执行器） | ✅ 14.1–14.8 全部完成（关联协议/服务/只读 API/跨层回归/React 只读视图/真实浏览器 E2E 9 旅程/最终回归验收/原子提交），后端 538 passed / 前端 43 passed / tsc 0 错误 / build 成功 / E2E 9/9 三轮全绿 / 迁移 0001→0008 往返含 downgrade base；零新迁移、零 Phase 3 执行码、风险分零回写、审批仅 approved/rejected、浏览器层零变更流量 | `feat(incident): add incident ai integration` + tag `v1.1.0`（未推送；hash 待补） |
+| 14 | Incident AI Integration（案件视图关联 AI 结果，不做执行器） | ✅ 14.1–14.8 全部完成（关联协议/服务/只读 API/跨层回归/React 只读视图/真实浏览器 E2E 9 旅程/最终回归验收/原子提交），后端 538 passed / 前端 43 passed / tsc 0 错误 / build 成功 / E2E 9/9 三轮全绿 / 迁移 0001→0008 往返含 downgrade base；零新迁移、零 Phase 3 执行码、风险分零回写、审批仅 approved/rejected、浏览器层零变更流量 | `0f6e3fc feat(incident): add incident ai integration` + tag `v1.1.0`（未推送） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
