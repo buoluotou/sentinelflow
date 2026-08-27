@@ -25,8 +25,9 @@ import { ErrorBanner, Loading, Panel, formatTime } from './common'
 
 /** Display-layer mapping of the frozen 12.1 vocabulary — NOT a new protocol
  * enum; unknown actions fall back to the raw value instead of inventing
- * semantics. */
-const ACTION_LABELS: Record<ResponseAction, string> = {
+ * semantics. Shared with the Step 13.5 Approval Queue so the vocabulary has
+ * exactly one display mapping. */
+export const ACTION_LABELS: Record<ResponseAction, string> = {
   block_source_ip: 'Block Source IP',
   isolate_host: 'Isolate Host',
   disable_account: 'Disable Account',
@@ -35,7 +36,7 @@ const ACTION_LABELS: Record<ResponseAction, string> = {
   monitor_only: 'Monitor Only',
 }
 
-function actionLabel(action: string): string {
+export function actionLabel(action: string): string {
   return ACTION_LABELS[action as ResponseAction] ?? action
 }
 

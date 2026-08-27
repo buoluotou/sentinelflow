@@ -51,6 +51,11 @@ from app.services.ai.request_builder import (
     build_response_recommendation_request,
     build_risk_summary_request,
 )
+from app.services.ai.response_approval_service import (
+    AIResponseAlreadyReviewed,
+    AIResponseApprovalNotFound,
+    AIResponseApprovalService,
+)
 from app.services.ai.response_recommendation_service import AIResponseRecommendationService
 from app.services.ai.risk_summary_service import AIRiskSummaryService, latest_summary_for
 from app.services.ai.service import AIAnalysisService, AIEventNotFound
@@ -64,6 +69,9 @@ __all__ = [
     "AIProviderError",
     "AIProviderUnavailable",
     "AIRequest",
+    "AIResponseAlreadyReviewed",
+    "AIResponseApprovalNotFound",
+    "AIResponseApprovalService",
     "AIResponseParseError",
     "AIResponseRecommendationService",
     "AIRiskSummaryService",

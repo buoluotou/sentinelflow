@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-26 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；**Step 11 AI Risk Summary 全部完成（11.1–11.8：协议+Provider+ORM+迁移+Builder+Service+API+Mock/协议回归+真实 Ollama E2E+前端面板+Browser E2E 双链+最终回归）**，一次性提交 `feat(ai): add risk summary`（hash 见 `git log -1`，未推送）；不打新 tag，v1.1.0 等 Step 12–14 全部完成后统一发布
+> 最后更新：2026-08-26 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11 AI Risk Summary（`aa2af98 feat(ai): add risk summary`）与 **Step 12 Response Recommendation（`0c7041c feat(ai): add response recommendation`）均已完成并一次性原子提交，未推送**；不打新 tag，v1.1.0 等 Step 13–14 全部完成后统一发布；当前正在进入 Step 13 Approval Queue（Approve≠Execute，审批只改 Approval 状态）
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -29,7 +29,8 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | — | Release Hardening（README×2/architecture/api/demo/deployment/CHANGELOG/安全与 Secrets 检查/tag） | ✅ | 随 tag `v1.0.0-phase1` |
 | 9 | AI Provider Architecture（统一接口/配置/错误/结构化协议/Mock） | ✅ | `f7edcc1`（已推送 GitHub） |
 | 10 | AI Alert Explanation | ✅ 10.1–10.8 全部完成（后端全链路 + 前端面板 + 真实/Mock 双 E2E） | `c946ae7`（已推送） |
-| 11 | AI Risk Summary | ✅ 11.1–11.8 全部完成（后端全链路+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `feat(ai): add risk summary`（见 `git log -1`） |
+| 11 | AI Risk Summary | ✅ 11.1–11.8 全部完成（后端全链路+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `aa2af98 feat(ai): add risk summary`（未推送） |
+| 12 | Response Recommendation（AI≠执行器，只出建议） | ✅ 12.1–12.8 全部完成（协议+词表+Service+API+跨层回归+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `0c7041c feat(ai): add response recommendation`（未推送） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -321,11 +322,32 @@ Step 11.8（已完成）：最终验收 + 工作区审计 + 一次提交，零�
   ollama.exe 不在新终端 PATH（完整路径启动 `ollama serve`）；Invoke-WebRequest/
   urllib 探活前必须清代理变量并加 `-Proxy ''`。
 
-下一步：Step 12 Response Recommendation（AI≠执行器，只出建议）→
-  Step 13 Approval Queue（Phase 2 最关键安全边界）→ Step 14 Incident AI Integration；
-  全部完成后统一打 v1.1.0 tag。安全边界不变：AI 只解释/总结/辅助判断，绝不执行响应；
-  Step 11 不改 EventRisk.score/level、Incident.status/disposition。docs/api.md
-  端点表可随后续 Step 一并补齐。
+Step 12（已完成，提交 `0c7041c`，未推送）：Response Recommendation 全链。
+  12.1 协议冻结：6 动作词表 `RESPONSE_ACTIONS`（block_source_ip/isolate_host/
+  disable_account/hunt_related_activity/escalate_to_incident/monitor_only，
+  frozenset，词表外→502 不落库）；`ResponseRecommendation` 协议 {overall_rationale,
+  recommendations 0..5 × {action,target,rationale}, confidence 0..1}，双层
+  extra=forbid；**空 recommendations 是一等答案**（"无建议"≠"无记录"）；
+  AIRequest.prior_summary 可选携带 latest Risk Summary（恰好 5 键投影）。
+  12.2 Service：flush-only + 词表防御性复核（typed provider 绕过解析器，
+  Service 二次强制词表）；12.3 API：`POST/GET /events/{id}/response-recommendation`，
+  commit+refresh 在 API 层，错误映射与 10/11 逐字一致（404/503/502），
+  Read Schema 无 risk_score；12.4 跨层回归（六动作/三分段/越界 502/闭环追加）；
+  12.5 前端 ResponseRecommendationPanel（展示层动作标签映射、404 与 200+[] 严格
+  区分、单按钮 Generate 无执行入口、11 用例）；12.6 Browser E2E 双链（Mock 链：
+  空态→生成→刷新仅 GET→二次追加，第一条未 UPDATE、EventRisk/Incident 未变；
+  真实 qwen3:4b 链：约 30–60s 推理、3 动作全属词表、只验结构不锁文案）；
+  12.7/12.8：后端 427 passed + 前端 19 passed + tsc/build 全绿，迁移 0007 审计，
+  git 审计 25 项全归属，一次提交 `0c7041c`。
+  安全边界五道防线：词表 + 双层 forbid + Service 复核 + UI 单按钮 + E2E 审计；
+  escalate_to_incident 全程只是展示文本，从未创建 Incident。
+
+下一步：Step 13 Approval Queue（围绕 AIResponseApproval 新对象，Approve≠Execute，
+  只改审批状态；状态 pending/approved/rejected；执行层留给 Step 14/Phase 3）→
+  Step 14 Incident AI Integration；全部完成后统一打 v1.1.0 tag。
+  安全边界不变：AI 只解释/总结/建议，审批只记录人类决定，绝不执行响应；
+  Step 12/13 不改 EventRisk.score/level、Incident.status/disposition。
+  docs/api.md 端点表可随后续 Step 一并补齐。
 
 更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
@@ -334,12 +356,12 @@ Step 11.8（已完成）：最终验收 + 工作区审计 + 一次提交，零�
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为 clean（Step 10 已提交 c946ae7）
-git log --oneline     # 应见 c946ae7(step 10) / f7edcc1(step 9) / 3794cc0(release hardening) / ...
+git status            # 可能含 Step 13 工作区变更（累积中，不单独提交）
+git log --oneline     # 应见 0c7041c(step 12) / aa2af98(step 11) / c946ae7(step 10) / ...
 git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
-git tag               # 应见 v1.0.0-phase1
+git tag               # 应见 v1.0.0-phase1（v1.1.0 未打）
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 253 passed
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 427 passed（默认套件，e2e/* 排除）
 ```
 
 任一项不符，先向用户报告差异，再动手。

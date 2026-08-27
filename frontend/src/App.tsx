@@ -6,6 +6,7 @@ import { EventsPage } from './pages/EventsPage'
 import { EventDetailPage } from './pages/EventDetailPage'
 import { IncidentsPage } from './pages/IncidentsPage'
 import { IncidentDetailPage } from './pages/IncidentDetailPage'
+import { ApprovalQueuePage } from './pages/ApprovalQueuePage'
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           <Route path="events/:id" element={<EventDetailPage />} />
           <Route path="incidents" element={<IncidentsPage />} />
           <Route path="incidents/:id" element={<IncidentDetailPage />} />
+          <Route path="approvals" element={<ApprovalQueuePage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

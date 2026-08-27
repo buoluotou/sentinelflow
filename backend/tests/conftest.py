@@ -17,7 +17,8 @@ from app.main import app
 
 # Real-model E2E lives under tests/e2e/ and is never collected by the
 # default run (explicit paths still work): plain `pytest tests` stays
-# mock-only and offline-safe. The `ollama` marker selects those tests.
+# mock-only and offline-safe. The `ollama` marker selects the real-model
+# chain; `browser` selects the Playwright browser E2E (Step 13.6).
 collect_ignore_glob = ["e2e/*"]
 
 
@@ -26,6 +27,12 @@ def pytest_configure(config):
         "markers",
         "ollama: real-model end-to-end tests against a live local Ollama "
         "(qwen3:4b); never collected or run by the default suite",
+    )
+    config.addinivalue_line(
+        "markers",
+        "browser: real-browser (Playwright/Chromium) end-to-end tests of "
+        "the console UI against a live uvicorn+vite stack; never collected "
+        "or run by the default suite",
     )
 
 

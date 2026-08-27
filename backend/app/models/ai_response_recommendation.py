@@ -66,6 +66,14 @@ class AIResponseRecommendation(Base):
 
     alert_group: Mapped["AlertGroup"] = relationship(back_populates="ai_response_recommendations")
 
+    # The single human decision about this recommendation, if any (Step 13):
+    # 1:1 and final — at most one approval row per recommendation, and a
+    # decision is never re-judged. None means the item is still "pending"
+    # in the approval queue (a derived state, never persisted).
+    approval: Mapped["AIResponseApproval | None"] = relationship(
+        back_populates="recommendation", uselist=False
+    )
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AIResponseRecommendation group={self.alert_group_id} provider={self.provider}"
@@ -75,3 +83,4 @@ class AIResponseRecommendation(Base):
 
 # Avoid circular import at module load time
 from app.models.alert_group import AlertGroup  # noqa: E402,F401
+from app.models.ai_response_approval import AIResponseApproval  # noqa: E402,F401

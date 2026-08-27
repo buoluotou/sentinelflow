@@ -5,6 +5,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/events', label: 'Events' },
   { to: '/incidents', label: 'Incidents' },
+  { to: '/approvals', label: 'Approval Queue' },
 ]
 
 export function ConsoleLayout() {
