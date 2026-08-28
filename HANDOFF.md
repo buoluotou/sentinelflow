@@ -1,6 +1,6 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-27 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11 AI Risk Summary（`aa2af98 feat(ai): add risk summary`）、Step 12 Response Recommendation（`0c7041c feat(ai): add response recommendation`）与 **Step 13 Approval Queue（`c958263 feat(ai): add approval queue`）均已完成并一次性原子提交，未推送**；不打新 tag，v1.1.0 随 Step 14.8 原子提交发布（本地，未推送）；Step 14 Incident AI Integration 已全部完成（关联协议/服务/API/跨层回归/React 只读视图/真实浏览器 E2E/最终回归/原子提交，Approve≠Execute 边界延续：关联/展示/审计，不是执行）；Phase 2 收官，下一步为 v1.1.0 发布前最终审计与 Phase 3 规划
+> 最后更新：2026-08-28 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11（`aa2af98`）/Step 12（`0c7041c`）/Step 13（`c958263`）与 **Step 14（`0f6e3fc feat(incident): add incident ai integration`）均已原子提交，未推送**；tag `v1.1.0` 指向 `0f6e3fc`（正确且不再移动）；hash 回填提交 `f08289d` 与本次文档刷新提交（见 git log，纯 docs，不碰代码与 tag）在 tag 之后；**v1.1.0 Release Audit 已通过**（Fresh Clone 全链路 clone→install→migration→双端启动→Scenario→Alert→Incident→AI→Approval 实测全绿；发现项均为文档滞后，已由本次刷新收掉）；下一步：git push + git push --tags + GitHub Release，随后才规划 Phase 3
 > 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
 
 ## 一、项目是什么
@@ -127,7 +127,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 253 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 538 passed）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -358,12 +358,13 @@ Step 12（已完成，提交 `0c7041c`，未推送）：Response Recommendation 
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 可能含 Step 13 工作区变更（累积中，不单独提交）
-git log --oneline     # 应见 0c7041c(step 12) / aa2af98(step 11) / c946ae7(step 10) / ...
+git status            # 应干净（Phase 2 全部变更已随 0f6e3fc 原子提交，tag 后仅文档提交）
+git log --oneline     # 应见 docs 刷新 / f08289d(hash 回填) / 0f6e3fc(step 14) / c958263(step 13) / ...
+git tag --points-at 0f6e3fc   # 应见 v1.1.0
 git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
-git tag               # 应见 v1.0.0-phase1（v1.1.0 未打）
+git tag               # 应见 v1.0.0-phase1 与 v1.1.0（均未推送）
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 427 passed（默认套件，e2e/* 排除）
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 538 passed（默认套件，e2e/* 排除）
 ```
 
 任一项不符，先向用户报告差异，再动手。

@@ -1,6 +1,8 @@
 # SentinelFlow Demo Guide
 
-A 10-minute end-to-end walkthrough: from an empty database to a fully triaged incident, using only the simulator and the web console.
+A 15-minute end-to-end walkthrough: from an empty database to a fully triaged incident — alert storm, risk scoring, AI analysis chain, human approval, and the incident AI investigation view — using only the simulator and the web console.
+
+> The default `AI_PROVIDER=mock` makes every AI step instant and offline-safe (deterministic output). To demo a real model, set `AI_PROVIDER=ollama` + `AI_MODEL=qwen3:4b` in `.env` and allow tens of seconds per generation.
 
 ## 0. Prerequisites
 
@@ -65,7 +67,29 @@ The 3 incidents were **auto-created** the first time each event's score reached 
 4. Click **Close** → `closed`; the action panel now states no further transitions are allowed.
 5. Back in the queue, the case shows `closed`; the filter `status=closed` isolates it.
 
-## 6. Reset
+## 6. AI analysis chain (Event Detail)
+
+Open one high-risk event (e.g. *Malicious IOC match detected*, score 90). Three panels sit below the risk factor table, in analysis order:
+
+1. **AI Alert Explanation** — click **Analyze with AI** → the panel fills with attack type, summary, why-risky factors, confidence and provider/model (mock: instant; qwen3:4b: ~30–60 s with a disabled "Analyzing…" state). Click again → a second history row is appended (the first is never overwritten); the page load itself only ever GETs.
+2. **AI Risk Summary** — click **Generate Risk Summary** → analyst priority, key findings and frozen risk-driver vocabulary render. Note what is **absent**: no risk score anywhere — `EventRisk.score` (90) stays the single official number.
+3. **Response Recommendation** — click **Generate Response Recommendation** → up to 5 suggestions with action labels (e.g. *Block source IP*, *Escalate to incident*), targets and rationales. There is no Approve/Execute button here — decisions live in the Approval Queue.
+
+## 7. Approval Queue
+
+1. Open the **Approval Queue** page → the recommendation generated above appears as pending ("pending" is derived — the database stores only approved/rejected).
+2. Enter a reviewer name and click **Approve** → `201`, the item leaves the queue. Refresh: it stays gone (decision persisted).
+3. Trying to decide twice returns `409` and re-syncs from the server — one decision per recommendation, ever.
+4. Key boundary: approving recorded a human decision. Nothing was blocked, isolated or executed — the event, its risk and its incidents are untouched.
+
+## 8. Incident AI Investigation (Incident Detail)
+
+1. Open one of the auto-created incidents → the **AI Investigation** panel loads via a single `GET /incidents/{id}/ai-context`.
+2. It shows the incident snapshot (status/severity + the frozen **risk score snapshot**) and the event's complete AI histories — explanation, risk summary and recommendation, newest first — with the **Approved** chip (reviewer + timestamp) auditing the Step 7 decision.
+3. The panel renders **zero buttons**: no approve, reject or execute affordance of any kind — it observes, reviews and audits only.
+4. An incident with no AI history shows the legal empty state "No AI analysis available yet." — not an error.
+
+## 9. Reset
 
 ```powershell
 # stop the backend first, then:
@@ -75,5 +99,7 @@ Remove-Item Env:DATABASE_URL
 
 ## Notes
 
-- The incident **risk snapshot** reflects the score at the first threshold crossing (e.g. the IOC case shows 70 — one critical alert — even though the event later reaches 90). This is intentional: case records are immutable history, live risk lives on the event.
+- The incident **risk snapshot** reflects the score at the first threshold crossing (e.g. the IOC case shows 70 — one critical alert — even though the event later reaches 90). This is intentional: case records are immutable history, live risk lives on the event — and no AI result ever writes it back.
 - The simulator defaults to `--timestamps now` (current UTC); use `--timestamps file` for deterministic replay.
+- AI panels are explicit-trigger only: refreshing any page emits GETs, never an automatic model call. Failures (provider down → 503, protocol violation → 502) surface the backend message verbatim and never persist a row.
+- Approve ≠ Execute is the v1.1.0 safety boundary end-to-end: AI advises, humans decide, execution stays out of scope until Phase 3 (v2.0).

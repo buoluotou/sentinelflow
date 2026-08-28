@@ -1,4 +1,4 @@
-# SentinelFlow Architecture (Phase 1)
+# SentinelFlow Architecture (v1.1.0)
 
 ## Overview
 
@@ -6,7 +6,7 @@ SentinelFlow is a monorepo with three runtime components:
 
 | Component | Tech | Role |
 |---|---|---|
-| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, REST API |
+| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, AI analysis services, approval queue, REST API |
 | `frontend/` | React 19 + TypeScript + Vite + react-router-dom | SOC web console (dark theme) |
 | `simulator/` | Python stdlib CLI | Replays 5 attack scenarios against the API |
 
@@ -39,12 +39,18 @@ alert_groups (an "event")
   ├── 1 ← N  alerts            evidence alerts
   ├── 1 ← N  alert_events      raw payloads (JSONB)
   ├── 1 ← 1  event_risk        current risk snapshot (unique FK)
-  └── 1 ← 0..1 incidents       at most one CURRENT incident (unique FK)
+  ├── 1 ← 0..1 incidents       at most one CURRENT incident (unique FK)
+  ├── 1 ← N  ai_analyses                append-only AI explanation history (indexed, non-unique)
+  ├── 1 ← N  ai_risk_summaries          append-only AI risk-summary history (indexed, non-unique)
+  └── 1 ← N  ai_response_recommendations  append-only recommendation history
+                 └── 1 ← 0..1 ai_response_approvals  one-shot human decision (UNIQUE)
 
-incidents carry a frozen risk_score snapshot copied at creation time.
+incidents carry a frozen risk_score snapshot copied at creation time and reach
+their event's AI history through read-only (viewonly) traversals — no incident
+FK on any AI table.
 ```
 
-All primary keys are UUIDs. Migrations are hand-written Alembic scripts (`backend/migrations/versions/`, currently 0001–0004) with full upgrade/downgrade support.
+All primary keys are UUIDs. Migrations are hand-written Alembic scripts (`backend/migrations/versions/`, currently 0001–0008) with full upgrade/downgrade support.
 
 ## Risk Engine (rules v1.0, frozen)
 
@@ -71,14 +77,41 @@ open ──→ in_progress ──→ resolved ──→ closed
 - `open → resolved` is **illegal** (must pass through `in_progress`).
 - `closed` is terminal. Invalid transitions return `409` with a stable message.
 - **Auto-creation policy:** an incident is created automatically the first time an event's risk score reaches **≥ 70** (score-based, not severity-based — the Risk Engine is the single weight source). Evaluation happens only on the write path; existing events are never backfilled. One current incident per event (unique constraint + guard = idempotent under alert storms).
-- `Incident.risk_score` is a **snapshot** taken at the first threshold crossing; later recalculations do not change it.
+- `Incident.risk_score` is a **snapshot** taken at the first threshold crossing; later recalculations do not change it — and no AI result ever writes it back.
+
+## AI Analysis Layer (Phase 2, advisory only)
+
+```
+Explicit trigger (console button / API POST)
+  → RequestBuilder         AlertGroup + EventRisk + evidence (≤20) → frozen AIRequest
+  → AIProvider.generate()  dispatches by task: alert_explanation / risk_summary /
+                           response_recommendation
+  → Protocol parse         frozen Pydantic schema, extra=forbid; violation → 502, never persisted
+  → append-only history row → flush (API owns commit)
+```
+
+- **Provider registry** (`services/ai/registry.py`): one `AIProvider` contract, three implementations — Mock (default, deterministic, offline-safe), Ollama (`/api/chat`, native JSON mode), OpenAI-compatible ("cloud" is a deployment alias, not a separate code path). Selection is pure configuration (`AI_PROVIDER` / `AI_MODEL` / `AI_BASE_URL` / `AI_API_KEY` / `AI_TIMEOUT_SECONDS`); business code never changes when the model changes.
+- **Frozen protocols** (`services/ai/models.py`): every task output is `extra=forbid` — a smuggled `risk_score` or unknown field is a `502`, never coerced. Recommendations are limited to a frozen six-action vocabulary; an empty list is a first-class answer.
+- **Error taxonomy**: Config / Unavailable / Parse → HTTP `503` / `503` / `502`; failures never persist a row.
+- **History semantics**: AI rows are the AlertGroup's append-only history. Re-triggering appends; reads return the latest (`created_at DESC, id DESC`). Deleting an incident never deletes AI history.
+
+## Approval Queue (Approve ≠ Execute)
+
+- `ai_response_approvals` stores exactly `{approved, rejected}` (CHECK constraint + `UNIQUE(recommendation_id)`); **"pending" is derived** (recommendation without a decision row) and never persisted.
+- Decisions are INSERT-only, one-shot, with `reviewed_at` server-stamped; clients send only `reviewer` (+ optional comment), extra fields rejected.
+- Approving records a human decision. It never blocks an IP, creates an incident, touches `EventRisk`, or calls any orchestrator — execution remains Phase 3 (v2.0).
+
+## Incident AI Context (read-only aggregation)
+
+`GET /incidents/{id}/ai-context` composes the incident's event AI history into one DTO through `viewonly` ORM traversals — zero schema change, zero writes (no add/flush/commit in the service). The incident snapshot exposes only the creation-time `risk_score`; AI histories embed their Step 10–13 protocol schemas unchanged, each recommendation carrying its `approval | null`. Unknown incident → unified `404` before anything is assembled (no cross-case leak). The console panel renders this single GET with zero buttons and zero mutating traffic: **Observe / Review / Audit, never Decide / Execute.**
 
 ## Backend Layering (invariant)
 
 ```
 api/v1/        HTTP only: request validation, exception → status-code mapping
 schemas/       Pydantic v2 request/response models
-services/      All business logic (normalization, dedup, risk, incidents, dashboard)
+services/      All business logic (normalization, dedup, risk, incidents, dashboard,
+               ai providers, ai analysis services, approvals, incident ai context)
 models/        SQLAlchemy ORM
 ```
 
@@ -93,15 +126,17 @@ React pages → api/ client (fetch wrapper) → FastAPI
 - `types/` are field-for-field mirrors of the backend schemas — the console never derives business numbers itself.
 - The home page binds the single `GET /api/v1/dashboard/summary` endpoint (real-time aggregation computed server-side).
 - Incident action buttons mirror the frozen transition matrix **for display only**; validity is always decided by the backend state machine.
+- AI panels (explanation / risk summary / recommendation) are explicit-trigger: page load emits only GETs, never an automatic POST; every render is protocol-shaped and never shows a risk score.
+- The Approval Queue page records one-shot decisions (201 removes locally, 409 re-syncs from the server); the Incident Detail "AI Investigation" panel is read-only with zero buttons.
 - Vite dev proxy forwards `/api` and `/health` to `localhost:8000`.
 
 ## Integration Points (reserved, not coupled)
 
 Upstream platforms are adapter targets only — their source is never vendored:
 
-| Platform | Planned role | Phase 1 state |
+| Platform | Planned role | State |
 |---|---|---|
 | Wazuh | Alert source adapter (`normalization/adapters/wazuh.py` returns 501 until implemented) | Interface reserved |
-| Ollama / cloud LLMs | AI analysis providers behind a unified `AIProvider` interface | Phase 2 (v1.1.x) |
+| Ollama / cloud LLMs | AI analysis providers behind the unified `AIProvider` interface | Shipped in v1.1.0 (Phase 2) |
 | Shuffle | Automated response execution behind the approval queue | Phase 3 (v2.0) |
 | TheHive | Case management interop | Under evaluation |

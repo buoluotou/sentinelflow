@@ -2,7 +2,7 @@
 
 **面向 SOC 团队的开源安全告警编排与事件响应平台。**
 
-SentinelFlow 将原始安全告警转化为去重、带风险评分的事件与可管理的案件，并提供为快速分诊而生的 Web 控制台。Phase 1 交付一条完整可演示的"检测→案件"流水线；AI 辅助分析是下一个里程碑（见[路线图](#路线图)）。
+SentinelFlow 将原始安全告警转化为去重、带风险评分的事件与可管理的案件，并提供为快速分诊而生的 Web 控制台。Phase 1 交付一条完整的"检测→案件"流水线；Phase 2（v1.1.0）在其上叠加 AI 辅助分析 —— 告警解释、风险摘要与处置建议 —— 全部置于人工审批队列之后，并在每个案件上提供只读的 AI 调查视图。AI 输出仅为建议：**Approve ≠ Execute**（见[路线图](#路线图)）。
 
 ```
 Simulator / SIEM 适配器
@@ -15,10 +15,16 @@ Simulator / SIEM 适配器
         ↓
    案件管理（Incident）      自动建案策略 + 生命周期状态机
         ↓
-   React Web 控制台          Dashboard / Events / Incident Queue
+   AI 分析                 解释 / 风险摘要 / 处置建议 —— 仅为建议
+        ↓
+   人工审批队列（Approval） 记录人类决定；执行不在范围内
+        ↓
+   React Web 控制台          Dashboard / Events / Incident Queue / Approval Queue
 ```
 
-## 特性（Phase 1 — v1.0.0-phase1）
+## 特性（v1.1.0）
+
+### Phase 1 — 检测到案件
 
 - **告警接入** — HTTP/JSON API；每条告警全量保留为证据
 - **归一化** — 适配器模式统一事件模型（Simulator 适配器已实现，Wazuh 适配器已预留）
@@ -28,6 +34,15 @@ Simulator / SIEM 适配器
 - **Dashboard API** — 控制台首页单一聚合端点
 - **React Web 控制台** — 深色 SOC 主题；Dashboard、Events（筛选/分页/风险因子/证据）、Incident Queue（状态流转）
 - **场景模拟器** — 5 个攻击场景，一条命令重放，用于演示与测试
+
+### Phase 2 — 人工审批之后的 AI 辅助分析
+
+- **AI Provider 架构** — 统一 `AIProvider` 契约：Mock（默认，离线安全）、Ollama 与 OpenAI 兼容云端；冻结的结构化输出协议与类型化错误契约（404 / 503 / 502），经 `.env` 切换不改业务代码
+- **AI 告警解释** — 显式触发的攻击类型分析，含风险成因与置信度；事件详情页追加式历史（append-only）
+- **AI 风险摘要** — 关键发现、冻结的风险因子词表与分析师优先级；AI 绝不输出风险分（`EventRisk.score` 是唯一正式分）
+- **AI 处置建议** — 最多 5 条建议，取自冻结的六动作词表；空列表是一等答案（"无需处置"）
+- **审批队列（Approval Queue）** — 针对建议的一次性人工批准/驳回决定；"待审"是派生状态绝不落库；批准只记录决定，绝不执行任何动作
+- **案件 AI 调查视图** — 案件详情页只读面板，单一 GET 聚合事件全部 AI 历史 + 审批审计；零按钮、零变更流量
 
 ## 快速开始
 
@@ -73,7 +88,7 @@ npm run dev        # http://localhost:5173（/api 代理到 :8000）
 python simulator/runner/run.py --repeat 30
 ```
 
-重放 5 个攻击场景 × 30 轮（150 条告警），产生 5 个聚合事件、风险评分与 3 个自动案件。打开控制台即可看到 Dashboard 数据点亮。详见 [docs/demo.md](docs/demo.md)。
+重放 5 个攻击场景 × 30 轮（150 条告警），产生 5 个聚合事件、风险评分与 3 个自动案件。打开控制台即可看到 Dashboard 数据点亮 —— 随后按 [docs/demo.md](docs/demo.md) 走完 AI 分析链、审批队列与案件 AI 视图。
 
 ## 文档
 
@@ -87,16 +102,16 @@ python simulator/runner/run.py --repeat 30
 
 ```bash
 cd backend
-python -m pytest -q        # 202 个测试
+python -m pytest -q        # 538+ 个测试（默认套件；tests/e2e/ 下的真实模型 E2E 不在默认收集内）
 ```
 
 ## 路线图
 
 | 版本 | 里程碑 |
 |---|---|
-| **v1.0.0-phase1** | 核心 SOC 平台：接入 → 归一化 → 去重 → 风险 → 案件 → 控制台（本版本） |
-| v1.1.x | AI 安全分析：告警解释、风险摘要、处置建议，全部置于人工审批队列之后（统一接口对接 Ollama / 云端模型） |
-| v2.0 | 自动化响应 / SOAR 集成 |
+| v1.0.0-phase1 | 核心 SOC 平台：接入 → 归一化 → 去重 → 风险 → 案件 → 控制台 |
+| **v1.1.0** | AI 安全分析：告警解释、风险摘要、处置建议，全部置于人工审批队列之后，外加案件 AI 调查视图（统一接口对接 Ollama / 云端模型）—— 本版本 |
+| v2.0 | 自动化响应 / SOAR 集成（执行层叠加在审批队列之后） |
 
 **Wazuh**、**Shuffle**、**TheHive** 等上游项目仅作为干净的适配器接口目标规划集成 —— 其源码永远不会被引入本仓库。
 
@@ -115,7 +130,7 @@ sentinelflow/
 
 ## 安全说明
 
-Phase 1 **不含认证机制**，仅建议在受信任网络中评估使用。漏洞报告政策见 [SECURITY.md](SECURITY.md)；任何对外暴露部署前请先完成[部署安全加固清单](docs/deployment.md#security-hardening-checklist)。
+平台**不含认证机制**，仅建议在受信任网络中评估使用。漏洞报告政策见 [SECURITY.md](SECURITY.md)；任何对外暴露部署前请先完成[部署安全加固清单](docs/deployment.md#security-hardening-checklist)。
 
 ## 许可证
 
