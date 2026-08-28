@@ -74,7 +74,7 @@ compensation_requested
 |---|---|
 | `id` | UUID 主键 |
 | `execution_id` | 调用方提供的**唯一幂等键 + 执行身份**（见 §5） |
-| `approval_id` | FK → `ai_response_approvals`；execute 方向来自请求并验证；compensate 方向**由服务端从原执行继承** |
+| `approval_id` | FK → `ai_response_approvals`；execute 方向来自请求并验证；compensate 方向**由服务端从原执行继承**。删除行为 **NO ACTION**（migration review 2026-08-28 钉死）：追加式审计日志绝不随审批删除而消失；已核查项目现状无任何审批删除路径（全部 GET/POST，全代码库零 `db.delete`），若未来引入审批删除必须先拒绝存在执行引用的审批 |
 | `decision` | 冻结词表（与 direction 的合法组合由 CHECK 约束，见 §6） |
 | `action` / `target` | **服务端从已批准 Recommendation 快照装配**，客户端请求体不接受这两个字段 |
 | `direction` | `execute` / `compensate` |
@@ -83,10 +83,10 @@ compensation_requested
 | `detail` | JSONB：Guard 拒绝原因 / dispatched 请求回显 / 适配器原始应答 / 失败分类。**永远不含 Token** |
 | `created_at` | **服务端生成**（延续 `reviewed_at` 先例），客户端时间永不入库 |
 
-### 约束（冻结 9 条）
+### 约束（冻结 10 条）
 
 1. `UNIQUE(execution_id) WHERE decision='requested'` —— 幂等键唯一；**并发竞态的最后一道防线（D14）**
-2. `UNIQUE(approval_id) WHERE direction='execute'` —— 一条审批的正向执行**整个生命周期唯一**（requested / guard_rejected / dispatched / succeeded / failed 任一都占位）
+2. **占位行唯一约束**（冻结命名，2026-08-28）：`UNIQUE(approval_id) WHERE direction='execute' AND decision='requested'` —— 一条审批的正向执行**整个生命周期至多一次**。实现语义（钉死）：每条合法的 `direction='execute'` 执行链**必须且只能有一行 `requested`**（D12 保证），该行即生命周期占位行；链上后续行（`guard_rejected` / `dispatched` / `succeeded` / `failed`）虽共享同一 `approval_id` 但不进入该部分索引；任何重新执行必须插入新的 `requested` 行，在此被拦截（含终态 `failed` 之后 —— 无重试，恢复路径是补偿）。**Approval 正向执行资格唯一性由 Service 状态机 + 占位行唯一索引共同保证**
 3. `UNIQUE(compensates_execution_id) WHERE decision='compensation_requested'` —— 一条原执行至多一次补偿
 4. 只 INSERT
 5. 不 UPDATE
@@ -94,6 +94,7 @@ compensation_requested
 7. `action` / `target` 仅由服务端从批准建议快照写入
 8. 状态派生顺序 `ORDER BY created_at DESC, id DESC`（确定性：同时间戳按 id 定序）
 9. decision × direction 合法组合由 DB CHECK 兜底（Service 状态机是主裁决者）
+10. **Service 不变量（2026-08-28 钉死，3.1.3 状态机 + 3.1.6 写入链路必须实现）**：数据库只保证“一个 approval 至多一条 `requested`”，并不知道 `requested` 必须是链的第一行 —— 因此由 Service 状态机强制：每个 `direction='execute'` 合法执行链**必须且只能有一个 `requested`，且 `requested` 必须是该链的第一行**（`(空) → requested` 是唯一入口，任何链上后续行在 `requested` 之前写入均为非法迁移 → 409 不落行）
 
 ### 执行身份绑定（execution_id 语义冻结）
 

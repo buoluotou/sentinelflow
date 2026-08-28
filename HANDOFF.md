@@ -1,7 +1,7 @@
 # SentinelFlow 工作交接文档（AI Agent 接手用）
 
-> 最后更新：2026-08-28 · Phase 1 已冻结并**已发布到 GitHub**（buoluotou/sentinelflow，tag v1.0.0-phase1 + Release）；Step 9（`f7edcc1`）与 Step 10（`c946ae7 feat(ai): add alert explanation`）均已提交并推送；Step 11（`aa2af98`）/Step 12（`0c7041c`）/Step 13（`c958263`）与 **Step 14（`0f6e3fc feat(incident): add incident ai integration`）均已原子提交，未推送**；tag `v1.1.0` 指向 `0f6e3fc`（正确且不再移动）；hash 回填提交 `f08289d` 与本次文档刷新提交（见 git log，纯 docs，不碰代码与 tag）在 tag 之后；**v1.1.0 Release Audit 已通过**（Fresh Clone 全链路 clone→install→migration→双端启动→Scenario→Alert→Incident→AI→Approval 实测全绿；发现项均为文档滞后，已由本次刷新收掉）；下一步：git push + git push --tags + GitHub Release，随后才规划 Phase 3
-> 给新会话的 Agent：请先完整读完本文档，再读 `Phase 1 最终闭环.md`（位于 `D:\edge\github\`，是项目的总规划），然后跑一遍"快速自检"确认基线，再开始新任务。
+> 最后更新：2026-08-28 · **v1.1.0 已正式发布**（push + tag + GitHub Release 378216601；Release 对应 `0f6e3fc`，`6af198a` 为后续纯文档提交；发布后审计远端/本地全一致）。**Phase 3 设计已定稿**：`docs/design/phase3-response-execution.md`（提交 `11b35ec` + 修正 `2e75a7b`，均领先 origin 未推送）。**当前工作：Phase 3.1.1（execution_log 模型）已完成待用户验收** —— 4 文件变更未提交，后端 581 passed。下一步：用户验收（含约束 2 偏差确认）→ 3.1.2 Migration 0009。详见第八节。
+> 给新会话的 Agent：请先完整读完本文档，再读 `docs/design/phase3-response-execution.md`（Phase 3 冻结设计，最高优先级），然后跑一遍“快速自检”确认基线，再开始新任务。`Phase 1 最终闭环.md`（位于 `D:\edge\github\`）是项目总规划。
 
 ## 一、项目是什么
 
@@ -33,6 +33,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 12 | Response Recommendation（AI≠执行器，只出建议） | ✅ 12.1–12.8 全部完成（协议+词表+Service+API+跨层回归+前端面板+Browser E2E 双链+最终回归），一次性原子提交 | `0c7041c feat(ai): add response recommendation`（未推送） |
 | 13 | Approval Queue（Approve≠Execute，审批只记录人类决定） | ✅ 13.1–13.8 全部完成（模型+迁移 0008+Service+API+跨层回归+React 队列页+Playwright Browser E2E+最终回归），一次性原子提交；后端 505 passed / 前端 35 passed / E2E 10 passed | `c958263 feat(ai): add approval queue`（未推送） |
 | 14 | Incident AI Integration（案件视图关联 AI 结果，不做执行器） | ✅ 14.1–14.8 全部完成（关联协议/服务/只读 API/跨层回归/React 只读视图/真实浏览器 E2E 9 旅程/最终回归验收/原子提交），后端 538 passed / 前端 43 passed / tsc 0 错误 / build 成功 / E2E 9/9 三轮全绿 / 迁移 0001→0008 往返含 downgrade base；零新迁移、零 Phase 3 执行码、风险分零回写、审批仅 approved/rejected、浏览器层零变更流量 | `0f6e3fc feat(incident): add incident ai integration` + tag `v1.1.0`（未推送） |
+| 3.1 | Response Execution（受控本地响应执行层，Approve≠Execute 延续） | ✅ 3.1.1–3.1.11 逐步验收完成（Model/Migration 0009/状态机+派生态/Guard 五关/Mock Executor/Execute+Compensation Service/API/React Execute Console/Execution Audit 页/跨层回归 748→875 passed/Browser E2E 11 旅程）；3.1.12 Final Regression ⏳ → 3.1.13 Atomic Commit ⏳；后端 875 passed（0 failed / 0 skipped）/ 前端 78 passed / tsc 0 错误 / build 成功 / E2E 11/11 | 未提交（3.1.13 一次性原子提交 `feat(execution): add controlled response execution`，未来 v1.2.0，不动 v1.1.0 tag） |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -127,7 +128,7 @@ Step 5 定形语义：**风险只在事件变化时重算**（去重引擎 `db.a
 ## 五、常用命令（均在 `sentinelflow\backend`）
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 538 passed）
+.\.venv\Scripts\python.exe -m pytest -q                    # 单元测试（当前 581 passed = 538 基线 + 43 新模型测试）
 $env:DATABASE_URL="sqlite:///tmp.db"
 .\.venv\Scripts\python.exe -m alembic upgrade head         # 迁移
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --port 8765   # 起服务
@@ -354,17 +355,56 @@ Step 12（已完成，提交 `0c7041c`，未推送）：Response Recommendation 
 更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
 
-## 八、快速自检清单（新会话开工前执行）
+## 八、Phase 3.1 响应执行实施（当前任务）
+
+**大背景**：v1.1.0 已发布冻结，不再修改。Phase 3 是“响应执行架构”：Approval → Execute Intent → Auth/Schema → Guard → execution_log → Executor → Result → Audit。**冻结设计最高优先级**：`docs/design/phase3-response-execution.md`（D1–D14 决策表 + 9 条数据约束 + 状态机 + Guard 五关 + Executor 契约 + API 契约 + Token 纪律），编码前必读。
+
+**用户钉死的实施拆分（13 步，严格门槛制）**：
+```
+3.1.1 Model → 3.1.2 Migration 0009 → 3.1.3 状态机+派生态 Service → 3.1.4 Guard Service
+→ 3.1.5 ResponseExecutor+Mock → 3.1.6 Execute/Compensation Service → 3.1.7 API
+→ 3.1.8 React Execute Console → 3.1.9 Execution Audit 页 → 3.1.10 跨层回归
+→ 3.1.11 Browser E2E（8–10 旅程）→ 3.1.12 最终回归 → 3.1.13 原子提交（feat(execution): ...）
+```
+**节奏铁律**：一步完成 → 测试 → 回报 → 用户验收 → 才进下一步；每步只允许产出该步范围的文件；不擅自提交（最终 3.1.13 一次性原子提交）；不擅自产出计划或越步写代码。
+
+**进度总览（最新）**：3.1.1 ✅ → 3.1.2 ✅ → 3.1.3 ✅ → 3.1.4 ✅ → 3.1.5 ✅ → 3.1.6 ✅ → 3.1.7 ✅ → 3.1.8 ✅ → 3.1.9 ✅ → 3.1.10 ✅ → 3.1.11 Browser E2E ✅（真实 Chromium+uvicorn+Vite+throwaway SQLite，11 旅程：正常执行链/Guard 拒绝双路径/适配器失败三分类/补偿只读/重复防护/审计列表→详情/未授权零落行/页面加载零 POST/Token 五查零泄露/迁移 0009 往返独立验证）→ **3.1.12 Final Regression ⏳ → 3.1.13 Atomic Commit ⏳**。最终数字：后端 875 passed（0 failed / 0 skipped）、前端 78 passed + tsc 0 错误 + build 成功、E2E 11/11。3.1.1 记录的约束 2 偏差（占位行语义 `WHERE direction='execute' AND decision='requested'`）已随逐步验收确认冻结。
+
+**3.1.1 已完成，待用户验收（未提交）**，交付物：
+- `backend/app/models/execution_log.py`：`ExecutionLog` 11 列冻结（id/execution_id/approval_id/decision/direction/action/target/compensates_execution_id/operator/detail/created_at；刻意无 updated_at）；词表常量 EXECUTE_DECISIONS(5)/COMPENSATE_DECISIONS(3)/EXECUTION_LEGAL_COMBINATIONS(8 对)
+- CHECK `ck_execution_log_decision_direction`（decision×direction 合法组合）+ 三个部分唯一索引（`sqlite_where` + `postgresql_where` 双写）：
+  1. `UNIQUE(execution_id) WHERE decision='requested'`
+  2. `UNIQUE(approval_id) WHERE direction='execute' AND decision='requested'`
+  3. `UNIQUE(compensates_execution_id) WHERE decision='compensation_requested'`
+- `ai_response_approval.py` 加 `executions` 反向关系（集合，补偿继承同 approval）；`models/__init__.py` 注册导出；`tests/test_execution_log.py` 43 用例全绿；全量 581 passed
+
+**⚠️ 待用户确认的偏差（约束 2）**：设计文档字面写 `UNIQUE(approval_id) WHERE direction='execute'`，但追加式日志下一条执行链 = requested+dispatched+succeeded 三行全带同 approval_id，字面实现会让链第二行撞唯一索引。已按“每链唯一一行 requested（D12 保证）做生命周期占位行”实现为 `WHERE direction='execute' AND decision='requested'`，功能等价（重执行必须插新 requested → 被拦，含 failed 后；已有测试验证）。**用户验收后若确认，需同步把设计文档约束 2 表述钉死为占位行语义**。
+
+**3.1.2 验收门槛预告**：手写 `0009_add_execution_log.py`（upgrade/downgrade）；SQLite 往返 0001→0009→0008→0009 全过；三个部分唯一索引 + CHECK 运行时验证；无 PostgreSQL 环境，PG 结构仅 SQL 级核对。
+
+**关键冻结语义速查（细节看设计文档）**：
+- `requested` = “合法执行意图已被接收并形成执行事实”（Auth+Schema 通过即落行，D12）；Guard 在其后，拒绝追加 `guard_rejected`（同事务 D13）
+- POST /executions 恒 201：201 = 形成执行事实 ≠ 执行成功；401/422 不落行；404/409 不落行；并发双保险（Service 预检 + 部分唯一索引，IntegrityError→409，D14）
+- 分轨铁律：Guard failure→guard_rejected；Adapter failure→dispatched→failed（已受理的失败必须落行）
+- 客户端只提供 Intent（execution_id/approval_id/operator/comment，extra=forbid）；action/target 服务端从批准建议快照装配；补偿的 approval_id 服务端继承（D11）
+- EXECUTION_TOKEN：Bearer，hmac.compare_digest，不落日志/不进 detail/不进响应；前端仅内存驻留；读接口免 Token
+- 派生态 = 该 execution_id 下 ORDER BY created_at DESC, id DESC 首行；Service 只 add/flush 不 commit（事务边界在 API 层）
+- Phase 3.1 不接真实 Shuffle/Wazuh/TheHive（注册值预留，注册即 ConfigError）；Mock 零出站、确定性、`fail_with` 注入；同步派发 30s 超时
+- 不修改 v1.1.0；执行层不回写 EventRisk/Incident/Recommendation/Approval
+
+## 九、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应干净（Phase 2 全部变更已随 0f6e3fc 原子提交，tag 后仅文档提交）
-git log --oneline     # 应见 docs 刷新 / f08289d(hash 回填) / 0f6e3fc(step 14) / c958263(step 13) / ...
+git status            # 预期见 3.1.1–3.1.11 全部交付物未提交（12 M + 若干 ??）：
+                      #  执行层 app/models|services/executions|api/v1 + migrations/versions/0009
+                      #  + frontend ResponseExecutionPanel/ExecutionAuditPage/ExecutionDetailPage
+                      #  + 测试（含 tests/e2e/test_execution_browser.py）+ HANDOFF/CHANGELOG/.gitignore
+git log --oneline -6  # 应见 2e75a7b(设计修正) / 11b35ec(设计文档) / 6af198a(docs 刷新) / f08289d / 0f6e3fc(v1.1.0) / c958263
 git tag --points-at 0f6e3fc   # 应见 v1.1.0
-git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
-git tag               # 应见 v1.0.0-phase1 与 v1.1.0（均未推送）
+git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git（本地领先 origin 2 个文档提交）
 cd backend
-.\.venv\Scripts\python.exe -m pytest -q   # 应为 538 passed（默认套件，e2e/* 排除）
+.\.venv\Scripts\python.exe -m pytest -q   # 应为 875 passed（默认套件，e2e/* 排除）
 ```
 
 任一项不符，先向用户报告差异，再动手。

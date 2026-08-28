@@ -6,8 +6,8 @@
  *   C. approved / rejected / pending (approval=null) approval states
  *   D. all-empty histories are a legal empty state, not an error
  *   E. a partial pipeline (analyses only) still renders cleanly
- *   F. safety boundary: no Execute/Block Now/Isolate Now/... affordance,
- *      no Approve/Reject buttons, GET-only — exactly one fetch, correct URL
+ *   F. safety boundary: no Approve/Reject/Retry affordance; the ONLY one is
+ *      the 3.1.8 Execute console for approved entries — GET-only, zero POSTs
  *   G. only risk_score_snapshot is shown; the UI never recomputes risk
  */
 import { cleanup, render, screen } from '@testing-library/react'
@@ -103,7 +103,15 @@ function contextBody(overrides: Record<string, unknown> = {}) {
 }
 
 function mockFetch(response: () => Response) {
-  const fn = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => response())
+  const fn = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    const url = String(input)
+    // Phase 3.1.8: approved entries carry the Execute console, whose mount
+    // lookup is GET /executions?approval_id=… — answer an empty paged
+    // envelope for it (3.1.9 read contract).
+    if (url.startsWith('/api/v1/executions'))
+      return json(200, { total: 0, page: 1, size: 20, items: [] })
+    return response()
+  })
   vi.stubGlobal('fetch', fn)
   return fn
 }
@@ -217,7 +225,7 @@ describe('IncidentAIContextPanel', () => {
     expect(document.querySelector('.error-banner')).toBeNull()
   })
 
-  it('F. safety boundary: zero execution or decision affordances, GET-only', async () => {
+  it('F. safety boundary: no Approve/Reject/Retry — only the 3.1.8 Execute console, GET-only, zero POSTs', async () => {
     const fetchMock = mockFetch(() =>
       json(
         200,
@@ -231,10 +239,9 @@ describe('IncidentAIContextPanel', () => {
     render(<IncidentAIContextPanel incidentId={INCIDENT_ID} />)
     await screen.findByText('Approved')
 
-    // No execution entry point of any kind in the rendered DOM.
+    // No instant-action or decision buttons of any kind.
     const text = document.body.textContent ?? ''
     for (const forbidden of [
-      /execute/i,
       /block now/i,
       /isolate now/i,
       /disable now/i,
@@ -243,15 +250,26 @@ describe('IncidentAIContextPanel', () => {
     ]) {
       expect(text).not.toMatch(forbidden)
     }
-    // And no buttons at all: no Approve/Reject (Approval Queue owns decisions)
-    // and nothing else clickable inside this read-only panel.
-    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /approve/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /reject/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /compensate/i })).not.toBeInTheDocument()
 
-    // Exactly one network call, GET, against the frozen read-only endpoint.
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe(URL)
-    expect((init?.method ?? 'GET').toUpperCase()).toBe('GET')
+    // The ONLY affordance: the server-guarded 3.1.8 Execute console, shown
+    // for the approved entry (display decision, never a permission one).
+    // It appears after the console's async status lookup settles.
+    expect(await screen.findByRole('button', { name: 'Execute' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Execute' })).toHaveLength(1)
+
+    // All network traffic is GET; ai-context exactly once, the console's
+    // status lookup exactly once — and ZERO POSTs on page load.
+    for (const [, init] of fetchMock.mock.calls) {
+      expect((init?.method ?? 'GET').toUpperCase()).toBe('GET')
+    }
+    expect(fetchMock.mock.calls.filter(([url]) => url === URL)).toHaveLength(1)
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/v1/executions')),
+    ).toHaveLength(1)
   })
 
   it('G. shows only the risk_score_snapshot — never a recomputed score', async () => {

@@ -30,6 +30,13 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+playwright-report/
+test-results/
+
+# Local databases (dev / E2E throwaway DBs must never ship)
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log

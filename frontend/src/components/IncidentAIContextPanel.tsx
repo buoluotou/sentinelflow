@@ -1,5 +1,5 @@
 /** Incident AI Investigation panel (Phase 2 Step 14.5): observe / review /
- * audit — NEVER decide / execute.
+ * audit — NEVER decide.
  *
  * Consumes the single read-only endpoint GET /incidents/{id}/ai-context and
  * renders the complete case context: AI Explanation history, Risk Summary
@@ -11,7 +11,9 @@
  *   record stays in state — never "latest overwrites previous")
  * - approval === null renders as "Pending Review" — a derived UI label, never
  *   a status sent back to the backend (the Approval Queue owns decisions)
- * - no Execute / Approve / Reject affordance exists here at all
+ * - no Approve / Reject affordance exists here; the ONLY write affordance is
+ *   the Phase 3.1.8 Execute console, shown for approved recommendations and
+ *   gated entirely server-side (Token + Guard + Approval + Policy + Executor)
  * - only the snapshot score is shown; the UI never recomputes risk
  */
 import { useEffect, useState } from 'react'
@@ -19,6 +21,7 @@ import { getIncidentAIContext } from '../api/incidents'
 import type { IncidentAIContext } from '../types/incidentAIContext'
 import type { RecommendationWithApproval } from '../types/incidentAIContext'
 import { actionLabel } from './ResponseRecommendationPanel'
+import { ResponseExecutionPanel } from './ResponseExecutionPanel'
 import { ErrorBanner, LevelBadge, Loading, Panel, formatTime } from './common'
 
 /** Approval audit chip. Display-only: "pending" here is the derived state
@@ -231,9 +234,11 @@ export function IncidentAIContextPanel({ incidentId }: { incidentId: string }) {
                               </>
                             )}
                           </div>
+                          <ResponseExecutionPanel approval={entry.approval} />
                           <p className="muted" style={{ marginTop: 4, marginBottom: 0 }}>
-                            Advisory only — decisions are made in the Approval Queue; this view
-                            is read-only.
+                            Approval decisions are made in the Approval Queue; execution is
+                            offered only for approved recommendations and every request is
+                            guarded server-side.
                           </p>
                         </div>
                       ))}

@@ -97,6 +97,13 @@ class AIResponseApproval(Base):
         back_populates="approval"
     )
 
+    # Phase 3.1: the execution-audit rows bound to this approval. At most
+    # ONE forward execution over the whole lifecycle (partial unique index
+    # on execution_log, direction='execute'); compensation runs under a
+    # fresh execution_id that inherits this same approval_id (D11), hence a
+    # collection here.
+    executions: Mapped[list["ExecutionLog"]] = relationship(back_populates="approval")
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<AIResponseApproval id={self.id} "
@@ -106,3 +113,4 @@ class AIResponseApproval(Base):
 
 # Avoid circular import at module load time
 from app.models.ai_response_recommendation import AIResponseRecommendation  # noqa: E402,F401
+from app.models.execution_log import ExecutionLog  # noqa: E402,F401

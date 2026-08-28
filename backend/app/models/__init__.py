@@ -10,6 +10,14 @@ from app.models.alert import Alert
 from app.models.alert_event import AlertEvent
 from app.models.alert_group import AlertGroup
 from app.models.event_risk import EventRisk
+from app.models.execution_log import (
+    COMPENSATE_DECISIONS,
+    EXECUTE_DECISIONS,
+    EXECUTION_DECISIONS,
+    EXECUTION_DIRECTIONS,
+    EXECUTION_LEGAL_COMBINATIONS,
+    ExecutionLog,
+)
 from app.models.incident import Incident
 
 __all__ = [
@@ -22,6 +30,12 @@ __all__ = [
     "Alert",
     "AlertEvent",
     "AlertGroup",
+    "COMPENSATE_DECISIONS",
+    "EXECUTE_DECISIONS",
+    "EXECUTION_DECISIONS",
+    "EXECUTION_DIRECTIONS",
+    "EXECUTION_LEGAL_COMBINATIONS",
     "EventRisk",
+    "ExecutionLog",
     "Incident",
 ]

@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     # raise for larger models, keep tests/fast providers at the default.
     AI_TIMEOUT_SECONDS: float = 60.0
 
+    # Phase 3.1.5: response-execution adapter selection. Defaults to
+    # "mock" (offline DryRun); shuffle / wazuh / thehive are reserved
+    # registry values and raise ConfigError until Phase 3.2 implements
+    # them — the platform never fakes support.
+    EXECUTION_ADAPTER: str = "mock"
+
+    # Phase 3.1.7: shared secret for the execution WRITE endpoints
+    # (POST /executions, POST /executions/compensate). Empty stays
+    # fail-closed: every write request gets 401 until a token is
+    # configured. The token never enters logs, responses, exception
+    # strings, audit detail or the database (frozen security discipline).
+    EXECUTION_TOKEN: str = ""
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )
