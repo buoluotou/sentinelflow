@@ -24,15 +24,16 @@ Approved Recommendation
         ↓
 Execute Intent（客户端：仅 execution_id + operator + 备注）
         ↓
-Auth（EXECUTION_TOKEN Bearer） / Schema（extra=forbid）
+Auth（EXECUTION_TOKEN Bearer） / Schema（extra=forbid）→ 401/422 不落行
+        ↓
+execution_log: requested（合法 Execute Intent 已形成执行事实）
         ↓
 Guard / Policy（审批绑定 / 生命周期 / 幂等 / 适配器能力）
-        ↓
-execution_log: requested
-        ↓
+        ├── reject → execution_log: guard_rejected（终态，同事务）
+        └── pass   ↓
 ResponseExecutor（服务端装配 ExecutionDispatch）
         ↓
-execution_log: dispatched
+execution_log: dispatched（同事务）
         ├── succeeded（终态）
         └── failed（终态，已受理的失败是执行事实，必须落行）
 
@@ -63,6 +64,9 @@ compensation_requested
 | D9 | `protocol_violation` 由 SentinelFlow 解析适配器返回时判定，适配器无权自声明 |
 | D10 | 同步派发（请求内完成全链），`EXECUTION_TIMEOUT_SECONDS` 默认 30；不引入队列/后台基建 |
 | D11 | 补偿的 `approval_id` 由服务端从原执行继承，客户端不传；补偿重新经过 Token + Guard |
+| D12 | `requested` = “合法执行意图已被服务端接收并形成执行事实”（Auth + Schema 通过即落行），**不是**“所有 Guard 已通过”；Guard 在 `requested` 之后执行，拒绝追加 `guard_rejected`（业务拒绝必留审计事实） |
+| D13 | `requested` + Guard 结果（`guard_rejected` 或 `dispatched`）在同一数据库事务内原子提交；`dispatched` + Executor 终态行同事务；不产生永久停留 `requested` 的孤儿执行（v1 同步模型） |
+| D14 | 幂等与唯一性的并发防线双保险：Service 预检 + DB 部分唯一索引缺一不可（并发事务可能同时看到“未占用”）；`IntegrityError` → 409（Step 13 `UNIQUE(recommendation_id)` 同款） |
 
 ## 4. 数据模型：`execution_log`（迁移 0009，追加式）
 
@@ -81,7 +85,7 @@ compensation_requested
 
 ### 约束（冻结 9 条）
 
-1. `UNIQUE(execution_id) WHERE decision='requested'` —— 幂等键唯一
+1. `UNIQUE(execution_id) WHERE decision='requested'` —— 幂等键唯一；**并发竞态的最后一道防线（D14）**
 2. `UNIQUE(approval_id) WHERE direction='execute'` —— 一条审批的正向执行**整个生命周期唯一**（requested / guard_rejected / dispatched / succeeded / failed 任一都占位）
 3. `UNIQUE(compensates_execution_id) WHERE decision='compensation_requested'` —— 一条原执行至多一次补偿
 4. 只 INSERT
@@ -94,6 +98,7 @@ compensation_requested
 ### 执行身份绑定（execution_id 语义冻结）
 
 `execution_id` 不只是去重字符串，而是**执行身份**：首次请求将其与 `approval_id` / `direction` / 服务端装配的 `action` / `target` 快照绑定；其后任何携带不同参数的重放一律 **409**，数据库保持首次执行的完整事实，绝不被二次请求污染。
+**并发兜底（D14）**：不能依赖 `if not exists: insert()` 单独解决 —— 并发事务可能同时看到 `execution_id` 未被占用。Service 预检与 DB 部分唯一索引必须同时存在，`IntegrityError` 捕获后转稳定 409。
 
 ## 5. 派生状态
 
@@ -102,9 +107,56 @@ compensation_requested
 
 ## 6. 冻结状态机（Service 掌裁决，CHECK 做最后防线）
 
+最终状态机图（冻结版）：
+
+```
+                         ┌───────────────┐
+                         │ HTTP Auth     │
+                         │ + Schema      │
+                         └───────┬───────┘
+                                 │
+                         401 / 422 │
+                                 ▼
+                              no log
+
+                                 │
+                                 ▼
+                         ┌───────────────┐
+                         │   requested   │
+                         └───────┬───────┘
+                                 │
+                            Guard / Policy
+                          ┌──────┴──────┐
+                          │             │
+                       reject         pass
+                          │             │
+                          ▼             ▼
+                 guard_rejected     dispatched
+                                          │
+                                   ┌──────┴──────┐
+                                   │             │
+                              succeeded       failed
+
+补偿：
+
+succeeded / failed
+        ↓
+Human Compensation Intent
+        ↓
+compensation_requested
+        ↓
+ ┌──────┴──────┐
+ ▼             ▼
+compensation_  compensation_
+succeeded      failed
+```
+
+迁移矩阵：
+
 ```
 execute 方向（同一 execution_id 内）：
-  (空)        → requested          首行，Guard 前置检查通过才追加
+  (空)        → requested          Auth + Schema 通过、合法 Execute Intent 形成即落行（D12）；
+                                   语义 = “执行意图已被接收并形成执行事实”，不是“Guard 已通过”
   requested   → guard_rejected     终态：策略拒绝原因写 detail（业务拒绝必须留审计）
   requested   → dispatched         Guard 全过，适配器受理，请求回显写 detail
   dispatched  → succeeded          终态：适配器原始应答写 detail
@@ -117,7 +169,8 @@ compensate 方向（新 execution_id）：
 ```
 
 - 非法迁移（对终态追加、跨 direction 的 decision 等）→ 类型化异常 → **409，绝不落行**（写前校验，追加式完整性不受破坏）。
-- DB CHECK 只防"非法 decision × direction 组合"；**时序合法性由 Service 状态机裁决**（业务规则在 Service、数据库是最后完整性防线 —— 项目既有原则）。
+- DB CHECK 只防“非法 decision × direction 组合”；**时序合法性由 Service 状态机裁决**（业务规则在 Service、数据库是最后完整性防线 —— 项目既有原则）。
+- **事务边界（D13）**：`requested` + Guard 结果（`guard_rejected` 或 `dispatched`）必须在**同一数据库事务**内原子提交（`BEGIN → INSERT requested → Guard 评估 → INSERT 结果行 → COMMIT`），避免进程在 Guard 前崩溃留下永久停留 `requested` 的孤儿执行；`dispatched` + Executor 终态行（`succeeded` / `failed`）同事务。进程在事务中途的异常崩溃属现实边界，恢复机制留待后续版本；v1 同步模型下以上两个事务边界即为冻结约束。
 - 补偿入口预检（写 `compensation_requested` 前，失败不落行）：原执行存在且派生态 ∈ {succeeded, failed}（`requested` / `guard_rejected` / `dispatched` 不可补偿）；适配器声明支持该动作的补偿；约束 3 兜底防重复补偿。
 
 ## 7. Guard / Policy 链（与适配器运行时错误严格分轨）
@@ -126,9 +179,9 @@ compensate 方向（新 execution_id）：
 |---|---|---|---|
 | G0 | Auth（HTTP 层） | `EXECUTION_TOKEN` Bearer 匹配 | **401，不落行**（凭据问题不是执行事实） |
 | G1 | Schema 边界 | 请求体字段白名单，`extra="forbid"`；偷渡 `action`/`target` 直接拒绝 | **422，不落行** |
-| G2 | 审批绑定 | approval 存在且 `status=approved`；action ∈ 三动作词表（服务端从建议快照读取） | 落 `requested → guard_rejected` 对（**业务拒绝 = 发生过的执行请求，必须留完整审计**） |
-| G3 | 生命周期 / 幂等 | 该 approval 无正向执行行；`execution_id` 未被绑定 | 409；部分唯一索引双保险 |
-| G4 | 适配器能力 | 已注册适配器 `supports(action)`（补偿则 `supports_compensation`） | 落 `requested → guard_rejected` 对 |
+| G2 | 审批绑定 | approval 存在且 `status=approved`；action ∈ 三动作词表（服务端从建议快照读取） | 同事务追加 `guard_rejected`（`requested` 已先落行，D12；**业务拒绝 = 发生过的执行请求，必须留完整审计**） |
+| G3 | 生命周期 / 幂等 | 该 approval 无正向执行行；`execution_id` 未被绑定 | 409；**Service 预检 + 部分唯一索引双保险（D14）**，`IntegrityError` → 409 |
+| G4 | 适配器能力 | 已注册适配器 `supports(action)`（补偿则 `supports_compensation`） | 同事务追加 `guard_rejected` |
 
 **分轨铁律**：
 - Guard failure（确定性策略判断）→ `guard_rejected`
@@ -171,7 +224,7 @@ ResponseExecutor（抽象）
 
 | 端点 | 语义 |
 |---|---|
-| `POST /api/v1/executions` | 表达 Execute Intent。请求体冻结 `{execution_id, approval_id, operator, comment?}`，`extra="forbid"`（**不接受 action/target**）。Bearer Token（缺失/不符 401 不落行）。同步全链，**恒 201**：响应体含派生终态 + 完整日志行（`succeeded` / `failed`+分类 / `guard_rejected`+原因）。201 语义 = "Execute Intent 已被接收并形成执行事实"，不等于"动作成功执行" |
+| `POST /api/v1/executions` | 表达 Execute Intent。请求体冻结 `{execution_id, approval_id, operator, comment?}`，`extra="forbid"`（**不接受 action/target**）。Bearer Token（缺失/不符 401 不落行）。同步全链，**恒 201**：响应体含派生终态 + 完整日志行（`succeeded` / `failed`+分类 / `guard_rejected`+原因）。**规范语义（钉死）**：HTTP 201 表示 Execute Intent 已被接受并形成执行事实，**不表示目标动作已经成功**；因此 `201 + succeeded` / `201 + failed` / `201 + guard_rejected` 均成立；`401` / `422` / `404` / `409` 表示该请求未形成对应的成功执行事实。此边界在设计文档、API 文档与测试中必须完全一致 |
 | `POST /api/v1/executions/compensate` | 发起补偿。请求体冻结 `{execution_id, compensates_execution_id, operator, comment?}`（**不含 approval_id** —— 服务端从原执行继承并重验审批状态）。预检失败 404/409 不落行；通过后恒 201 模式同上 |
 | `GET /api/v1/executions` | 审计列表：逐 `execution_id` 派生最新态；`?status=&direction=&approval_id=&page=&size=`；最近活动倒序。**读 ≠ 执行，不要求 Token**（与 Phase 2 只读 API 一致） |
 | `GET /api/v1/executions/{execution_id}` | 完整时间线：全部日志行（`created_at ASC`）+ 派生态 + 补偿双向链接。纯只读 |
@@ -194,7 +247,7 @@ ResponseExecutor（抽象）
 
 ## 12. 测试策略（四层 + 攻击面）
 
-1. **后端单元**（+90 左右）：状态机全矩阵合法/非法迁移；派生态确定性（同 `created_at` 双行 → `id DESC` 定序）；幂等重放（同键同参 → 409 且仅一行 `requested`）；审批生命周期唯一（正向终态后再试 → 409）；Guard 五关逐关；CHECK 兜底（直接 ORM 塞非法 decision×direction 必炸）；Mock 确定性 + `fail_with` 四分类；401 零落行。
+1. **后端单元**（+90 左右）：状态机全矩阵合法/非法迁移；`requested` 先于 Guard 落行语义（D12：拒绝路径也必须先有 `requested`）；事务原子性（`requested` + 结果行同事务，D13）；派生态确定性（同 `created_at` 双行 → `id DESC` 定序）；幂等重放（同键同参 → 409 且仅一行 `requested`）；**并发重放防护（直接驱动 `IntegrityError` 路径 → 409，不依赖 Service 预检，D14）**；审批生命周期唯一（正向终态后再试 → 409）；Guard 五关逐关；CHECK 兜底（直接 ORM 塞非法 decision×direction 必炸）；Mock 确定性 + `fail_with` 四分类；401 零落行。
 2. **攻击面专项**：
    - **同 execution_id 异事实攻击**：第一次 `execution_id=A / approval=X`；第二次 `execution_id=A / approval=Y` → **409，数据库保持第一次执行的完整事实**；
    - **事实偷渡攻击**：请求体夹带 `action` / `target` → **422**（`extra="forbid"`）；
