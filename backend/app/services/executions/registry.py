@@ -10,8 +10,10 @@ living in .env:
 
 3.2.1 evolution (frozen design): shuffle / wazuh / thehive moved from
 RESERVED to RECOGNIZED architecture slots — the registry KNOWS them and
-validates their configuration fail-closed. Their implementations land in
-Phase 3.2.3-3.2.5; until then selecting one raises ExecutorConfigError:
+validates their configuration fail-closed; shuffle IMPLEMENTED in
+3.2.3 (workflow trigger only), wazuh / thehive still raise
+ExecutorConfigError until their 3.2.4 / 3.2.5 implementations land.
+Selecting an unimplemented slot raises ExecutorConfigError:
 NEVER a silent mock fallback, NEVER a fake adapter.
 
 Single-Active-Adapter invariant (frozen, design §3): EXECUTION_ADAPTER
@@ -23,16 +25,27 @@ Error taxonomy (stable, sanitized — config errors name SETTINGS KEYS,
 never values):
 - configuration selection error: unknown / multi-valued adapter name;
 - missing credential: a real adapter selected with incomplete config;
+- invalid credential shape (3.2.2): a BASE_URL with a query string /
+  userinfo / non-http(s) scheme — secrets must never ride in URLs;
 - not-yet-implemented: a recognized slot whose code lands in 3.2.3+.
 """
 from app.core.config import Settings
 from app.services.executions.base import ResponseExecutor
 from app.services.executions.exceptions import ExecutorConfigError
 from app.services.executions.mock import MockExecutor
-from app.services.executions.secrets import validate_base_url
+from app.services.executions.secrets import (
+    credentials_from_settings,
+    validate_base_url,
+)
+from app.services.executions.shuffle import (
+    ShuffleExecutor,
+    reverse_workflow_map_from_settings,
+    workflow_map_from_settings,
+)
 
-#: The implemented adapters (mock only until the 3.2.3+ adapters land).
-ADAPTER_NAMES = ("mock",)
+#: The implemented adapters (mock + 3.2.3 shuffle; wazuh / thehive land
+#: in 3.2.4 / 3.2.5).
+ADAPTER_NAMES = ("mock", "shuffle")
 
 #: Recognized architecture slots (3.2.1): known names with fail-closed
 #: configuration validation; implementations land in Phase 3.2.3-3.2.5.
@@ -127,7 +140,17 @@ def create_executor(settings: Settings) -> ResponseExecutor:
     name = settings.EXECUTION_ADAPTER.strip().lower()
     if name == "mock":
         return MockExecutor()
-    # Recognized slot, implementation lands in Phase 3.2.3+. Until then:
+    if name == "shuffle":
+        # 3.2.3: workflow-trigger adapter. Credentials ride the 3.2.2
+        # Secret Boundary; the action -> workflow mapping is fail-closed
+        # (any empty workflow id is a ConfigError naming keys only).
+        return ShuffleExecutor(
+            credentials_from_settings("shuffle", settings),
+            workflow_map_from_settings(settings),
+            reverse_workflows=reverse_workflow_map_from_settings(settings),
+            timeout=settings.SHUFFLE_TIMEOUT_SECONDS,
+        )
+    # Recognized slot, implementation lands in Phase 3.2.4+. Until then:
     # ConfigError, never a mock fallback, never a fake.
     raise ExecutorConfigError(
         f"EXECUTION_ADAPTER '{name}' is recognized but not implemented "

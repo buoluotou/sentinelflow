@@ -328,9 +328,9 @@ class TestRegistry:
         assert issubclass(ExecutorConfigError, ExecutorError)
 
     def test_registry_vocabulary_freeze(self):
-        # 3.2.1 evolution: shuffle / wazuh / thehive moved from RESERVED
-        # to RECOGNIZED slots; only mock is implemented.
-        assert ADAPTER_NAMES == ("mock",)
+        # 3.2.3 evolution: shuffle graduated to an implemented adapter;
+        # wazuh / thehive stay recognized slots until 3.2.4 / 3.2.5.
+        assert ADAPTER_NAMES == ("mock", "shuffle")
         assert RESERVED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
 
     def test_settings_default_is_mock(self):

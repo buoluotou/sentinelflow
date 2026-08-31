@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     THEHIVE_BASE_URL: str = ""
     THEHIVE_API_KEY: str = ""
 
+    # Phase 3.2.3: Shuffle action -> workflow mapping (frozen §4 column).
+    # Each executable action triggers EXACTLY ONE pre-configured workflow;
+    # empty ids stay fail-closed (ConfigError at construction). Reverse
+    # workflows are OPTIONAL — configured = compensation supported.
+    SHUFFLE_WORKFLOW_BLOCK_SOURCE_IP: str = ""
+    SHUFFLE_WORKFLOW_ISOLATE_HOST: str = ""
+    SHUFFLE_WORKFLOW_DISABLE_ACCOUNT: str = ""
+    SHUFFLE_WORKFLOW_ESCALATE_TO_INCIDENT: str = ""
+    SHUFFLE_WORKFLOW_REVERSE_BLOCK_SOURCE_IP: str = ""
+    SHUFFLE_WORKFLOW_REVERSE_ISOLATE_HOST: str = ""
+    # Adapter-level HTTP timeout; must never exceed the global sync
+    # dispatch budget (frozen §6; default stays 30s).
+    SHUFFLE_TIMEOUT_SECONDS: float = 30.0
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )

@@ -99,19 +99,27 @@ class TestRecognizedSlots:
         assert RECOGNIZED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
         # 3.1-era alias stays alive for frozen 3.1 imports/tests.
         assert RESERVED_ADAPTER_NAMES == RECOGNIZED_ADAPTER_NAMES
-        # Only mock is IMPLEMENTED; the three slots stay recognized-only
-        # until their 3.2.3+ code lands.
-        assert ADAPTER_NAMES == ("mock",)
+        # 3.2.3 evolution: shuffle graduated to an implemented adapter;
+        # wazuh / thehive stay recognized-only until their 3.2.4 / 3.2.5
+        # code lands.
+        assert ADAPTER_NAMES == ("mock", "shuffle")
         assert KNOWN_ADAPTER_NAMES == ("mock", "shuffle", "wazuh", "thehive")
 
-    @pytest.mark.parametrize("adapter", ["shuffle", "wazuh", "thehive"])
+    @pytest.mark.parametrize("adapter", ["wazuh", "thehive"])
     def test_recognized_slot_with_full_creds_still_refuses_no_fake(self, adapter):
         # Recognized != implemented: even with COMPLETE credentials the
-        # slot raises ConfigError until its 3.2.3+ code lands. Never a
+        # slot raises ConfigError until its 3.2.4+ code lands. Never a
         # silent mock fallback, never a fake external adapter.
         validate_adapter_config(_settings(EXECUTION_ADAPTER=adapter, **_FULL_CREDS[adapter]))
         with pytest.raises(ExecutorConfigError, match="recognized but not implemented"):
             create_executor(_settings(EXECUTION_ADAPTER=adapter, **_FULL_CREDS[adapter]))
+
+    def test_shuffle_with_creds_but_no_workflows_refuses_fail_closed(self):
+        # 3.2.3: shuffle is implemented, but half a configuration (creds
+        # without the action -> workflow mapping) stays a hard ConfigError.
+        validate_adapter_config(_settings(EXECUTION_ADAPTER="shuffle", **_FULL_CREDS["shuffle"]))
+        with pytest.raises(ExecutorConfigError, match="missing workflow configuration"):
+            create_executor(_settings(EXECUTION_ADAPTER="shuffle", **_FULL_CREDS["shuffle"]))
 
     @pytest.mark.parametrize("adapter", ["shuffle", "wazuh", "thehive"])
     def test_recognized_slot_never_falls_back_to_mock(self, adapter):
@@ -246,13 +254,22 @@ class TestSecretDiscipline:
                 _settings(EXECUTION_ADAPTER="thehive", **_FULL_CREDS["thehive"])
             )
         assert _SECRET not in str(slot_err.value)
+        # 3.2.3: shuffle is implemented — the secret discipline moves to
+        # the half-configuration error surface: a filled API key must
+        # never echo through the workflow-missing ConfigError.
+        with pytest.raises(ExecutorConfigError) as half_err:
+            create_executor(
+                _settings(EXECUTION_ADAPTER="shuffle", **_FULL_CREDS["shuffle"])
+            )
+        assert _SECRET not in str(half_err.value)
 
     def test_secret_never_appears_in_settings_repr_or_str(self):
         # 14. the default pydantic repr prints every value — ours masks.
         settings = _settings(
             EXECUTION_ADAPTER="shuffle",
             SHUFFLE_API_KEY=_SECRET,
-            WAZUH_API_KEY=_SECRET,
+            WAZUH_API_USER="sentinelflow-automation",
+            WAZUH_API_PASSWORD=_SECRET,
             THEHIVE_API_KEY=_SECRET,
             EXECUTION_TOKEN=_SECRET,
         )

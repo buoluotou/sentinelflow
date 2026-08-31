@@ -70,6 +70,14 @@ from app.services.executions.service import (
     compensate_response,
     execute_response,
 )
+from app.services.executions.shuffle import (
+    SHUFFLE_ACTIONS,
+    SHUFFLE_REVERSE_WORKFLOW_SETTINGS,
+    SHUFFLE_WORKFLOW_SETTINGS,
+    ShuffleExecutor,
+    reverse_workflow_map_from_settings,
+    workflow_map_from_settings,
+)
 from app.services.executions.state import (
     ALLOWED_TRANSITIONS,
     DIRECTION_VOCABULARY,
@@ -101,6 +109,9 @@ __all__ = [
     "OUTCOME_STATUSES",
     "RECOGNIZED_ADAPTER_NAMES",
     "RESERVED_ADAPTER_NAMES",
+    "SHUFFLE_ACTIONS",
+    "SHUFFLE_REVERSE_WORKFLOW_SETTINGS",
+    "SHUFFLE_WORKFLOW_SETTINGS",
     "TERMINAL_DECISIONS",
     "AdapterCredentials",
     "ApprovalAlreadyExecuted",
@@ -128,6 +139,7 @@ __all__ = [
     "OriginalExecutionNotTerminal",
     "ResponseExecutor",
     "SecretRedactionFilter",
+    "ShuffleExecutor",
     "check_approval_binding",
     "check_executor_capability",
     "check_lifecycle",
@@ -141,8 +153,10 @@ __all__ = [
     "parse_execution_outcome",
     "redact_detail",
     "redact_text",
+    "reverse_workflow_map_from_settings",
     "validate_adapter_config",
     "validate_api_key",
     "validate_base_url",
     "validate_transition",
+    "workflow_map_from_settings",
 ]

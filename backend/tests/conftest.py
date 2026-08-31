@@ -34,6 +34,25 @@ def pytest_configure(config):
         "the console UI against a live uvicorn+vite stack; never collected "
         "or run by the default suite",
     )
+    config.addinivalue_line(
+        "markers",
+        "external: tests that talk to REAL external systems (Shuffle / "
+        "Wazuh / TheHive). Deselected unless the run explicitly opts in "
+        "with -m external — the default suite stays zero-outbound",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Default runs never collect ``external``-marked tests (they are
+    DESELECTED, not skipped, so the suite keeps 0 skipped). Opt in with
+    ``pytest -m external``."""
+    marker_expr = str(config.getoption("-m") or "")
+    if "external" in marker_expr:
+        return
+    deselected = [item for item in items if item.get_closest_marker("external")]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if item not in deselected]
 
 
 @pytest.fixture()
