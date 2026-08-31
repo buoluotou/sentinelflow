@@ -38,8 +38,12 @@ from app.services.executions.models import (
 from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.registry import (
     ADAPTER_NAMES,
+    ADAPTER_REQUIRED_SETTINGS,
+    KNOWN_ADAPTER_NAMES,
+    RECOGNIZED_ADAPTER_NAMES,
     RESERVED_ADAPTER_NAMES,
     create_executor,
+    validate_adapter_config,
 )
 from app.services.executions.service import (
     COMPENSATABLE_STATES,
@@ -72,6 +76,7 @@ from app.services.executions.state import (
 __all__ = [
     "ADAPTER_CLASSIFICATIONS",
     "ADAPTER_NAMES",
+    "ADAPTER_REQUIRED_SETTINGS",
     "ALLOWED_TRANSITIONS",
     "COMPENSATABLE_STATES",
     "DIRECTION_VOCABULARY",
@@ -80,7 +85,9 @@ __all__ = [
     "FAIL_WITH_CHOICES",
     "FIRST_ROW_BY_DIRECTION",
     "GUARD_REJECTION_CODES",
+    "KNOWN_ADAPTER_NAMES",
     "OUTCOME_STATUSES",
+    "RECOGNIZED_ADAPTER_NAMES",
     "RESERVED_ADAPTER_NAMES",
     "TERMINAL_DECISIONS",
     "ApprovalAlreadyExecuted",
@@ -116,5 +123,6 @@ __all__ = [
     "execute_response",
     "is_terminal_state",
     "parse_execution_outcome",
+    "validate_adapter_config",
     "validate_transition",
 ]

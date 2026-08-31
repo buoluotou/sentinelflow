@@ -310,7 +310,14 @@ class TestRegistry:
 
     @pytest.mark.parametrize("reserved", list(RESERVED_ADAPTER_NAMES))
     def test_reserved_adapters_raise_config_error(self, reserved):
-        with pytest.raises(ExecutorConfigError, match="reserved"):
+        # 3.2.1: reserved -> recognized architecture slots; selecting one
+        # before its 3.2.3+ implementation raises ConfigError (missing
+        # credentials with empty config, "recognized but not implemented"
+        # once the pair is filled — see the 3.2.1 architecture suite).
+        with pytest.raises(
+            ExecutorConfigError,
+            match=r"missing required configuration|recognized but not implemented",
+        ):
             create_executor(Settings(EXECUTION_ADAPTER=reserved))
 
     def test_unknown_adapter_raises_config_error(self):
@@ -321,6 +328,8 @@ class TestRegistry:
         assert issubclass(ExecutorConfigError, ExecutorError)
 
     def test_registry_vocabulary_freeze(self):
+        # 3.2.1 evolution: shuffle / wazuh / thehive moved from RESERVED
+        # to RECOGNIZED slots; only mock is implemented.
         assert ADAPTER_NAMES == ("mock",)
         assert RESERVED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
 

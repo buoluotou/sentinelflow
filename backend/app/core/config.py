@@ -5,6 +5,18 @@ from pydantic_settings import BaseSettings
 # backend/app/core/config.py -> parents[3] is the monorepo root (.env lives there)
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+#: Field names whose VALUES must never surface in repr/str (3.2.1 secret
+#: discipline, mirrors the EXECUTION_TOKEN lineage). Names of the keys
+#: ARE reportable (config errors name missing keys); values are not.
+_SENSITIVE_FIELD_NAMES = frozenset({"DATABASE_URL"})
+_SENSITIVE_FIELD_SUFFIXES = ("API_KEY", "TOKEN")
+
+
+def _is_sensitive_field(name: str) -> bool:
+    return name in _SENSITIVE_FIELD_NAMES or any(
+        name.endswith(suffix) for suffix in _SENSITIVE_FIELD_SUFFIXES
+    )
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "SentinelFlow"
@@ -40,6 +52,19 @@ class Settings(BaseSettings):
     # strings, audit detail or the database (frozen security discipline).
     EXECUTION_TOKEN: str = ""
 
+    # Phase 3.2.1 (E3 frozen): external-adapter credentials, one flat
+    # *_BASE_URL / *_API_KEY pair per adapter. Empty defaults stay
+    # fail-closed — the registry's startup validation refuses to run a
+    # real adapter on half a configuration. mock requires NONE of these
+    # (local development is never hostage to external credentials).
+    # API keys never enter repr / logs / exceptions / audit / responses.
+    SHUFFLE_BASE_URL: str = ""
+    SHUFFLE_API_KEY: str = ""
+    WAZUH_BASE_URL: str = ""
+    WAZUH_API_KEY: str = ""
+    THEHIVE_BASE_URL: str = ""
+    THEHIVE_API_KEY: str = ""
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )
@@ -49,6 +74,19 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "extra": "ignore",
     }
+
+    def __repr__(self) -> str:
+        # 3.2.1 secret discipline: the default pydantic repr prints every
+        # value — API keys and the DB URL included. Sensitive values are
+        # masked; key NAMES stay visible so config debugging still works.
+        parts = [
+            f"{name}={'***' if _is_sensitive_field(name) else getattr(self, name)!r}"
+            for name in type(self).model_fields
+        ]
+        return f"Settings({', '.join(parts)})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
 
 settings = Settings()
