@@ -40,7 +40,12 @@ _SECRET = "s3cr3t-key-value-that-must-never-surface"
 
 _FULL_CREDS = {
     "shuffle": {"SHUFFLE_BASE_URL": "http://stub", "SHUFFLE_API_KEY": _SECRET},
-    "wazuh": {"WAZUH_BASE_URL": "http://stub", "WAZUH_API_KEY": _SECRET},
+    # 3.2.4: Wazuh authenticates with a user/password pair (Basic).
+    "wazuh": {
+        "WAZUH_BASE_URL": "http://stub",
+        "WAZUH_API_USER": "sentinelflow-automation",
+        "WAZUH_API_PASSWORD": _SECRET,
+    },
     "thehive": {"THEHIVE_BASE_URL": "http://stub", "THEHIVE_API_KEY": _SECRET},
 }
 
@@ -69,7 +74,8 @@ class TestSelection:
             SHUFFLE_BASE_URL="",
             SHUFFLE_API_KEY="",
             WAZUH_BASE_URL="",
-            WAZUH_API_KEY="",
+            WAZUH_API_USER="",
+            WAZUH_API_PASSWORD="",
             THEHIVE_BASE_URL="",
             THEHIVE_API_KEY="",
         )
@@ -125,15 +131,18 @@ class TestCredentialValidation:
 
     @pytest.mark.parametrize("adapter", ["shuffle", "wazuh", "thehive"])
     def test_partial_pair_names_exactly_the_missing_key(self, adapter):
-        # Filling ONLY the BASE_URL must name exactly the missing API key
-        # and nothing else (key names are reportable, values never).
-        base_url_key, api_key_key = ADAPTER_REQUIRED_SETTINGS[adapter]
+        # 3.2.4 evolution: wazuh carries THREE required settings
+        # (user/password pair) — filling ONLY the BASE_URL must name
+        # every remaining missing key and nothing else.
+        keys = ADAPTER_REQUIRED_SETTINGS[adapter]
+        base_url_key, missing_keys = keys[0], keys[1:]
         with pytest.raises(ExecutorConfigError) as excinfo:
             validate_adapter_config(
                 _settings(EXECUTION_ADAPTER=adapter, **{base_url_key: "http://stub"})
             )
         message = str(excinfo.value)
-        assert api_key_key in message
+        for key in missing_keys:
+            assert key in message
         assert base_url_key not in message
 
     def test_adapter_never_validates_another_adapters_creds(self):
@@ -151,7 +160,7 @@ class TestCredentialValidation:
             )
         message = str(excinfo.value)
         assert "WAZUH_BASE_URL" in message
-        assert "WAZUH_API_KEY" in message
+        assert "WAZUH_API_USER" in message and "WAZUH_API_PASSWORD" in message
         assert "SHUFFLE_" not in message and "THEHIVE_" not in message
 
 

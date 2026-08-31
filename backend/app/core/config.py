@@ -9,7 +9,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 #: discipline, mirrors the EXECUTION_TOKEN lineage). Names of the keys
 #: ARE reportable (config errors name missing keys); values are not.
 _SENSITIVE_FIELD_NAMES = frozenset({"DATABASE_URL"})
-_SENSITIVE_FIELD_SUFFIXES = ("API_KEY", "TOKEN")
+_SENSITIVE_FIELD_SUFFIXES = ("API_KEY", "TOKEN", "PASSWORD")
 
 
 def _is_sensitive_field(name: str) -> bool:
@@ -61,7 +61,11 @@ class Settings(BaseSettings):
     SHUFFLE_BASE_URL: str = ""
     SHUFFLE_API_KEY: str = ""
     WAZUH_BASE_URL: str = ""
-    WAZUH_API_KEY: str = ""
+    # 3.2.4: Wazuh authenticates with a user/password pair (Basic) —
+    # still one Authorization header, still .env -> Settings ->
+    # AdapterCredentials -> header, never URL/body/query.
+    WAZUH_API_USER: str = ""
+    WAZUH_API_PASSWORD: str = ""
     THEHIVE_BASE_URL: str = ""
     THEHIVE_API_KEY: str = ""
 

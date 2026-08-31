@@ -56,6 +56,7 @@ from app.services.executions.guard import (
 )
 from app.services.executions.models import ExecutionDispatch
 from app.services.executions.protocol import parse_execution_outcome
+from app.services.executions.secrets import redact_detail
 from app.services.executions.state import derive_execution_state
 
 #: Conflict family -> HTTP status the future API layer maps (frozen here
@@ -228,7 +229,11 @@ def _append(
     ``created_at`` is stamped HERE with the server clock through the
     high-water mark above instead of the CURRENT_TIMESTAMP server default
     — see _next_audit_timestamp for why chain rows need strictly
-    increasing stamps."""
+    increasing stamps.
+
+    3.2.2 audit gate: EVERY detail passes the secret-boundary *** gate
+    at this single write point — a credential can never reach
+    execution_log no matter what an adapter's outcome carried."""
     row = ExecutionLog(
         execution_id=execution_id,
         approval_id=approval_id,
@@ -237,7 +242,7 @@ def _append(
         action=action,
         target=target,
         operator=operator,
-        detail=detail,
+        detail=redact_detail(detail),
         compensates_execution_id=compensates_execution_id,
         created_at=_next_audit_timestamp(),
     )

@@ -29,6 +29,7 @@ from app.core.config import Settings
 from app.services.executions.base import ResponseExecutor
 from app.services.executions.exceptions import ExecutorConfigError
 from app.services.executions.mock import MockExecutor
+from app.services.executions.secrets import validate_base_url
 
 #: The implemented adapters (mock only until the 3.2.3+ adapters land).
 ADAPTER_NAMES = ("mock",)
@@ -45,13 +46,13 @@ RESERVED_ADAPTER_NAMES = RECOGNIZED_ADAPTER_NAMES
 _ADAPTER_LANDINGS = {"shuffle": "3.2.3", "wazuh": "3.2.4", "thehive": "3.2.5"}
 
 #: Per-adapter REQUIRED settings names (E3 frozen: one flat *_BASE_URL /
-#: *_API_KEY pair per adapter). mock requires NOTHING — local development
+#: credential pair per adapter). mock requires NOTHING — local development
 #: must never be hostage to external credentials. Each real adapter
 #: validates ONLY its own pair, never another adapter's.
 ADAPTER_REQUIRED_SETTINGS = {
     "mock": (),
     "shuffle": ("SHUFFLE_BASE_URL", "SHUFFLE_API_KEY"),
-    "wazuh": ("WAZUH_BASE_URL", "WAZUH_API_KEY"),
+    "wazuh": ("WAZUH_BASE_URL", "WAZUH_API_USER", "WAZUH_API_PASSWORD"),
     "thehive": ("THEHIVE_BASE_URL", "THEHIVE_API_KEY"),
 }
 
@@ -113,6 +114,12 @@ def validate_adapter_config(settings: Settings) -> None:
             f"configuration: {', '.join(missing)} (key names only — "
             "values are never reported). Refusing to start fail-closed."
         )
+    # 3.2.2: URL SHAPE gate (secrets boundary) — a credential can never
+    # ride inside a URL (query strings / userinfo are the classic leak).
+    # Error messages name the setting and the reason, never the value.
+    for key in ADAPTER_REQUIRED_SETTINGS[name]:
+        if key.endswith("_BASE_URL"):
+            validate_base_url(name, str(getattr(settings, key, "") or ""))
 
 
 def create_executor(settings: Settings) -> ResponseExecutor:

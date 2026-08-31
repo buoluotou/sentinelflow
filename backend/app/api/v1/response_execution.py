@@ -56,6 +56,7 @@ from app.services.executions import (
     ExecutionGuardError,
     ExecutionResult,
     ExecutionServiceError,
+    ExecutorConfigError,
     ResponseExecutor,
     compensate_response,
     create_executor,
@@ -105,8 +106,17 @@ def require_execution_token(authorization: str | None = Header(default=None)) ->
 
 def get_response_executor() -> ResponseExecutor:
     """Registry-produced adapter from settings (mock by default, frozen
-    3.1.5). Tests override this dependency to drive failure paths."""
-    return create_executor(settings)
+    3.1.5). Tests override this dependency to drive failure paths.
+
+    3.2.2: a misconfigured adapter is a server-side deployment fault,
+    mapped to ONE static 503 detail — the sanitized config message (and
+    anything an adapter ever whispers) never reaches the client."""
+    try:
+        return create_executor(settings)
+    except ExecutorConfigError:
+        raise HTTPException(
+            status_code=503, detail="Execution adapter misconfigured"
+        )
 
 
 # --------------------------------------------------------------------------
