@@ -15,7 +15,10 @@ Frozen behaviour:
   the platform parse (D9).
 """
 from app.services.executions.base import ResponseExecutor
-from app.services.executions.guard import EXECUTABLE_ACTIONS
+from app.services.executions.guard import (
+    EXECUTABLE_ACTIONS,
+    NON_COMPENSATABLE_ACTIONS,
+)
 from app.services.executions.models import (
     ADAPTER_CLASSIFICATIONS,
     ExecutionDispatch,
@@ -50,8 +53,13 @@ class MockExecutor(ResponseExecutor):
 
     def supports_compensation(self, action: str) -> bool:
         # The mock simulates the inverse operation of every executable
-        # action — same vocabulary, zero outbound work.
-        return action in EXECUTABLE_ACTIONS
+        # action EXCEPT the non-compensable ones (E1 policy): escalating
+        # to a case has no machine reversal — the case lifecycle belongs
+        # to human investigation and is never auto-closed.
+        return (
+            action in EXECUTABLE_ACTIONS
+            and action not in NON_COMPENSATABLE_ACTIONS
+        )
 
     def execute(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
         if not self.supports(dispatch.action):

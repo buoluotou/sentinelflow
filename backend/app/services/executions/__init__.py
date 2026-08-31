@@ -17,6 +17,7 @@ from app.services.executions.exceptions import (
 from app.services.executions.guard import (
     EXECUTABLE_ACTIONS,
     GUARD_REJECTION_CODES,
+    NON_COMPENSATABLE_ACTIONS,
     ApprovalAlreadyExecuted,
     ApprovalNotFound,
     ExecutionGuardError,
@@ -91,6 +92,10 @@ from app.services.executions.state import (
     is_terminal_state,
     validate_transition,
 )
+from app.services.executions.thehive import (
+    THEHIVE_ACTIONS,
+    TheHiveExecutor,
+)
 from app.services.executions.wazuh import (
     WAZUH_ACTIONS,
     WAZUH_COMMANDS,
@@ -112,6 +117,7 @@ __all__ = [
     "GUARD_REJECTION_CODES",
     "KNOWN_ADAPTER_NAMES",
     "MASK",
+    "NON_COMPENSATABLE_ACTIONS",
     "OUTCOME_STATUSES",
     "RECOGNIZED_ADAPTER_NAMES",
     "RESERVED_ADAPTER_NAMES",
@@ -119,6 +125,7 @@ __all__ = [
     "SHUFFLE_REVERSE_WORKFLOW_SETTINGS",
     "SHUFFLE_WORKFLOW_SETTINGS",
     "TERMINAL_DECISIONS",
+    "THEHIVE_ACTIONS",
     "WAZUH_ACTIONS",
     "WAZUH_COMMANDS",
     "WAZUH_REVERSE_COMMANDS",
@@ -149,6 +156,7 @@ __all__ = [
     "ResponseExecutor",
     "SecretRedactionFilter",
     "ShuffleExecutor",
+    "TheHiveExecutor",
     "WazuhExecutor",
     "check_approval_binding",
     "check_executor_capability",

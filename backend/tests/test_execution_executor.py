@@ -2,9 +2,10 @@
 
 Hard requirements this suite nails down (acceptance gate 1–14):
  1. mock name is always "mock"
- 2. the three executable actions are supported
+ 2. the executable actions are supported
  3. non-executable vocabulary words are NOT supported
- 4. compensation capability mirrors the executable vocabulary
+ 4. compensation capability mirrors the executable vocabulary minus the
+    E1 non-compensable policy (escalate_to_incident, 3.2.5)
  5. deterministic output — same dispatch, byte-identical outcome
  6/7. ExecutionOutcome succeeded / failed paths
  8. bad adapter result -> platform judges protocol_violation (D9)
@@ -36,6 +37,7 @@ from app.services.executions.exceptions import (
 )
 from app.services.executions.guard import (
     EXECUTABLE_ACTIONS,
+    NON_COMPENSATABLE_ACTIONS,
     ExecutorCapability,
     GuardRejection,
     check_executor_capability,
@@ -86,9 +88,17 @@ class TestMockIdentityAndCapability:
     def test_does_not_support_unknown_action(self):
         assert MockExecutor().supports("rm_rf_everything") is False
 
-    @pytest.mark.parametrize("action", sorted(EXECUTABLE_ACTIONS))
+    @pytest.mark.parametrize(
+        "action", sorted(EXECUTABLE_ACTIONS - NON_COMPENSATABLE_ACTIONS)
+    )
     def test_supports_compensation_for_executable_actions(self, action):
         assert MockExecutor().supports_compensation(action) is True
+
+    @pytest.mark.parametrize("action", sorted(NON_COMPENSATABLE_ACTIONS))
+    def test_no_compensation_for_non_compensatable_actions(self, action):
+        # 3.2.5 E1 policy: escalating to a case has no machine reversal —
+        # the case lifecycle belongs to human investigation.
+        assert MockExecutor().supports_compensation(action) is False
 
     @pytest.mark.parametrize("action", NON_EXECUTABLE_ACTIONS + ["garbage"])
     def test_no_compensation_for_non_executable_actions(self, action):
@@ -311,9 +321,10 @@ class TestRegistry:
     @pytest.mark.parametrize("reserved", list(RESERVED_ADAPTER_NAMES))
     def test_reserved_adapters_raise_config_error(self, reserved):
         # 3.2.1: reserved -> recognized architecture slots; selecting one
-        # before its 3.2.3+ implementation raises ConfigError (missing
-        # credentials with empty config, "recognized but not implemented"
-        # once the pair is filled — see the 3.2.1 architecture suite).
+        # before its 3.2.3+ implementation still raises ConfigError. With
+        # empty credentials the fail-closed credential gate fires first
+        # (missing required configuration); with full credentials the
+        # not-implemented gate fires (see the 3.2.1 architecture suite).
         with pytest.raises(
             ExecutorConfigError,
             match=r"missing required configuration|recognized but not implemented",
@@ -328,9 +339,9 @@ class TestRegistry:
         assert issubclass(ExecutorConfigError, ExecutorError)
 
     def test_registry_vocabulary_freeze(self):
-        # 3.2.4 evolution: wazuh graduated to an implemented adapter;
-        # thehive stays a recognized slot until 3.2.5.
-        assert ADAPTER_NAMES == ("mock", "shuffle", "wazuh")
+        # 3.2.3-3.2.5 evolution: shuffle, wazuh and thehive all graduated
+        # from reserved slots to implemented adapters.
+        assert ADAPTER_NAMES == ("mock", "shuffle", "wazuh", "thehive")
         assert RESERVED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
 
     def test_settings_default_is_mock(self):

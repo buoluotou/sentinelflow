@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     # further configuration surface is needed.
     WAZUH_TIMEOUT_SECONDS: float = 30.0
 
+    # Phase 3.2.5: TheHive adapter-level HTTP timeout (same budget
+    # rule). The case-creation vocabulary is frozen inside the adapter;
+    # no further configuration surface is needed.
+    THEHIVE_TIMEOUT_SECONDS: float = 30.0
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )

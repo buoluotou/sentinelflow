@@ -33,14 +33,26 @@ from app.services.executions.state import (
     derive_execution_state,
 )
 
-#: Machine-executable action vocabulary (D3, frozen). Strict subset of the
-#: Phase 2 six-word RESPONSE_ACTIONS — the other three words
-#: (escalate_to_incident / hunt_related_activity / monitor_only) are
+#: Machine-executable action vocabulary (D3, frozen; 3.2.5 E1
+#: extension). Strict subset of the Phase 2 six-word RESPONSE_ACTIONS:
+#: the E1 adjudication promotes escalate_to_incident to a controlled
+#: machine-executable capability (TheHive case creation, full
+#: Approval -> Execute -> Guard -> Executor chain, zero data migration).
+#: The remaining two words (hunt_related_activity / monitor_only) are
 #: advisory and must NEVER be treated as executable by any Guard.
-EXECUTABLE_ACTIONS = frozenset({"block_source_ip", "isolate_host", "disable_account"})
+EXECUTABLE_ACTIONS = frozenset(
+    {"block_source_ip", "isolate_host", "disable_account", "escalate_to_incident"}
+)
 assert EXECUTABLE_ACTIONS < RESPONSE_ACTIONS, (
     "executable vocabulary must stay a strict subset of RESPONSE_ACTIONS"
 )
+
+#: Executable actions with NO machine reversal (E1 capability policy):
+#: escalating to a case cannot be automatically undone — the case
+#: lifecycle belongs to human investigation and cases are never
+#: auto-closed by the platform.
+NON_COMPENSATABLE_ACTIONS = frozenset({"escalate_to_incident"})
+assert NON_COMPENSATABLE_ACTIONS <= EXECUTABLE_ACTIONS
 
 #: Frozen rejection-code vocabulary. Every GuardRejection carries one of
 #: these; the guard_rejected row's detail records it verbatim (3.1.6).
@@ -159,7 +171,8 @@ def check_approval_binding(approval, recommendation, action: str) -> None:
         raise GuardRejection(
             "action_not_executable",
             f"Action '{action}' is advisory, not machine-executable; only "
-            f"block_source_ip / isolate_host / disable_account can execute",
+            f"block_source_ip / isolate_host / disable_account / "
+            f"escalate_to_incident can execute",
         )
 
 

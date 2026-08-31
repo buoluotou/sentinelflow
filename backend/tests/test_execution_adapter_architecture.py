@@ -99,20 +99,23 @@ class TestRecognizedSlots:
         assert RECOGNIZED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
         # 3.1-era alias stays alive for frozen 3.1 imports/tests.
         assert RESERVED_ADAPTER_NAMES == RECOGNIZED_ADAPTER_NAMES
-        # 3.2.3/3.2.4 evolution: shuffle and wazuh graduated to
-        # implemented adapters; thehive stays recognized-only until its
-        # 3.2.5 code lands.
-        assert ADAPTER_NAMES == ("mock", "shuffle", "wazuh")
+        # 3.2.3/3.2.4/3.2.5 evolution: every recognized slot graduated
+        # to an implemented adapter — no unimplemented slot remains.
+        assert ADAPTER_NAMES == ("mock", "shuffle", "wazuh", "thehive")
         assert KNOWN_ADAPTER_NAMES == ("mock", "shuffle", "wazuh", "thehive")
 
-    @pytest.mark.parametrize("adapter", ["thehive"])
-    def test_recognized_slot_with_full_creds_still_refuses_no_fake(self, adapter):
-        # Recognized != implemented: even with COMPLETE credentials the
-        # slot raises ConfigError until its 3.2.5 code lands. Never a
-        # silent mock fallback, never a fake external adapter.
-        validate_adapter_config(_settings(EXECUTION_ADAPTER=adapter, **_FULL_CREDS[adapter]))
-        with pytest.raises(ExecutorConfigError, match="recognized but not implemented"):
-            create_executor(_settings(EXECUTION_ADAPTER=adapter, **_FULL_CREDS[adapter]))
+    def test_thehive_slot_with_full_creds_constructs_the_real_adapter(self):
+        # 3.2.5: the last recognized slot graduated — with COMPLETE
+        # credentials the registry builds the real TheHiveExecutor,
+        # never a mock fallback, never a fake.
+        from app.services.executions import TheHiveExecutor
+
+        validate_adapter_config(_settings(EXECUTION_ADAPTER="thehive", **_FULL_CREDS["thehive"]))
+        executor = create_executor(
+            _settings(EXECUTION_ADAPTER="thehive", **_FULL_CREDS["thehive"])
+        )
+        assert isinstance(executor, TheHiveExecutor)
+        assert executor.name == "thehive"
 
     def test_shuffle_with_creds_but_no_workflows_refuses_fail_closed(self):
         # 3.2.3: shuffle is implemented, but half a configuration (creds
@@ -249,14 +252,10 @@ class TestSecretDiscipline:
         with pytest.raises(ExecutorConfigError) as unknown_err:
             create_executor(_settings(EXECUTION_ADAPTER="nmap", SHUFFLE_API_KEY=_SECRET))
         assert _SECRET not in str(unknown_err.value)
-        with pytest.raises(ExecutorConfigError) as slot_err:
-            create_executor(
-                _settings(EXECUTION_ADAPTER="thehive", **_FULL_CREDS["thehive"])
-            )
-        assert _SECRET not in str(slot_err.value)
-        # 3.2.3: shuffle is implemented — the secret discipline moves to
-        # the half-configuration error surface: a filled API key must
-        # never echo through the workflow-missing ConfigError.
+        # 3.2.5: every recognized slot is implemented now, so the secret
+        # discipline moves to the half-configuration error surface — a
+        # filled API key must never echo through the workflow-missing
+        # ConfigError (shuffle credentials complete, mapping absent).
         with pytest.raises(ExecutorConfigError) as half_err:
             create_executor(
                 _settings(EXECUTION_ADAPTER="shuffle", **_FULL_CREDS["shuffle"])

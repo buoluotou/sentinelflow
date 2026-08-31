@@ -120,17 +120,33 @@ def expect_rejection(fn, expected_code):
 
 class TestVocabularyFreeze:
     def test_executable_actions_exact_d3_vocabulary(self):
+        # 3.2.5 E1 extension: escalate_to_incident promoted to a
+        # controlled machine-executable capability (TheHive case
+        # creation). The other two words stay advisory forever.
         assert EXECUTABLE_ACTIONS == frozenset(
-            {"block_source_ip", "isolate_host", "disable_account"}
+            {
+                "block_source_ip",
+                "isolate_host",
+                "disable_account",
+                "escalate_to_incident",
+            }
         )
 
     def test_executable_is_strict_subset_of_phase2_vocabulary(self):
         assert EXECUTABLE_ACTIONS < RESPONSE_ACTIONS
 
-    def test_advisory_only_words_are_exactly_the_other_three(self):
+    def test_advisory_only_words_are_exactly_the_remaining_two(self):
         assert ADVISORY_ONLY == frozenset(
-            {"escalate_to_incident", "hunt_related_activity", "monitor_only"}
+            {"hunt_related_activity", "monitor_only"}
         )
+
+    def test_non_compensatable_policy_frozen(self):
+        # E1 capability policy: escalation has no machine reversal — the
+        # case lifecycle belongs to human investigation.
+        from app.services.executions.guard import NON_COMPENSATABLE_ACTIONS
+
+        assert NON_COMPENSATABLE_ACTIONS == frozenset({"escalate_to_incident"})
+        assert NON_COMPENSATABLE_ACTIONS <= EXECUTABLE_ACTIONS
 
     def test_rejection_codes_frozen(self):
         assert GUARD_REJECTION_CODES == frozenset(
@@ -249,14 +265,29 @@ class TestG2FactSmugglingAttack:
             "action_not_in_snapshot",
         )
 
-    def test_advisory_word_from_snapshot_still_not_executable(self):
+    def test_escalation_word_from_snapshot_is_now_executable(self):
+        # 3.2.5 E1: escalate_to_incident graduated from advisory to a
+        # controlled machine-executable capability — the snapshot
+        # provenance check still applies unchanged.
         approval = make_approval("approved")
         recommendation = make_recommendation(["escalate_to_incident"])
+        assert (
+            check_approval_binding(
+                approval, recommendation, "escalate_to_incident"
+            )
+            is None
+        )
+
+    def test_executable_word_without_snapshot_still_refused(self):
+        # The E1 extension changes the vocabulary, NOT the provenance
+        # rule: escalate must still appear in the approved snapshot.
+        approval = make_approval("approved")
+        recommendation = make_recommendation(["block_source_ip"])
         expect_rejection(
             lambda: check_approval_binding(
                 approval, recommendation, "escalate_to_incident"
             ),
-            "action_not_executable",
+            "action_not_in_snapshot",
         )
 
     def test_arbitrary_string_never_passes(self):
