@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # dispatch budget (frozen §6; default stays 30s).
     SHUFFLE_TIMEOUT_SECONDS: float = 30.0
 
+    # Phase 3.2.4: Wazuh adapter-level HTTP timeout (same budget rule).
+    # The endpoint-action vocabulary is frozen inside the adapter; no
+    # further configuration surface is needed.
+    WAZUH_TIMEOUT_SECONDS: float = 30.0
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )

@@ -91,6 +91,12 @@ from app.services.executions.state import (
     is_terminal_state,
     validate_transition,
 )
+from app.services.executions.wazuh import (
+    WAZUH_ACTIONS,
+    WAZUH_COMMANDS,
+    WAZUH_REVERSE_COMMANDS,
+    WazuhExecutor,
+)
 
 __all__ = [
     "ADAPTER_CLASSIFICATIONS",
@@ -113,6 +119,9 @@ __all__ = [
     "SHUFFLE_REVERSE_WORKFLOW_SETTINGS",
     "SHUFFLE_WORKFLOW_SETTINGS",
     "TERMINAL_DECISIONS",
+    "WAZUH_ACTIONS",
+    "WAZUH_COMMANDS",
+    "WAZUH_REVERSE_COMMANDS",
     "AdapterCredentials",
     "ApprovalAlreadyExecuted",
     "ApprovalNotFound",
@@ -140,6 +149,7 @@ __all__ = [
     "ResponseExecutor",
     "SecretRedactionFilter",
     "ShuffleExecutor",
+    "WazuhExecutor",
     "check_approval_binding",
     "check_executor_capability",
     "check_lifecycle",

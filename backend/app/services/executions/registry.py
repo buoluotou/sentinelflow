@@ -11,9 +11,9 @@ living in .env:
 3.2.1 evolution (frozen design): shuffle / wazuh / thehive moved from
 RESERVED to RECOGNIZED architecture slots — the registry KNOWS them and
 validates their configuration fail-closed; shuffle IMPLEMENTED in
-3.2.3 (workflow trigger only), wazuh / thehive still raise
-ExecutorConfigError until their 3.2.4 / 3.2.5 implementations land.
-Selecting an unimplemented slot raises ExecutorConfigError:
+3.2.3 (workflow trigger only), wazuh IMPLEMENTED in 3.2.4 (active
+response only), thehive still raises ExecutorConfigError until 3.2.5
+lands. Selecting an unimplemented slot raises ExecutorConfigError:
 NEVER a silent mock fallback, NEVER a fake adapter.
 
 Single-Active-Adapter invariant (frozen, design §3): EXECUTION_ADAPTER
@@ -42,10 +42,11 @@ from app.services.executions.shuffle import (
     reverse_workflow_map_from_settings,
     workflow_map_from_settings,
 )
+from app.services.executions.wazuh import WazuhExecutor
 
-#: The implemented adapters (mock + 3.2.3 shuffle; wazuh / thehive land
-#: in 3.2.4 / 3.2.5).
-ADAPTER_NAMES = ("mock", "shuffle")
+#: The implemented adapters (mock + 3.2.3 shuffle + 3.2.4 wazuh; thehive
+#: lands in 3.2.5).
+ADAPTER_NAMES = ("mock", "shuffle", "wazuh")
 
 #: Recognized architecture slots (3.2.1): known names with fail-closed
 #: configuration validation; implementations land in Phase 3.2.3-3.2.5.
@@ -150,7 +151,15 @@ def create_executor(settings: Settings) -> ResponseExecutor:
             reverse_workflows=reverse_workflow_map_from_settings(settings),
             timeout=settings.SHUFFLE_TIMEOUT_SECONDS,
         )
-    # Recognized slot, implementation lands in Phase 3.2.4+. Until then:
+    if name == "wazuh":
+        # 3.2.4: endpoint response provider. The action vocabulary
+        # (isolate / disable / block) is frozen inside the adapter —
+        # credentials + timeout are the whole configuration surface.
+        return WazuhExecutor(
+            credentials_from_settings("wazuh", settings),
+            timeout=settings.WAZUH_TIMEOUT_SECONDS,
+        )
+    # Recognized slot, implementation lands in Phase 3.2.5. Until then:
     # ConfigError, never a mock fallback, never a fake.
     raise ExecutorConfigError(
         f"EXECUTION_ADAPTER '{name}' is recognized but not implemented "

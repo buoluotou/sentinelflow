@@ -99,16 +99,16 @@ class TestRecognizedSlots:
         assert RECOGNIZED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
         # 3.1-era alias stays alive for frozen 3.1 imports/tests.
         assert RESERVED_ADAPTER_NAMES == RECOGNIZED_ADAPTER_NAMES
-        # 3.2.3 evolution: shuffle graduated to an implemented adapter;
-        # wazuh / thehive stay recognized-only until their 3.2.4 / 3.2.5
-        # code lands.
-        assert ADAPTER_NAMES == ("mock", "shuffle")
+        # 3.2.3/3.2.4 evolution: shuffle and wazuh graduated to
+        # implemented adapters; thehive stays recognized-only until its
+        # 3.2.5 code lands.
+        assert ADAPTER_NAMES == ("mock", "shuffle", "wazuh")
         assert KNOWN_ADAPTER_NAMES == ("mock", "shuffle", "wazuh", "thehive")
 
-    @pytest.mark.parametrize("adapter", ["wazuh", "thehive"])
+    @pytest.mark.parametrize("adapter", ["thehive"])
     def test_recognized_slot_with_full_creds_still_refuses_no_fake(self, adapter):
         # Recognized != implemented: even with COMPLETE credentials the
-        # slot raises ConfigError until its 3.2.4+ code lands. Never a
+        # slot raises ConfigError until its 3.2.5 code lands. Never a
         # silent mock fallback, never a fake external adapter.
         validate_adapter_config(_settings(EXECUTION_ADAPTER=adapter, **_FULL_CREDS[adapter]))
         with pytest.raises(ExecutorConfigError, match="recognized but not implemented"):
