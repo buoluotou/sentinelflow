@@ -35,7 +35,7 @@ Simulator/Wazuh → FastAPI Backend → PostgreSQL → React Console
 | 14 | Incident AI Integration（案件视图关联 AI 结果，不做执行器） | ✅ 14.1–14.8 全部完成（关联协议/服务/只读 API/跨层回归/React 只读视图/真实浏览器 E2E 9 旅程/最终回归验收/原子提交），后端 538 passed / 前端 43 passed / tsc 0 错误 / build 成功 / E2E 9/9 三轮全绿 / 迁移 0001→0008 往返含 downgrade base；零新迁移、零 Phase 3 执行码、风险分零回写、审批仅 approved/rejected、浏览器层零变更流量 | `0f6e3fc feat(incident): add incident ai integration` + tag `v1.1.0`（未推送） |
 | 3.1 | Response Execution（受控本地响应执行层，Approve≠Execute 延续） | ✅ 3.1.1–3.1.13 全部完成并随 v1.2.0 发布（Model/Migration 0009/状态机+派生态/Guard 五关/Mock Executor/Execute+Compensation Service/API/React Execute Console/Execution Audit 页/跨层回归 875 passed/Browser E2E 11 旅程/Final Regression/原子提交） | `657cb87 feat(execution): add controlled response execution`（已随 tag `v1.2.0` 发布） |
 | 3.2 | External Adapters（Shuffle / Wazuh / TheHive，Single-Active-Adapter） | ✅ 3.2.1–3.2.5 全部完成（架构与 fail-closed 启动校验/独立凭证边界/三适配器/五个原子提交/发布后四项审计），后端 1132 passed，默认套件零真实外部请求（`-m external` 显式选择才连真实例） | `59e78d1`→`2be74f8` 五个原子提交 + tag `v1.2.0`（已发布，Release 379791680） |
-| 3.3 | Governance & Observability（治理三角：Who can execute + When allowed + How performs） | ✅ 3.3.1–3.3.5 全部完成（Operator/RBAC 静态注册表/Execution Policy 时间窗+风险阈值/只读 Metrics+Observed Health/React Observability 页/跨层回归 7 旅程/Browser E2E 7 旅程八规格全过/Final Regression 十五项验收），后端 1353 passed / 前端 97 passed / tsc 0 / build 成功 / E2E 18/18；零新迁移、零新表、生产代码在 3.3.4/3.3.5 零改动 | 本次原子提交 `feat(governance): add execution governance and observability`（`48fbe41`，单个功能提交；不打 tag，v1.3.0 留待 3.3.7 用户验收后） |
+| 3.3 | Governance & Observability（治理三角：Who can execute + When allowed + How performs） | ✅ 3.3.1–3.3.5 全部完成（Operator/RBAC 静态注册表/Execution Policy 时间窗+风险阈值/只读 Metrics+Observed Health/React Observability 页/跨层回归 7 旅程/Browser E2E 7 旅程八规格全过/Final Regression 十五项验收），后端 1353 passed / 前端 97 passed / tsc 0 / build 成功 / E2E 18/18；零新迁移、零新表、生产代码在 3.3.4/3.3.5 零改动 | `48fbe41 feat(governance): add execution governance and observability` + tag `v1.3.0`（已发布，Release 380474368）；发布后文档收口 `459e8bf` |
 
 ## 三、关键代码地图（都在 `sentinelflow/`）
 
@@ -357,7 +357,7 @@ Step 12（已完成，提交 `0c7041c`，未推送）：Response Recommendation 
 更后续：Step 11 风险摘要 → Step 12 处置建议（AI≠执行器）→ Step 13 Approval Queue
 （Phase 2 最关键安全边界）→ Step 14 AI 与 Incident 全链路。
 
-## 八、Phase 3.3 治理与可观测性（当前任务，已收口待发布）
+## 八、Phase 3.3 治理与可观测性（已随 v1.3.0 发布封存，稳定基线）
 
 **大背景**：v1.2.0 已发布冻结（含 3.1 执行层 + 3.2 四适配器），不再修改。Phase 3.3 是“治理三角”：Who can execute（Operator/RBAC）+ When execution is allowed（Policy）+ How execution performs（Observability）。**冻结设计最高优先级**：`docs/design/phase3.3-governance-observability.md`，编码前必读；Phase 3 基础设计见 `docs/design/phase3-response-execution.md`。
 
@@ -373,15 +373,19 @@ Step 12（已完成，提交 `0c7041c`，未推送）：Response Recommendation 
 - **3.3.3 Observability**：`metrics.py` / `health.py` 纯只读派生（仅 SELECT，零 add/commit/flush）；`GET /executions/metrics` + `GET /executions/health` 免 Token；`success_rate = succeeded/(succeeded+failed)`，guard_rejected 永不进适配器成败分母；Observed Status 四词表 unknown/healthy/degraded/failing（窗口 = 最近 20 条终局链，治理拒绝与 in-flight 不入窗）；比率空分母 = None → 前端 N/A（绝非 0%）；前端 `/observability` 页零按钮零写流量，字段级镜像 API 响应（绝不重算）；无自动刷新、无主动探测、无 Prometheus/OTel。
 - **不变量（五轮全量回归钉死）**：不重复执行（同 execution_id/同 approval/failed 后再 execute 均 409）；不篡改事实（action/target/operator/created_at/status/direction/detail 全服务端构造）；不污染 Phase 2（EventRisk/Incident/AIAnalysis/Recommendation/Approval 字节级快照不变）；治理洪水不污染 Health（1 成功 + 20 治理拒绝 → Observed: healthy）。
 
+**发布封存（2026-09-01，用户放行）**：tag `v1.3.0` → `48fbe41`（代码发布点，文档提交不污染 tag）；`28dc16a` 哈希回填 → `459e8bf` docs finalize → main；GitHub Release 380474368；Fresh Clone 审计 27/27（默认 `EXECUTION_ADAPTER=mock`，零真实外部请求）；安全专项 170 passed。版本线：v1.1.0=0f6e3fc / v1.2.0=2be74f8 / v1.3.0=48fbe41，三 tag 全部冻结不可动。
+
+**固定口径（用户裁决，后续版本不再改定义）**：① Observed Health ≠ Live Health Probe（终局链窗口派生，非实时探测）；② 四种 Adapter 已实现 ≠ 默认连接真实外部系统（mock 为默认离线路径，真实适配器需显式凭据且 fail-closed）；③ Phase 3.3 定性永远是 Governance & Observability，不是“自动化响应”。
+
 **最终数字（3.3.5 Final Regression）**：后端 1353 passed / 0 failed / 0 skipped / external 3 deselected；前端 97 passed + tsc 0 + build 成功；浏览器 E2E 18/18（3.1.11 ×11 + 3.3.4 ×7，真实 SQLite+uvicorn+Vite+Chromium）；迁移 0001→0009 往返（含 downgrade base）+ CHECK/3 部分唯一索引/FK NO ACTION 全部在位；`git diff --check` 干净；v1.1.0=0f6e3fc / v1.2.0=2be74f8 未动。3.3.4 唯一一次最小修复协议：3.1.11 e2e 的 OPERATOR 基线更新为 3.3.1 认证身份语义（测试文件，非生产代码）。
 
 ## 九、快速自检清单（新会话开工前执行）
 
 ```powershell
 cd d:\edge\github\sentinelflow
-git status            # 应为干净（3.3.6 原子提交后）；若见未提交变更，先向用户报告再动手
-git log --oneline -4  # 应见 docs 哈希回填提交（若有）/ feat(governance) 原子提交 / 539df9f(3.3 设计冻结) / 9a5b703(docs 刷新)
-git tag --points-at 2be74f8   # 应见 v1.2.0（v1.1.0 仍在 0f6e3fc，两历史 tag 不可动）
+git status            # 应为干净（v1.3.0 发布收口 459e8bf 后）；若见未提交变更，先向用户报告再动手
+git log --oneline -4  # 应见 459e8bf(docs finalize v1.3.0) / 28dc16a(哈希回填) / 48fbe41(feat(governance)) / 539df9f(3.3 设计冻结)
+git tag --points-at 48fbe41   # 应见 v1.3.0（v1.1.0=0f6e3fc / v1.2.0=2be74f8，三历史 tag 不可动）
 git remote -v         # 应见 origin -> github.com/buoluotou/sentinelflow.git
 cd backend
 .\.venv\Scripts\python.exe -m pytest -q   # 应为 1353 passed / 3 deselected（默认套件，e2e/* 与 external 排除）
