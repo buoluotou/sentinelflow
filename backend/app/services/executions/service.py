@@ -1,10 +1,23 @@
-"""Execute / Compensation Service (Phase 3.1.6, design §9).
+"""Execute / Compensation Service (Phase 3.1.6, design §9; Execution
+Policy wired in 3.3.2.4, design B-3).
 
 The first layer that produces REAL execution facts, wiring everything
 frozen so far into one chain:
 
     Approval + Recommendation snapshot + State Machine (3.1.3)
-    + Guard (3.1.4) + ResponseExecutor (3.1.5) -> execution_log rows.
+    + Guard (3.1.4) + Execution Policy (3.3.2) + ResponseExecutor
+    (3.1.5) -> execution_log rows.
+
+Forward-chain order (frozen, B-3):
+
+    requested -> Guard -> Policy -> dispatched -> Executor -> terminal
+
+The Policy is the LAST deterministic governance verdict BEFORE
+execution, never an execution-result processor: a policy refusal lands
+as ``requested -> guard_rejected`` with ``detail.source = "policy"``
+(state vocabulary unchanged — there is no policy_rejected word) and the
+Executor receives ZERO calls. Guard refusals carry detail.source =
+"guard" so the audit trail splits guard_rejected rows by provenance.
 
 Transaction discipline (frozen):
 - add() + flush() only — the Service NEVER calls commit(); the API layer
@@ -40,8 +53,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.ai_response_approval import AIResponseApproval
 from app.models.ai_response_recommendation import AIResponseRecommendation
+from app.models.event_risk import EventRisk
 from app.models.execution_log import ExecutionLog
 from app.services.executions.base import ResponseExecutor
 from app.services.executions.exceptions import ExecutorOutcomeViolation
@@ -55,6 +70,11 @@ from app.services.executions.guard import (
     check_lifecycle,
 )
 from app.services.executions.models import ExecutionDispatch
+from app.services.executions.policy import (
+    ExecutionPolicy,
+    PolicyContext,
+    policy_from_settings,
+)
 from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.secrets import redact_detail
 from app.services.executions.state import derive_execution_state
@@ -303,6 +323,22 @@ def _terminal_outcome_detail(outcome) -> dict:
     return detail
 
 
+def _server_risk_score(session: Session, recommendation) -> int | None:
+    """The ONE risk fact the Execution Policy may read: EventRisk.score
+    of the recommendation's event — the live authoritative assessment.
+    READ-ONLY: the Service never recomputes risk and never writes
+    EventRisk / Incident. None = the event has no risk assessment yet
+    (the Policy judges a missing fact fail-closed)."""
+    if recommendation is None:
+        return None
+    risk = session.scalar(
+        select(EventRisk).where(
+            EventRisk.alert_group_id == recommendation.alert_group_id
+        )
+    )
+    return risk.score if risk is not None else None
+
+
 def _intent_detail(executor: ResponseExecutor, comment: str | None) -> dict:
     """Detail of the chain's FIRST row: which adapter was selected plus
     the optional operator comment from the HTTP Intent (3.1.7). The
@@ -325,6 +361,7 @@ def execute_response(
     operator: str,
     executor: ResponseExecutor,
     comment: str | None = None,
+    policy: ExecutionPolicy | None = None,
 ) -> ExecutionResult:
     """Run one complete forward execution chain (design §9).
 
@@ -332,6 +369,11 @@ def execute_response(
     is committed here. Business rejections RETURN a guard_rejected result
     (D13 audit fact); 404 / 409 conditions RAISE typed exceptions with
     NO log row.
+
+    3.3.2.4 (B-3): ``policy`` is the deployment's ExecutionPolicy; when
+    omitted it is built from application settings (disabled by default
+    -> the exact frozen 3.1/3.2 behavior). Tests inject a policy to
+    drive refusal paths deterministically.
     """
     approval = session.get(AIResponseApproval, approval_id)
     if approval is None:
@@ -386,7 +428,10 @@ def execute_response(
 
     # Guards G2 -> G4 (G3 already pre-checked above, pre-insert). Any
     # GuardRejection becomes a guard_rejected row in the SAME transaction
-    # (D13); the caller commits both together.
+    # (D13); the caller commits both together. 3.3.2.4: the detail's
+    # source="guard" tag lets the audit trail split guard_rejected rows
+    # from policy refusals (source="policy" below) — same frozen state,
+    # distinguishable provenance.
     try:
         if pending_rejection is not None:
             raise pending_rejection
@@ -402,12 +447,50 @@ def execute_response(
             action=action,
             target=target,
             operator=operator,
-            detail={"code": rejection.code, "reason": rejection.reason},
+            detail={
+                "source": "guard",
+                "code": rejection.code,
+                "reason": rejection.reason,
+            },
         )
         session.flush()
         return _result(_rows_for_execution(session, execution_id))
 
-    # Guards passed -> dispatched, then the adapter, then the terminal row.
+    # Execution Policy (3.3.2.4, B-3): the LAST deterministic governance
+    # verdict before execution — after every Guard, before dispatch. A
+    # refusal reuses the frozen guard_rejected word with detail.source =
+    # "policy" (no new state) and the Executor receives ZERO calls.
+    # Server-side facts only: the action comes from the approved snapshot,
+    # the risk score from the event's EventRisk row (read-only), the time
+    # from the SERVER clock (UTC basis) — the client supplies none of
+    # these.
+    active_policy = (
+        policy if policy is not None else policy_from_settings(settings)
+    )
+    verdict = active_policy.evaluate(
+        PolicyContext(
+            action=action,
+            risk_score=_server_risk_score(session, recommendation),
+        ),
+        datetime.now(timezone.utc),
+    )
+    if not verdict.allowed:
+        _append(
+            session,
+            execution_id=execution_id,
+            approval_id=approval_id,
+            decision="guard_rejected",
+            direction="execute",
+            action=action,
+            target=target,
+            operator=operator,
+            detail=verdict.detail(),
+        )
+        session.flush()
+        return _result(_rows_for_execution(session, execution_id))
+
+    # Guards + Policy passed -> dispatched, then the adapter, then the
+    # terminal row.
     _append(
         session,
         execution_id=execution_id,
@@ -543,6 +626,7 @@ def compensate_response(
             target=target,
             operator=operator,
             detail={
+                "source": "guard",
                 "classification": "capability_missing",
                 "code": rejection.code,
                 "reason": rejection.reason,

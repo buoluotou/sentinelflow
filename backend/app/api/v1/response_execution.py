@@ -1,15 +1,16 @@
-"""Response-execution API (Phase 3.1.7).
+"""Response-execution API (Phase 3.1.7, auth upgraded in 3.3.1).
 
 Thin HTTP layer over the Execute / Compensation Service (3.1.6):
 
-    HTTP Auth -> Request Schema -> Service
+    Bearer Token -> Operator Auth -> Request Schema -> Service
 
-The API OWNS: Bearer EXECUTION_TOKEN on the write paths, request-schema
-validation, the Service call, typed-exception -> HTTP mapping, commit,
-response serialization. The API NEVER judges approval status, action,
-target or lifecycle, never calls an executor and never writes
-execution_log rows itself — every execution fact is produced by the
-Service.
+The API OWNS: Bearer token authentication on the write paths (3.3.1:
+token -> Operator identity via the static registry, with legacy
+EXECUTION_TOKEN fallback), request-schema validation, the Service call,
+typed-exception -> HTTP mapping, commit, response serialization. The API
+NEVER judges approval status, action, target or lifecycle, never calls
+an executor and never writes execution_log rows itself — every execution
+fact is produced by the Service.
 
 HTTP contract (frozen):
     401  write paths only — token missing / malformed / wrong; the auth
@@ -33,8 +34,8 @@ is a paged, filterable envelope (?status= / ?direction= / ?approval_id=
 derive_execution_state(), never a reimplementation, and the detail
 returns the full history created_at ASC.
 """
-import secrets
 import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -49,8 +50,10 @@ from app.schemas.response_execution import (
     ExecuteRequest,
     ExecutionListResponse,
     ExecutionLogRowRead,
+    ExecutionMetricsRead,
     ExecutionRead,
     ExecutionSummaryRead,
+    ObservedHealthRead,
 )
 from app.services.executions import (
     ExecutionGuardError,
@@ -58,11 +61,18 @@ from app.services.executions import (
     ExecutionServiceError,
     ExecutorConfigError,
     ResponseExecutor,
+    collect_execution_metrics,
+    collect_observed_health,
     compensate_response,
     create_executor,
     derive_execution_state,
     execute_response,
 )
+from app.services.executions.operators import (
+    Operator,
+    get_operator_registry,
+)
+from app.services.executions.policy import PolicyViolation
 
 router = APIRouter(tags=["response-execution"])
 
@@ -87,21 +97,76 @@ DirectionFilter = Literal["execute", "compensate"]
 # --------------------------------------------------------------------------
 # Dependencies (deployment seams, overridable in tests)
 # --------------------------------------------------------------------------
-def require_execution_token(authorization: str | None = Header(default=None)) -> None:
-    """Write-path gate. Three failure shapes, ONE uniform 401: header
-    missing, scheme malformed, secret mismatch. Fail-closed: an
-    unconfigured EXECUTION_TOKEN keeps the write path fully closed.
-
-    The presented credential is never echoed — detail strings are static,
-    so the token cannot leak into a response or an exception string."""
-    expected = settings.EXECUTION_TOKEN
-    if not expected:
-        raise HTTPException(status_code=401, detail="Execution credentials not configured")
+def _extract_bearer(authorization: str | None) -> str | None:
+    """Extract the Bearer token from the Authorization header. Returns
+    None when the header is missing or malformed — the caller decides
+    the HTTP response (always 401 with a static detail string)."""
     if not authorization or not authorization.startswith("Bearer "):
+        return None
+    candidate = authorization[len("Bearer "):]
+    return candidate if candidate else None
+
+
+def require_execution_token(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """Write-path gate (backwards-compatible void form). Validates the
+    Bearer token against the operator registry OR the legacy
+    EXECUTION_TOKEN. Returns None — use ``authenticate_operator`` when
+    the endpoint needs the resolved Operator identity (3.3.1).
+
+    Three failure shapes, ONE uniform 401: header missing / malformed,
+    secret mismatch, nothing configured. The presented credential is
+    never echoed — detail strings are static, so the token cannot leak
+    into a response or an exception string."""
+    token = _extract_bearer(authorization)
+    if token is None:
         raise HTTPException(status_code=401, detail="Invalid execution credentials")
-    candidate = authorization[len("Bearer ") :]
-    if not candidate or not secrets.compare_digest(candidate, expected):
+    registry = get_operator_registry()
+    operator = registry.lookup(token, legacy_token=settings.EXECUTION_TOKEN)
+    if operator is None:
+        # Distinguish "nothing configured" from "wrong credentials" —
+        # both are 401, but the detail helps the operator debug.
+        if not settings.EXECUTION_TOKEN and registry.operator_count == 0:
+            raise HTTPException(
+                status_code=401,
+                detail="Execution credentials not configured",
+            )
         raise HTTPException(status_code=401, detail="Invalid execution credentials")
+
+
+def authenticate_operator(
+    authorization: str | None = Header(default=None),
+) -> Operator:
+    """Write-path gate with Operator identity (Phase 3.3.1).
+
+    Resolves the Bearer token to an authenticated Operator via the
+    static registry (or legacy EXECUTION_TOKEN fallback). The returned
+    Operator's name is the server-side identity — the endpoint uses it
+    instead of any client-supplied ``operator`` field.
+
+    Role check: only ``executor`` and ``admin`` may dispatch executions;
+    other roles get 403 (authenticated but not authorized)."""
+    token = _extract_bearer(authorization)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Invalid execution credentials")
+    registry = get_operator_registry()
+    operator = registry.lookup(token, legacy_token=settings.EXECUTION_TOKEN)
+    if operator is None:
+        if not settings.EXECUTION_TOKEN and registry.operator_count == 0:
+            raise HTTPException(
+                status_code=401,
+                detail="Execution credentials not configured",
+            )
+        raise HTTPException(status_code=401, detail="Invalid execution credentials")
+    # Role gate: execution write paths require executor or admin.
+    if not operator.role.can_execute:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Operator '{operator.name}' (role={operator.role.value}) "
+            "may not dispatch executions",
+        )
+    return operator
 
 
 def get_response_executor() -> ResponseExecutor:
@@ -126,25 +191,43 @@ def get_response_executor() -> ResponseExecutor:
     "/executions",
     response_model=ExecutionRead,
     status_code=201,
-    dependencies=[Depends(require_execution_token)],
 )
 def create_execution(
     payload: ExecuteRequest,
     db: Session = Depends(get_db),
     executor: ResponseExecutor = Depends(get_response_executor),
+    authenticated: Operator = Depends(authenticate_operator),
 ) -> ExecutionRead:
     """Run one Execute Intent end-to-end. 201 = an execution fact exists;
     the verdict lives in derived_state (succeeded / failed /
     guard_rejected). A raised Service error aborts BEFORE commit, so no
-    conflicting fact is ever persisted."""
+    conflicting fact is ever persisted.
+
+    3.3.1: the operator identity comes from the authenticated token —
+    ``payload.operator`` is ignored (kept optional for backwards
+    compatibility, but the server-side binding is the only source of
+    truth). The client can never impersonate an operator.
+
+    3.3.2.4: a malformed execution-policy configuration is a
+    server-side deployment fault, mapped to ONE static 503 detail —
+    the transaction rolls back, so a broken policy never silently
+    becomes an allow and never leaves a half-written chain."""
     try:
         result = execute_response(
             db,
             approval_id=payload.approval_id,
             execution_id=payload.execution_id,
-            operator=payload.operator,
+            operator=authenticated.name,
             executor=executor,
             comment=payload.comment,
+        )
+    except PolicyViolation:
+        # The requested intent row was already flushed inside the
+        # aborted transaction — roll it back so a broken policy leaves
+        # NO half-written chain, then fail closed with one static 503.
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="Execution policy misconfigured"
         )
     except (ExecutionServiceError, ExecutionGuardError) as exc:
         # http_status-driven mapping: ApprovalNotFound / ExecutionNotFound
@@ -160,22 +243,25 @@ def create_execution(
     "/executions/compensate",
     response_model=ExecutionRead,
     status_code=201,
-    dependencies=[Depends(require_execution_token)],
 )
 def compensate_execution(
     payload: CompensateRequest,
     db: Session = Depends(get_db),
     executor: ResponseExecutor = Depends(get_response_executor),
+    authenticated: Operator = Depends(authenticate_operator),
 ) -> ExecutionRead:
     """Run one Compensation Intent: a FRESH execution_id undoing a
     settled forward execution. approval_id / action / target are
-    inherited server-side from the original chain — never accepted here."""
+    inherited server-side from the original chain — never accepted here.
+
+    3.3.1: operator identity from the authenticated token (same rule as
+    create_execution — payload.operator is ignored)."""
     try:
         result = compensate_response(
             db,
             compensates_execution_id=payload.compensates_execution_id,
             execution_id=payload.execution_id,
-            operator=payload.operator,
+            operator=authenticated.name,
             executor=executor,
             comment=payload.comment,
         )
@@ -256,6 +342,47 @@ def list_executions(
     total = len(summaries)
     items = summaries[(page - 1) * size : (page - 1) * size + size]
     return ExecutionListResponse(total=total, page=page, size=size, items=items)
+
+
+@router.get("/executions/metrics", response_model=ExecutionMetricsRead)
+def execution_metrics(db: Session = Depends(get_db)) -> ExecutionMetricsRead:
+    """The execution metrics READ MODEL as a read-only audit view
+    (Phase 3.3.3.2). No token, no writes, no re-execution:
+
+        GET -> collect_execution_metrics -> execution_log -> numbers
+
+    The body is the field-for-field mirror of the frozen
+    metrics.ExecutionMetrics dataclass (rates keep the None = JSON null
+    semantics of an empty denominator). The endpoint neither creates
+    nor modifies a single execution_log row — the read model is a pure
+    function of what is already stored.
+
+    Route registration order matters: this path is declared BEFORE
+    /executions/{execution_id} so "metrics" can never be captured as an
+    execution id."""
+    return ExecutionMetricsRead.model_validate(collect_execution_metrics(db))
+
+
+@router.get("/executions/health", response_model=ObservedHealthRead)
+def execution_health(db: Session = Depends(get_db)) -> ObservedHealthRead:
+    """The adapter OBSERVED-HEALTH read model as a read-only audit view
+    (Phase 3.3.3.3.2). No token, no executor, no credentials, ZERO
+    external requests — health here is what the execution facts SHOW,
+    never a live probe:
+
+        GET -> collect_observed_health -> execution_log -> verdicts
+
+    The body is the field-for-field mirror of the frozen
+    health.ObservedHealth dataclass; the verdict word stays
+    ``observed_status`` (never a boolean ``healthy`` flag). Two
+    identical follow-up calls over an unchanged log agree on every
+    field except the generated_at stamp.
+
+    Route registration order matters: declared BEFORE
+    /executions/{execution_id} so "health" can never be captured as an
+    execution id."""
+    snapshot = collect_observed_health(db, now=datetime.now(timezone.utc))
+    return ObservedHealthRead.model_validate(snapshot)
 
 
 @router.get("/executions/{execution_id}", response_model=ExecutionRead)

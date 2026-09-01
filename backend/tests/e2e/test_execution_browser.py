@@ -92,7 +92,13 @@ COMPENSATE_URL = "/api/v1/executions/compensate"
 # It doubles as the token typed into the modal by hand — exactly like a
 # real operator.
 EXECUTION_TOKEN = "e2e-exec-token-3.1.11"
-OPERATOR = "ops-e2e"
+# The RECORDED operator identity (3.3.1 frozen semantics): the server
+# resolves the Bearer token to its authenticated Operator and ignores
+# any client-supplied field — EXECUTION_TOKEN maps to "legacy-execution".
+# The modal still types a client-side value below, but the facts (DB
+# rows, timeline, audit table) always carry this authenticated name.
+OPERATOR = "legacy-execution"
+CLIENT_TYPED_OPERATOR = "ops-e2e"  # typed into the modal, never recorded
 TARGET_IP = "203.0.113.10"
 
 # First visibility assert after every navigation: vite cold-compiles modules
@@ -544,7 +550,7 @@ def _compensate_posts(requests: list[dict]) -> list[dict]:
 
 
 def _execute_via_modal(
-    page: Page, requests: list[dict], *, token: str, operator: str = OPERATOR
+    page: Page, requests: list[dict], *, token: str, operator: str = CLIENT_TYPED_OPERATOR
 ) -> int:
     """Open the Execute modal, fill Operator + Token by hand, and click
     Confirm Execute. Returns the request-list mark recorded JUST BEFORE the

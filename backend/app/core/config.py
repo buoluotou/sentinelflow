@@ -8,7 +8,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 #: Field names whose VALUES must never surface in repr/str (3.2.1 secret
 #: discipline, mirrors the EXECUTION_TOKEN lineage). Names of the keys
 #: ARE reportable (config errors name missing keys); values are not.
-_SENSITIVE_FIELD_NAMES = frozenset({"DATABASE_URL"})
+_SENSITIVE_FIELD_NAMES = frozenset({"DATABASE_URL", "OPERATORS_JSON"})
 _SENSITIVE_FIELD_SUFFIXES = ("API_KEY", "TOKEN", "PASSWORD")
 
 
@@ -45,12 +45,44 @@ class Settings(BaseSettings):
     # them — the platform never fakes support.
     EXECUTION_ADAPTER: str = "mock"
 
-    # Phase 3.1.7: shared secret for the execution WRITE endpoints
-    # (POST /executions, POST /executions/compensate). Empty stays
-    # fail-closed: every write request gets 401 until a token is
-    # configured. The token never enters logs, responses, exception
-    # strings, audit detail or the database (frozen security discipline).
+    # Phase 3.1.7 / 3.3.1: execution WRITE-path shared secret.
+    # Legacy backwards-compatible fallback when OPERATORS_JSON is empty;
+    # mapped to a synthetic "legacy-execution" operator with the executor
+    # role. Empty stays fail-closed: every write request gets 401 until
+    # either OPERATORS_JSON or EXECUTION_TOKEN is configured. The token
+    # never enters logs, responses, exception strings, audit detail or
+    # the database (frozen security discipline).
     EXECUTION_TOKEN: str = ""
+
+    # Phase 3.3.1: static operator registry. JSON array of
+    # {"token": "...", "name": "...", "role": "..."} objects.
+    # Each token maps to exactly one Operator (name + role); roles are
+    # viewer / reviewer / executor / admin. When empty, the legacy
+    # EXECUTION_TOKEN above provides backwards-compatible fallback.
+    # When both are empty, every write path stays fully closed (401).
+    # Operator tokens never enter logs / responses / audit / DB.
+    OPERATORS_JSON: str = ""
+
+    # Phase 3.3.2: execution policy (B-3 — sits AFTER the Guard, BEFORE
+    # the Executor). Disabled by default so upgrades keep the exact
+    # 3.1/3.2 behavior; enabling NEVER bypasses Auth / RBAC / Approval /
+    # Guard — a disabled policy is an ALLOW, not a security bypass.
+    # A policy refusal lands as guard_rejected with detail.source=
+    # "policy" (no new execution state). Time basis is UTC: the window
+    # bounds are judged against the SERVER clock converted to UTC —
+    # never the deployment host's local timezone.
+    EXECUTION_POLICY_ENABLED: bool = False
+    # Window bounds, strict HH:MM, [start, end) UTC (start inclusive,
+    # end exclusive). Default = business hours.
+    EXECUTION_POLICY_WINDOW_START: str = "09:00"
+    EXECUTION_POLICY_WINDOW_END: str = "18:00"
+    # Minimum SERVER-SIDE risk score (EventRisk.score — the live
+    # authoritative assessment, never recomputed here) each executable
+    # action requires; a missing risk fact refuses fail-closed.
+    EXECUTION_POLICY_MIN_RISK_BLOCK_SOURCE_IP: int = 70
+    EXECUTION_POLICY_MIN_RISK_ISOLATE_HOST: int = 70
+    EXECUTION_POLICY_MIN_RISK_DISABLE_ACCOUNT: int = 80
+    EXECUTION_POLICY_MIN_RISK_ESCALATE_TO_INCIDENT: int = 50
 
     # Phase 3.2.1 (E3 frozen): external-adapter credentials, one flat
     # *_BASE_URL / *_API_KEY pair per adapter. Empty defaults stay

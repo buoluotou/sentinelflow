@@ -9,6 +9,7 @@ import { IncidentDetailPage } from './pages/IncidentDetailPage'
 import { ApprovalQueuePage } from './pages/ApprovalQueuePage'
 import { ExecutionAuditPage } from './pages/ExecutionAuditPage'
 import { ExecutionDetailPage } from './pages/ExecutionDetailPage'
+import { ExecutionObservabilityPage } from './pages/ExecutionObservabilityPage'
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
           <Route path="approvals" element={<ApprovalQueuePage />} />
           <Route path="executions" element={<ExecutionAuditPage />} />
           <Route path="executions/:id" element={<ExecutionDetailPage />} />
+          <Route path="observability" element={<ExecutionObservabilityPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

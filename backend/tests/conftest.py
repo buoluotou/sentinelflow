@@ -14,12 +14,23 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
+from app.services.executions.operators import reset_operator_registry
 
 # Real-model E2E lives under tests/e2e/ and is never collected by the
 # default run (explicit paths still work): plain `pytest tests` stays
 # mock-only and offline-safe. The `ollama` marker selects the real-model
 # chain; `browser` selects the Playwright browser E2E (Step 13.6).
 collect_ignore_glob = ["e2e/*"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_operator_registry_between_tests():
+    """The operator registry is a module-level singleton; reset it
+    between tests so monkeypatched OPERATORS_JSON / EXECUTION_TOKEN
+    always take effect (Phase 3.3.1)."""
+    reset_operator_registry()
+    yield
+    reset_operator_registry()
 
 
 def pytest_configure(config):

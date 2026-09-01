@@ -237,15 +237,21 @@ class TestSchemaSmuggling:
         assert response.status_code == 422
         assert all_rows(db_session) == []
 
-    def test_execute_rejects_missing_operator(self, client, db_session, auth):
+    def test_execute_body_without_operator_still_succeeds(self, client, db_session, auth):
+        """3.3.1: operator is resolved server-side from the Bearer token;
+        the body's operator field is optional and ignored. A request
+        without operator in the body succeeds when the token is valid."""
         approval = seed_approval(db_session)
         body = execute_body(approval)
         del body["operator"]
 
         response = client.post(EXECUTE, json=body, headers=auth)
 
-        assert response.status_code == 422
-        assert all_rows(db_session) == []
+        assert response.status_code == 201
+        # operator comes from the token, not the body
+        rows = all_rows(db_session)
+        assert len(rows) == 3
+        assert all(r.operator == "legacy-execution" for r in rows)
 
     def test_execute_rejects_malformed_approval_id(self, client, db_session, auth):
         approval = seed_approval(db_session)

@@ -6,7 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Phase 3.2 is shipped and tagged as `v1.2.0`; Phase 3.3 design is pending.
+Phase 3.3: **Governance & Observability** — the governance triangle around the v1.2.0 execution layer: Who can execute (Operator identity & RBAC) + When execution is allowed (Execution Policy) + How execution performs (Metrics & Observed Health). The v1.2.0 safety model stays frozen: no new tables, no new migrations, no new execution states, no new adapters, and zero production-code changes in the final verification steps.
+
+### Added
+
+- **Operator identity & RBAC (Phase 3.3.1)** — static operator registry (`OPERATORS_JSON`: name + token + role, one token → exactly one operator) with four roles `viewer / reviewer / executor / admin`; the write-path gate `authenticate_operator` resolves the Bearer token to the SOLE server-side identity — any client-supplied `operator` field is accepted for backwards compatibility but ignored (impersonation impossible), and only `executor` / `admin` may dispatch executions (403 for the rest); empty configuration stays fail-closed (401). The legacy `EXECUTION_TOKEN` maps to the synthetic `legacy-execution` operator unchanged.
+- **Execution Policy (Phase 3.3.2)** — a pure, read-only decision model evaluated between Guard and Executor (`EXECUTION_POLICY_*` settings, disabled by default): a UTC server-clock time window `[start, end)` and per-action minimum risk thresholds consuming the authoritative server-side `EventRisk.score` (missing risk fact refuses fail-closed). Policy refusals land as `guard_rejected` with `detail.source = "policy"` (distinct from structural Guard refusals); the request schema (`extra="forbid"`) accepts no risk / severity / timestamp / policy field, so forged client values have no channel in; a malformed policy configuration is a static 503 with rollback — never a silent allow.
+- **Execution Metrics read model + API (Phase 3.3.3.1–2)** — `GET /api/v1/executions/metrics` (no credential, read-only): total / succeeded / failed / guard_rejected / in-flight chains, `success_rate = succeeded / (succeeded + failed)` with `guard_rejected` NEVER in the adapter denominator, `guard_rejection_rate` as the separate governance metric, rejection provenance (`guard` vs `policy`), failure classifications and latency — all derived from `execution_log` with zero writes; empty denominators are `null` (the UI renders N/A, never 0%).
+- **Adapter Observed Health read model + API (Phase 3.3.3.3)** — `GET /api/v1/executions/health` (no credential, read-only, no active probing by design): per-adapter observed status from the frozen four-word vocabulary `unknown / healthy / degraded / failing` over the recent-20 TERMINAL chain window (guard refusals and in-flight chains never enter the window, so governance pressure can never be misattributed to an adapter); thresholds `healthy ≥ 0.9`, `degraded ≥ 0.5`; `unknown` = no terminal observation, never an invented verdict.
+- **Execution Observability UI (Phase 3.3.3.4)** — read-only `/observability` console page: six metrics cards + per-adapter health cards with the `Observed: {status}` badge; zero buttons and zero write traffic on the page, field-for-field mirror of the two GET responses (the UI never recomputes), no auto-refresh.
+- **Cross-layer and browser regression (Phase 3.3.3.5 + 3.3.4)** — 7 cross-layer journeys plus 7 real-Chromium browser journeys covering all eight E2E specs: N/A rates on an empty log, the four observed statuses, the governance-flood invariant (1 success + 20 policy refusals → `Observed: healthy`), three real adapter-failure classifications visible end to end, zero writes on read-only pages, zero token participation in observability, and browser == API field-for-field.
+
+### Validation
+
+- Backend: **1353 passed, 0 failed, 0 skipped** (3 external adapter tests deselected by default)
+- Frontend: **97 passed** + `tsc --noEmit` 0 errors + production build success
+- Browser E2E: **18/18** (3.1.11 execution journeys ×11 + 3.3.4 observability journeys ×7)
+- Migrations: 0001 → 0009 round trip including `downgrade base`; Phase 3.3 adds ZERO new migrations
+- `v1.1.0` (tag on `0f6e3fc`) and `v1.2.0` (tag on `2be74f8`) untouched
 
 ## [1.2.0] - 2026-08-31
 

@@ -589,7 +589,9 @@ class TestTargetSmugglingImpossible:
         """execute_response's signature accepts ONLY execution_id /
         approval_id / operator (+ the 3.1.7 audit-metadata comment) —
         there is no parameter through which a client could hand in
-        action or target."""
+        action or target. 3.3.2.4 adds exactly ONE parameter, ``policy``:
+        the server-side ExecutionPolicy (built from .env -> Settings,
+        never a client fact) — the request surface itself is unchanged."""
         import inspect
 
         signature = inspect.signature(execute_response)
@@ -600,6 +602,7 @@ class TestTargetSmugglingImpossible:
             "operator",
             "executor",
             "comment",
+            "policy",
         }
 
     def test_replayed_facts_cannot_overwrite_the_snapshot(self, db_session):
