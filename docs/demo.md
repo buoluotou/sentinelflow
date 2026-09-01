@@ -87,10 +87,11 @@ Open one high-risk event (e.g. *Malicious IOC match detected*, score 90). Three 
 ## 8. Response Execution (Execute Console)
 
 1. Open the **Execute Console** page. The recommendation you approved in Step 7 appears as executable (the approval is already recorded).
-2. Select the action (e.g. *Block source IP*), enter an operator name and an optional note, then click **Execute**.
+2. Select the action (e.g. *Block source IP*), enter an operator name and an optional note, then click **Execute**. Note: the recorded operator identity comes from the Bearer token (RBAC, v1.3.0) — the typed name is display-only and never recorded; only `executor` / `admin` roles may dispatch.
 3. The MockExecutor processes the request as a zero-outbound DryRun: `201` with `status=succeeded`, `detail` showing `{"dry_run": true}`. No real external call is made.
 4. Open the **Execution Audit** page — the append-only `execution_log` shows the row you just created: execution id, adapter name (`mock`), action, target, operator, status (`succeeded`), and the redacted detail. Secrets never appear.
 5. Key boundary: the execution chain (Approve → Execute → Audit) is fully traceable. The MockExecutor proves the chain works without producing any external side effect. Switching `EXECUTION_ADAPTER` to `shuffle` / `wazuh` / `thehive` in `.env` (plus credentials) activates real adapters — the chain stays identical, only the outbound target changes.
+6. **Observability (v1.3.0)** — open the **Observability** page: the metrics cards show the run you just executed (total / succeeded / failed / guard-rejected / in-flight, success rate), and the adapter card shows `Observed: healthy` for the mock adapter. The page has **zero buttons** and emits only the two read-only GETs (`/executions/metrics` + `/executions/health`); “Observed” is derived from the recorded audit rows — there is no live health probe. Empty denominators render as N/A, never 0%.
 
 ## 9. Incident AI Investigation (Incident Detail)
 
@@ -112,4 +113,4 @@ Remove-Item Env:DATABASE_URL
 - The incident **risk snapshot** reflects the score at the first threshold crossing (e.g. the IOC case shows 70 — one critical alert — even though the event later reaches 90). This is intentional: case records are immutable history, live risk lives on the event — and no AI result ever writes it back.
 - The simulator defaults to `--timestamps now` (current UTC); use `--timestamps file` for deterministic replay.
 - AI panels are explicit-trigger only: refreshing any page emits GETs, never an automatic model call. Failures (provider down → 503, protocol violation → 502) surface the backend message verbatim and never persist a row.
-- Approve ≠ Execute is the safety boundary end-to-end: AI advises, humans decide, execution is a separate controlled chain (Phase 3, v1.2.0). The MockExecutor proves the chain without producing external side effects; real adapters (Shuffle / Wazuh / TheHive) require explicit `.env` configuration plus credentials.
+- Approve ≠ Execute is the safety boundary end-to-end: AI advises, humans decide, execution is a separate controlled chain (Phase 3, v1.2.0) — governed and observed read-only in v1.3.0 (operator identity / RBAC, execution policy, metrics + observed adapter health). The MockExecutor proves the chain without producing external side effects; real adapters (Shuffle / Wazuh / TheHive) require explicit `.env` configuration plus credentials.

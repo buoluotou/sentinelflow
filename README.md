@@ -2,7 +2,7 @@
 
 **An open-source security alert orchestration and incident response platform for SOC teams.**
 
-SentinelFlow turns raw security alerts into deduplicated, risk-scored events and manageable incidents — with a web console built for fast triage. Phase 1 delivers a complete detection-to-incident pipeline; Phase 2 (v1.1.0) layers AI-assisted analysis — alert explanation, risk summary and response recommendations — behind a human approval queue, with a read-only AI investigation view on every incident. Phase 3 (v1.2.0) adds controlled response execution with external adapter support (Shuffle / Wazuh / TheHive) behind the same approval chain. AI output is advisory only: **Approve ≠ Execute** (see [Roadmap](#roadmap)).
+SentinelFlow turns raw security alerts into deduplicated, risk-scored events and manageable incidents — with a web console built for fast triage. Phase 1 delivers a complete detection-to-incident pipeline; Phase 2 (v1.1.0) layers AI-assisted analysis — alert explanation, risk summary and response recommendations — behind a human approval queue, with a read-only AI investigation view on every incident. Phase 3 (v1.2.0) adds controlled response execution with external adapter support (Shuffle / Wazuh / TheHive) behind the same approval chain. Phase 3.3 (v1.3.0) closes the governance triangle: operator identity & RBAC, an execution policy engine, and read-only execution metrics / observed adapter health. AI output is advisory only: **Approve ≠ Execute** (see [Roadmap](#roadmap)).
 
 ```
 Simulator / SIEM adapters
@@ -23,10 +23,12 @@ Simulator / SIEM adapters
         ↓
    Execution Audit        (append-only audit trail)
         ↓
-   React Web Console      (Dashboard / Events / Incidents / Approvals / Execute Console / Audit)
+   Governance & Observability (Operator/RBAC → Policy → Metrics / Observed Health)
+        ↓
+   React Web Console      (Dashboard / Events / Incidents / Approvals / Execute Console / Audit / Observability)
 ```
 
-## Features (v1.2.0)
+## Features (v1.3.0)
 
 ### Phase 1 — detection to incident
 
@@ -56,6 +58,14 @@ Simulator / SIEM adapters
 - **Wazuh Endpoint Response Adapter** — endpoint / security response: `isolate_host` / `disable_account` / `block_source_ip` via active-response API; Basic auth (`WAZUH_API_USER` / `WAZUH_API_PASSWORD`); symmetric compensation where the endpoint allows
 - **TheHive Case Adapter** — case creation only: `escalate_to_incident` posts the frozen six-field body to `POST /api/case`; 409 duplicates resolve to `succeeded + idempotent_duplicate`; zero compensation — the case lifecycle belongs to the investigation
 - **Safety boundary** — No automatic approval. No automatic retry. No internal adapter fan-out. No hidden execution. Adapter implementations exist, but the default configuration stays offline (`EXECUTION_ADAPTER=mock`); real Shuffle / Wazuh / TheHive connections require explicit `.env` configuration plus credentials
+
+### Phase 3.3 — governance & observability over execution
+
+- **Operator Identity & RBAC (Phase 3.3.1)** — static operator registry (name + token + role: viewer / reviewer / executor / admin); the Bearer token is the SOLE server-side identity (any client-supplied `operator` field is ignored — impersonation impossible); only executor / admin may dispatch; empty configuration stays fail-closed (401)
+- **Execution Policy (Phase 3.3.2)** — a read-only decision engine between Guard and Executor (`EXECUTION_POLICY_*` settings, disabled by default): UTC time window + per-action minimum risk thresholds consuming the server-side `EventRisk.score`; policy refusals land as `guard_rejected` with `detail.source="policy"`; malformed configuration is a static 503 with rollback — never a silent allow
+- **Execution Metrics (Phase 3.3.3)** — read-only `GET /api/v1/executions/metrics` derived from `execution_log` (no credential, zero writes): total / succeeded / failed / guard-rejected / in-flight chains, `success_rate` with `guard_rejected` never in the denominator, rejection provenance and latency; empty denominators render as N/A, never 0%
+- **Observed Adapter Health (Phase 3.3.3)** — read-only `GET /api/v1/executions/health`: per-adapter status from the frozen vocabulary `unknown / healthy / degraded / failing` over the recent-20 terminal chain window. **Observed ≠ probed**: status is derived from recorded execution facts only — there is no live health probe and no outbound request
+- **Execution Observability UI** — read-only `/observability` console page: metrics cards + per-adapter health cards; zero buttons, zero write traffic, field-for-field mirror of the two GET responses, no auto-refresh
 
 ## Quick Start
 
@@ -115,7 +125,7 @@ This replays 5 attack scenarios × 30 repeats (150 alerts), producing 5 aggregat
 
 ```bash
 cd backend
-python -m pytest -q        # 1132 tests (default suite; real-model E2E and external adapter tests excluded)
+python -m pytest -q        # 1353 tests (default suite; real-model E2E and external adapter tests excluded)
 ```
 
 ## Roadmap
@@ -124,8 +134,9 @@ python -m pytest -q        # 1132 tests (default suite; real-model E2E and exter
 |---|---|
 | v1.0.0-phase1 | Core SOC platform: ingestion → normalization → deduplication → risk → incidents → console |
 | v1.1.0 | AI security analysis: alert explanation, risk summary, recommended actions behind a human approval queue, plus the incident AI investigation view |
-| **v1.2.0** | Controlled response execution: Guard / Policy → external adapters (Shuffle / Wazuh / TheHive) → append-only audit — this release |
-| v2.0 | Governance & observability: operator identity / RBAC, execution policy engine, adapter health & metrics |
+| v1.2.0 | Controlled response execution: Guard → external adapters (Shuffle / Wazuh / TheHive) → append-only audit |
+| **v1.3.0** | Governance & observability: operator identity / RBAC, execution policy engine, execution metrics + observed adapter health, read-only Observability console — this release |
+| v2.0 | Execution maturity: external outcome reconciliation, webhooks / callbacks, long-running execution tracking |
 
 **Shuffle**, **Wazuh**, and **TheHive** are implemented as external response adapters (Phase 3.2) — their adapter code lives in this repository, but their source is never vendored. Default configuration stays offline (`EXECUTION_ADAPTER=mock`); real connections require explicit `.env` configuration.
 

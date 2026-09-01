@@ -1,4 +1,4 @@
-# SentinelFlow API Reference (v1.2.0)
+# SentinelFlow API Reference (v1.3.0)
 
 Base URL: `http://localhost:8000/api/v1` · Interactive docs: `http://localhost:8000/docs`
 
@@ -59,16 +59,22 @@ Human decisions over AI response recommendations. "Pending" is a derived state (
 
 Errors: `404` unknown recommendation · `409` already reviewed (one-shot decision; `UNIQUE(recommendation_id)` enforced).
 
-## Response Execution (Phase 3, v1.2.0)
+## Response Execution (Phase 3, v1.2.0 + governance v1.3.0)
 
 Controlled execution layered on top of approved recommendations. All write endpoints require `Authorization: Bearer <EXECUTION_TOKEN>` (the shared secret from `.env`; empty token → every write returns `401`). Read endpoints need no token.
 
+**Operator identity (v1.3.0)**: operators are registered in `.env` via `OPERATORS_JSON` (name + token + role: `viewer` / `reviewer` / `executor` / `admin`). The Bearer token resolves to the SOLE server-side identity — a client-supplied `operator` body field is accepted but always ignored (impersonation impossible). Only `executor` / `admin` may dispatch executions; other roles receive `403`.
+
+**Execution Policy (v1.3.0)**: with `EXECUTION_POLICY_ENABLED=true`, every dispatch additionally passes a read-only policy gate between Guard and Executor — a UTC time window (`EXECUTION_POLICY_WINDOW_START` / `EXECUTION_POLICY_WINDOW_END`, strict HH:MM, `[start, end)`) and per-action minimum risk thresholds (`EXECUTION_POLICY_MIN_RISK_*`) consuming the server-side `EventRisk.score`. Policy refusals are recorded as `guard_rejected` with `detail.source="policy"` (distinct from structural Guard refusals); the client can supply no risk / severity / timestamp / policy field (`extra=forbid`). A malformed policy configuration returns `503` and rolls back — never a silent allow.
+
 | Method | Path | Description |
 |---|---|---|
-| POST | `/executions` | Dispatch an approved recommendation for execution. Body: `{alert_group_id, recommendation_id, action, target?, operator, note?}`. The Guard validates: action is executable, approval exists and has not been executed, adapter supports the action. `201` with the `execution_log` row (`status` = `dispatched` / `succeeded` / `failed` / `guard_rejected`). Adapter secrets are never returned; detail is redacted via `***` |
+| POST | `/executions` | Dispatch an approved recommendation for execution. Body: `{alert_group_id, recommendation_id, action, target?, operator?, note?}` (`operator` is ignored — identity comes from the Bearer token). The Guard validates: action is executable, approval exists and has not been executed, adapter supports the action; the Policy gate then checks the time window and the event's risk threshold. `201` with the `execution_log` row (`status` = `dispatched` / `succeeded` / `failed` / `guard_rejected`). Adapter secrets are never returned; detail is redacted via `***` |
 | GET | `/executions?skip=&limit=` | Append-only execution audit trail, newest first. Each row includes `execution_id`, `adapter_name`, `action`, `target`, `operator`, `status`, `detail` (redacted), `external_execution_id`, `created_at`. Secrets never appear |
 | GET | `/executions/{execution_id}` | One execution row with full detail (redacted). `404` if missing |
-| POST | `/executions/compensate` | Request compensation for a previous execution. Body: `{execution_id, operator, note?}`. Requires Bearer token. `201` with the compensation `execution_log` row (`status` = `compensation_requested` / `compensation_succeeded` / `compensation_failed` / `guard_rejected`). Compensation is adapter-dependent: supported for Wazuh isolate/block (symmetric reversal); refused for `disable_account` and `escalate_to_incident` |
+| POST | `/executions/compensate` | Request compensation for a previous execution. Body: `{execution_id, operator?, note?}`. Requires Bearer token. `201` with the compensation `execution_log` row (`status` = `compensation_requested` / `compensation_succeeded` / `compensation_failed` / `guard_rejected`). Compensation is adapter-dependent: supported for Wazuh isolate/block (symmetric reversal); refused for `disable_account` and `escalate_to_incident` |
+| GET | `/executions/metrics` | **Read-only execution metrics (v1.3.0)** — no credential, zero writes, derived purely from `execution_log`: total / succeeded / failed / `guard_rejected` / in-flight chains, `success_rate = succeeded / (succeeded + failed)` (`guard_rejected` never enters the denominator), `guard_rejection_rate`, rejection provenance (`guard` vs `policy`), failure classifications and latency. Empty denominators are `null` (rendered as N/A, never 0%) |
+| GET | `/executions/health` | **Read-only observed adapter health (v1.3.0)** — no credential, no outbound requests, no live probing: per-adapter status from the frozen vocabulary `unknown` / `healthy` / `degraded` / `failing`, derived from the recent-20 TERMINAL chain window (guard refusals and in-flight chains never enter the window). Thresholds: `healthy ≥ 0.9`, `degraded ≥ 0.5`; `unknown` = no terminal observation yet |
 
 **Execution status vocabulary**: `requested` → `dispatched` → `succeeded` / `failed`; compensation: `compensation_requested` → `compensation_succeeded` / `compensation_failed`; guard rejection: `guard_rejected` (terminal). All rows are append-only; no UPDATE / DELETE.
 
@@ -97,5 +103,5 @@ Controlled execution layered on top of approved recommendations. All write endpo
 - Missing resources → `404` with `detail`
 - AI provider errors → `503` (misconfigured/unreachable) · protocol violations → `502` (never persisted)
 - Execution adapter errors → `503` (adapter misconfigured) · guard rejections → `201` with `status=guard_rejected` (not an HTTP error — the execution fact is recorded)
-- Missing `EXECUTION_TOKEN` or wrong token → `401` on all write execution endpoints
+- Missing `EXECUTION_TOKEN` or wrong token → `401` on all write execution endpoints; authenticated operators without dispatch permission → `403` (RBAC, v1.3.0)
 - Errors are surfaced verbatim by the web console (no silent failures)

@@ -6,7 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Phase 3.3: **Governance & Observability** — the governance triangle around the v1.2.0 execution layer: Who can execute (Operator identity & RBAC) + When execution is allowed (Execution Policy) + How execution performs (Metrics & Observed Health). The v1.2.0 safety model stays frozen: no new tables, no new migrations, no new execution states, no new adapters, and zero production-code changes in the final verification steps.
+## [1.3.0] - 2026-09-01
+
+Phase 3.3: **Governance & Observability** — the governance triangle around the v1.2.0 execution layer: Who can execute (**Operator Identity & RBAC**) + When execution is allowed (**Execution Policy**) + How execution performs (**Execution Metrics** + **Observed Adapter Health**) surfaced in the **Execution Observability UI**. Governance and observability, not automation: no automatic approval, no automatic retry, no adapter fan-out, no hidden execution — every verdict is derived read-only from frozen execution facts. The v1.2.0 safety model stays frozen: no new tables, no new migrations, no new execution states, no new adapters, and zero production-code changes in the final verification steps.
 
 ### Added
 

@@ -38,6 +38,8 @@ Configuration is read from `.env` at the repo root (pydantic-settings). Key vari
 | Backend | `BACKEND_HOST`, `BACKEND_PORT`, `DEBUG` | Set `DEBUG=false` in production |
 | AI Provider | `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`, `AI_TIMEOUT_SECONDS` | `mock` (default, offline) / `ollama` / `cloud` |
 | Execution | `EXECUTION_ADAPTER`, `EXECUTION_TOKEN` | `mock` (default, DryRun) / `shuffle` / `wazuh` / `thehive`; token required on write endpoints |
+| Operators / RBAC (v1.3.0) | `OPERATORS_JSON` | Static operator registry (name + token + role: `viewer` / `reviewer` / `executor` / `admin`). Bearer token is the sole recorded identity; empty registry + empty `EXECUTION_TOKEN` → every write stays closed (`401`). Tokens never enter logs / responses / audit / DB |
+| Execution Policy (v1.3.0) | `EXECUTION_POLICY_ENABLED`, `EXECUTION_POLICY_WINDOW_START`, `EXECUTION_POLICY_WINDOW_END`, `EXECUTION_POLICY_MIN_RISK_*` | Disabled by default (exact v1.2.0 behavior). Read-only gate between Guard and Executor: UTC time window `[start, end)` + per-action minimum risk thresholds against the server-side `EventRisk.score`; refusals land as `guard_rejected` with `detail.source="policy"`; malformed configuration → static `503` + rollback |
 | Adapter credentials | `SHUFFLE_BASE_URL`, `SHUFFLE_API_KEY`, `WAZUH_BASE_URL`, `WAZUH_API_USER`, `WAZUH_API_PASSWORD`, `THEHIVE_BASE_URL`, `THEHIVE_API_KEY` | Empty = fail-closed; only the selected adapter's pair is validated |
 | Adapter mapping | `SHUFFLE_WORKFLOW_*` (6 forward + 2 reverse), `SHUFFLE_TIMEOUT_SECONDS`, `WAZUH_TIMEOUT_SECONDS`, `THEHIVE_TIMEOUT_SECONDS` | Shuffle action → workflow id mapping; HTTP timeouts |
 | Deduplication | `DEDUP_WINDOW_SECONDS` | Fingerprint aggregation window |
@@ -87,8 +89,9 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 - [ ] Restrict CORS/proxy access to the API from the console origin only.
 - [ ] The ingestion endpoints accept arbitrary JSON payloads by design (they are the SIEM intake) — rate-limit them at the proxy.
 - [ ] Keep PostgreSQL unexposed (no public port mapping; the compose file binds to the host for local use only).
-- [ ] Set `EXECUTION_TOKEN` to a strong random value before enabling any real execution adapter; an empty token rejects every write with `401` (fail-closed).
+- [ ] Set `EXECUTION_TOKEN` to a strong random value before enabling any real execution adapter; an empty token rejects every write with `401` (fail-closed). Prefer `OPERATORS_JSON` (v1.3.0) to bind distinct operators and roles — only `executor` / `admin` can dispatch (`403` otherwise); keep operator tokens out of logs, tickets and screenshots.
 - [ ] Keep `EXECUTION_ADAPTER=mock` unless you have explicitly configured adapter credentials and workflow mappings. Real adapters require explicit `.env` configuration — the platform never falls back to a real adapter silently.
+- [ ] If you enable `EXECUTION_POLICY_ENABLED=true`, verify the window and per-action risk thresholds match your change-management hours; a malformed policy configuration refuses with `503` and rolls back — never a silent allow.
 
 ## Upgrading
 

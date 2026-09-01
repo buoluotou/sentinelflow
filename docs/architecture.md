@@ -1,4 +1,4 @@
-# SentinelFlow Architecture (v1.2.0)
+# SentinelFlow Architecture (v1.3.0)
 
 ## Overview
 
@@ -6,7 +6,7 @@ SentinelFlow is a monorepo with three runtime components:
 
 | Component | Tech | Role |
 |---|---|---|
-| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, AI analysis services, approval queue, response execution, external adapters, REST API |
+| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, AI analysis services, approval queue, response execution, external adapters, execution governance & observability, REST API |
 | `frontend/` | React 19 + TypeScript + Vite + react-router-dom | SOC web console (dark theme) |
 | `simulator/` | Python stdlib CLI | Replays 5 attack scenarios against the API |
 
@@ -111,10 +111,11 @@ Explicit trigger (console button / API POST)
 
 ```
 Approved Recommendation
-  → Explicit Execute Intent   (client: execution_id + operator + note)
-  → Auth / Schema gate        (Bearer EXECUTION_TOKEN on write paths)
+  → Explicit Execute Intent   (client: execution_id + note)
+  → Auth / RBAC gate           (Bearer token → Operator; executor/admin only)
   → execution_log: requested  (append-only row created in same transaction)
   → Guard                     (5 rejection codes over EXECUTABLE_ACTIONS)
+  → Execution Policy          (read-only: time window + risk thresholds; v1.3.0)
   → ResponseExecutor          (Single-Active-Adapter: exactly ONE adapter)
       ├─ MockExecutor          (default; zero-outbound DryRun)
       ├─ ShuffleExecutor       (workflow orchestration)
@@ -134,6 +135,16 @@ Key semantics:
 - **Compensation** — symmetric where the adapter supports it (Wazuh: isolate→release, block→unblock); `disable_account` refuses compensation outright; `escalate_to_incident` is non-compensable (case lifecycle is human-led).
 - **Idempotency propagation** — `external_execution_id` tracks the adapter-side identity for dedup / reconciliation.
 - **Safety boundary** — No automatic approval. No automatic retry. No internal adapter fan-out. No hidden execution. Adapter implementations exist, but the default configuration stays offline (`EXECUTION_ADAPTER=mock`); real connections require explicit `.env` configuration plus credentials.
+
+## Execution Governance & Observability (Phase 3.3, v1.3.0)
+
+The governance triangle over the v1.2.0 execution layer — Who can execute + When execution is allowed + How execution performs. No new tables, no new migrations, no new execution states: everything is derived read-only from the frozen `execution_log` facts.
+
+- **Operator identity & RBAC** — static registry from `OPERATORS_JSON` (name + token + role: `viewer` / `reviewer` / `executor` / `admin`); one token resolves to exactly one Operator, and that authenticated name is the SOLE recorded identity — a client-supplied `operator` field is accepted but always ignored (impersonation impossible). Dispatch is gated to `executor` / `admin` (`403` otherwise); empty configuration stays fail-closed (`401`).
+- **Execution Policy** — a pure, read-only decision model evaluated between Guard and Executor (`EXECUTION_POLICY_*` settings, disabled by default): a UTC server-clock time window `[start, end)` + per-action minimum risk thresholds consuming the authoritative `EventRisk.score` (the client has no channel to supply risk / severity / timestamp / policy fields — `extra="forbid"`). Policy refusals append `guard_rejected` with `detail.source="policy"` (distinct from structural Guard refusals); a malformed policy configuration is a static `503` with rollback — never a silent allow.
+- **Execution Metrics** — `GET /executions/metrics` (no credential): derived-only SELECT over `execution_log` — total / succeeded / failed / guard-rejected / in-flight chains, `success_rate = succeeded / (succeeded + failed)` with `guard_rejected` NEVER in the adapter denominator, `guard_rejection_rate` as the separate governance metric, rejection provenance (`guard` vs `policy`), failure classifications, latency. Empty denominators are `null` → the UI renders N/A, never 0%.
+- **Observed adapter health** — `GET /executions/health` (no credential): per-adapter status from the frozen vocabulary `unknown` / `healthy` / `degraded` / `failing` over the recent-20 TERMINAL chain window (guard refusals and in-flight chains never enter the window, so governance pressure is never misattributed to an adapter). Thresholds: `healthy ≥ 0.9`, `degraded ≥ 0.5`. **Observed ≠ probed** — status is derived from recorded facts; there is no live health probe and no outbound request.
+- **Read-only invariant** — the metrics/health services contain no `add` / `commit` / `flush` / `delete`; repeated GETs against an unchanged log are byte-identical.
 
 ## Incident AI Context (read-only aggregation)
 
@@ -164,6 +175,7 @@ React pages → api/ client (fetch wrapper) → FastAPI
 - AI panels (explanation / risk summary / recommendation) are explicit-trigger: page load emits only GETs, never an automatic POST; every render is protocol-shaped and never shows a risk score.
 - The Approval Queue page records one-shot decisions (201 removes locally, 409 re-syncs from the server); the Incident Detail "AI Investigation" panel is read-only with zero buttons.
 - The Execute Console drives the execution chain (select action → confirm → observe result); the Execution Audit page shows the append-only `execution_log` with secret-redacted detail.
+- The Observability page (`/observability`, v1.3.0) is strictly read-only: zero buttons, zero write traffic, field-for-field mirror of `GET /executions/metrics` + `GET /executions/health` (the UI never recomputes), no auto-refresh.
 - Vite dev proxy forwards `/api` and `/health` to `localhost:8000`.
 
 ## Integration Points
