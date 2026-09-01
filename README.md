@@ -2,7 +2,7 @@
 
 **An open-source security alert orchestration and incident response platform for SOC teams.**
 
-SentinelFlow turns raw security alerts into deduplicated, risk-scored events and manageable incidents — with a web console built for fast triage. Phase 1 delivers a complete detection-to-incident pipeline; Phase 2 (v1.1.0) layers AI-assisted analysis — alert explanation, risk summary and response recommendations — behind a human approval queue, with a read-only AI investigation view on every incident. AI output is advisory only: **Approve ≠ Execute** (see [Roadmap](#roadmap)).
+SentinelFlow turns raw security alerts into deduplicated, risk-scored events and manageable incidents — with a web console built for fast triage. Phase 1 delivers a complete detection-to-incident pipeline; Phase 2 (v1.1.0) layers AI-assisted analysis — alert explanation, risk summary and response recommendations — behind a human approval queue, with a read-only AI investigation view on every incident. Phase 3 (v1.2.0) adds controlled response execution with external adapter support (Shuffle / Wazuh / TheHive) behind the same approval chain. AI output is advisory only: **Approve ≠ Execute** (see [Roadmap](#roadmap)).
 
 ```
 Simulator / SIEM adapters
@@ -19,10 +19,14 @@ Simulator / SIEM adapters
         ↓
    Human Approval Queue   (decisions recorded; execution stays out of scope)
         ↓
-   React Web Console      (Dashboard / Events / Incident Queue / Approval Queue)
+   Response Executor      (Guard / Policy → Adapter → Shuffle / Wazuh / TheHive)
+        ↓
+   Execution Audit        (append-only audit trail)
+        ↓
+   React Web Console      (Dashboard / Events / Incidents / Approvals / Execute Console / Audit)
 ```
 
-## Features (v1.1.0)
+## Features (v1.2.0)
 
 ### Phase 1 — detection to incident
 
@@ -43,6 +47,15 @@ Simulator / SIEM adapters
 - **AI Response Recommendation** — up to 5 suggestions drawn from a frozen six-action vocabulary; an empty list is a first-class answer ("no action warranted")
 - **Approval Queue** — one-shot human approve/reject decisions over recommendations; "pending" is derived and never persisted; approving records a decision, it never executes anything
 - **Incident AI Investigation** — read-only panel on the Incident Detail page aggregating the event's full AI history + approval audit via one GET; zero buttons, zero mutating traffic
+
+### Phase 3 — controlled response execution with external adapters
+
+- **Execution Core (Phase 3.1)** — append-only `execution_log` (migration 0009); eight-word vocabulary; Guard with five rejection codes over `EXECUTABLE_ACTIONS`; deterministic zero-outbound `MockExecutor` (default); synchronous Execute / Compensation service; API `POST /api/v1/executions` + `.../compensate` + read endpoints; Bearer `EXECUTION_TOKEN` on write paths only; React Execute Console and Execution Audit UI
+- **External Adapter Architecture (Phase 3.2)** — Shuffle / Wazuh / TheHive graduate from reserved slots to implemented adapters behind one unified `ResponseExecutor` contract; fail-closed startup validation; Single-Active-Adapter invariant; credential isolation (secrets never persist in audit records); URL shape gate; secret redaction filter
+- **Shuffle Workflow Adapter** — workflow orchestration: each executable action triggers exactly one pre-configured workflow; optional reverse workflows gate compensation; `succeeded = trigger confirmed`; zero auto-retry
+- **Wazuh Endpoint Response Adapter** — endpoint / security response: `isolate_host` / `disable_account` / `block_source_ip` via active-response API; Basic auth (`WAZUH_API_USER` / `WAZUH_API_PASSWORD`); symmetric compensation where the endpoint allows
+- **TheHive Case Adapter** — case creation only: `escalate_to_incident` posts the frozen six-field body to `POST /api/case`; 409 duplicates resolve to `succeeded + idempotent_duplicate`; zero compensation — the case lifecycle belongs to the investigation
+- **Safety boundary** — No automatic approval. No automatic retry. No internal adapter fan-out. No hidden execution. Adapter implementations exist, but the default configuration stays offline (`EXECUTION_ADAPTER=mock`); real Shuffle / Wazuh / TheHive connections require explicit `.env` configuration plus credentials
 
 ## Quick Start
 
@@ -102,7 +115,7 @@ This replays 5 attack scenarios × 30 repeats (150 alerts), producing 5 aggregat
 
 ```bash
 cd backend
-python -m pytest -q        # 538+ tests (default suite; real-model E2E under tests/e2e/ is excluded)
+python -m pytest -q        # 1132 tests (default suite; real-model E2E and external adapter tests excluded)
 ```
 
 ## Roadmap
@@ -110,10 +123,11 @@ python -m pytest -q        # 538+ tests (default suite; real-model E2E under tes
 | Version | Milestone |
 |---|---|
 | v1.0.0-phase1 | Core SOC platform: ingestion → normalization → deduplication → risk → incidents → console |
-| **v1.1.0** | AI security analysis: alert explanation, risk summary, recommended actions behind a human approval queue, plus the incident AI investigation view (Ollama / cloud providers via a unified interface) — this release |
-| v2.0 | Automated response / SOAR integration (execution layered behind the approval queue) |
+| v1.1.0 | AI security analysis: alert explanation, risk summary, recommended actions behind a human approval queue, plus the incident AI investigation view |
+| **v1.2.0** | Controlled response execution: Guard / Policy → external adapters (Shuffle / Wazuh / TheHive) → append-only audit — this release |
+| v2.0 | Governance & observability: operator identity / RBAC, execution policy engine, adapter health & metrics |
 
-Upstream projects such as **Wazuh**, **Shuffle**, and **TheHive** are planned integration targets via clean adapter interfaces — their source code is never vendored into this repository.
+**Shuffle**, **Wazuh**, and **TheHive** are implemented as external response adapters (Phase 3.2) — their adapter code lives in this repository, but their source is never vendored. Default configuration stays offline (`EXECUTION_ADAPTER=mock`); real connections require explicit `.env` configuration.
 
 ## Project Structure
 
@@ -122,7 +136,7 @@ sentinelflow/
 ├── backend/          # FastAPI backend (services/, models/, api/, Alembic migrations)
 ├── frontend/         # React 19 + TypeScript + Vite console
 ├── simulator/        # Attack scenarios + stdlib runner CLI
-├── integrations/     # Reserved: external platform adapters
+├── integrations/     # External platform adapter interfaces (Shuffle / Wazuh / TheHive)
 ├── infrastructure/   # Reserved: deployment assets
 ├── docs/             # Documentation
 └── tests/            # Reserved: integration & E2E tests

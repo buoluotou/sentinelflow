@@ -26,11 +26,21 @@ The compose file uses env-var substitution only — no secrets are baked into th
 cd backend
 python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements/base.txt
-python -m alembic upgrade head                        # migrations 0001–0004
+python -m alembic upgrade head                        # migrations 0001–0009
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Configuration is read from `.env` at the repo root (pydantic-settings). Recognised variables: `DATABASE_URL`, `BACKEND_HOST`, `BACKEND_PORT`, `DEBUG`, `DEDUP_WINDOW_SECONDS`.
+Configuration is read from `.env` at the repo root (pydantic-settings). Key variables:
+
+| Category | Variables | Notes |
+|---|---|---|
+| Database | `DATABASE_URL` | PostgreSQL (production) or SQLite (evaluation) |
+| Backend | `BACKEND_HOST`, `BACKEND_PORT`, `DEBUG` | Set `DEBUG=false` in production |
+| AI Provider | `AI_PROVIDER`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`, `AI_TIMEOUT_SECONDS` | `mock` (default, offline) / `ollama` / `cloud` |
+| Execution | `EXECUTION_ADAPTER`, `EXECUTION_TOKEN` | `mock` (default, DryRun) / `shuffle` / `wazuh` / `thehive`; token required on write endpoints |
+| Adapter credentials | `SHUFFLE_BASE_URL`, `SHUFFLE_API_KEY`, `WAZUH_BASE_URL`, `WAZUH_API_USER`, `WAZUH_API_PASSWORD`, `THEHIVE_BASE_URL`, `THEHIVE_API_KEY` | Empty = fail-closed; only the selected adapter's pair is validated |
+| Adapter mapping | `SHUFFLE_WORKFLOW_*` (6 forward + 2 reverse), `SHUFFLE_TIMEOUT_SECONDS`, `WAZUH_TIMEOUT_SECONDS`, `THEHIVE_TIMEOUT_SECONDS` | Shuffle action → workflow id mapping; HTTP timeouts |
+| Deduplication | `DEDUP_WINDOW_SECONDS` | Fingerprint aggregation window |
 
 Production suggestions: run uvicorn behind a reverse proxy (nginx/Caddy) with `--workers 1` (the pipeline relies on per-request DB transactions; multi-worker is safe but adds no benefit for SQLite), enable TLS at the proxy, and set `DEBUG=false`.
 
@@ -69,7 +79,7 @@ curl http://localhost:8000/api/v1/dashboard/summary     # metrics reflect the ru
 
 Phase 1 is intentionally minimal — review every item before exposing the platform beyond a trusted network:
 
-- [ ] **No authentication yet.** Put the console behind your SSO/reverse-proxy auth, or wait for the Phase 2 auth milestone. Do not expose port 8000 directly.
+- [ ] **No authentication yet.** Put the console behind your SSO/reverse-proxy auth. Do not expose port 8000 directly.
 - [ ] Replace the `change_me` placeholder in `.env` (both `POSTGRES_PASSWORD` and `DATABASE_URL`).
 - [ ] `.env` is git-ignored and never committed (only `.env.example` with placeholders is tracked) — keep it that way; rotate any credential that ever leaked.
 - [ ] Set `DEBUG=false` outside development.
@@ -77,6 +87,8 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 - [ ] Restrict CORS/proxy access to the API from the console origin only.
 - [ ] The ingestion endpoints accept arbitrary JSON payloads by design (they are the SIEM intake) — rate-limit them at the proxy.
 - [ ] Keep PostgreSQL unexposed (no public port mapping; the compose file binds to the host for local use only).
+- [ ] Set `EXECUTION_TOKEN` to a strong random value before enabling any real execution adapter; an empty token rejects every write with `401` (fail-closed).
+- [ ] Keep `EXECUTION_ADAPTER=mock` unless you have explicitly configured adapter credentials and workflow mappings. Real adapters require explicit `.env` configuration — the platform never falls back to a real adapter silently.
 
 ## Upgrading
 
@@ -85,4 +97,4 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 3. `python -m alembic upgrade head`
 4. Restart the backend
 
-Migrations are additive and reversible (full downgrade support) throughout Phase 1.
+Migrations are additive and reversible (full downgrade support) through Phase 3 (0001–0009).

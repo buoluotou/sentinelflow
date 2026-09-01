@@ -1,8 +1,10 @@
 # SentinelFlow Demo Guide
 
-A 15-minute end-to-end walkthrough: from an empty database to a fully triaged incident — alert storm, risk scoring, AI analysis chain, human approval, and the incident AI investigation view — using only the simulator and the web console.
+A 15-minute end-to-end walkthrough: from an empty database to a fully triaged incident — alert storm, risk scoring, AI analysis chain, human approval, controlled execution, and the incident AI investigation view — using only the simulator and the web console.
 
 > The default `AI_PROVIDER=mock` makes every AI step instant and offline-safe (deterministic output). To demo a real model, set `AI_PROVIDER=ollama` + `AI_MODEL=qwen3:4b` in `.env` and allow tens of seconds per generation.
+>
+> The default `EXECUTION_ADAPTER=mock` makes execution a zero-outbound DryRun. The Execute Console shows the full chain (approve → execute → audit) without any real external call.
 
 ## 0. Prerequisites
 
@@ -82,14 +84,22 @@ Open one high-risk event (e.g. *Malicious IOC match detected*, score 90). Three 
 3. Trying to decide twice returns `409` and re-syncs from the server — one decision per recommendation, ever.
 4. Key boundary: approving recorded a human decision. Nothing was blocked, isolated or executed — the event, its risk and its incidents are untouched.
 
-## 8. Incident AI Investigation (Incident Detail)
+## 8. Response Execution (Execute Console)
+
+1. Open the **Execute Console** page. The recommendation you approved in Step 7 appears as executable (the approval is already recorded).
+2. Select the action (e.g. *Block source IP*), enter an operator name and an optional note, then click **Execute**.
+3. The MockExecutor processes the request as a zero-outbound DryRun: `201` with `status=succeeded`, `detail` showing `{"dry_run": true}`. No real external call is made.
+4. Open the **Execution Audit** page — the append-only `execution_log` shows the row you just created: execution id, adapter name (`mock`), action, target, operator, status (`succeeded`), and the redacted detail. Secrets never appear.
+5. Key boundary: the execution chain (Approve → Execute → Audit) is fully traceable. The MockExecutor proves the chain works without producing any external side effect. Switching `EXECUTION_ADAPTER` to `shuffle` / `wazuh` / `thehive` in `.env` (plus credentials) activates real adapters — the chain stays identical, only the outbound target changes.
+
+## 9. Incident AI Investigation (Incident Detail)
 
 1. Open one of the auto-created incidents → the **AI Investigation** panel loads via a single `GET /incidents/{id}/ai-context`.
 2. It shows the incident snapshot (status/severity + the frozen **risk score snapshot**) and the event's complete AI histories — explanation, risk summary and recommendation, newest first — with the **Approved** chip (reviewer + timestamp) auditing the Step 7 decision.
 3. The panel renders **zero buttons**: no approve, reject or execute affordance of any kind — it observes, reviews and audits only.
 4. An incident with no AI history shows the legal empty state "No AI analysis available yet." — not an error.
 
-## 9. Reset
+## 10. Reset
 
 ```powershell
 # stop the backend first, then:
@@ -102,4 +112,4 @@ Remove-Item Env:DATABASE_URL
 - The incident **risk snapshot** reflects the score at the first threshold crossing (e.g. the IOC case shows 70 — one critical alert — even though the event later reaches 90). This is intentional: case records are immutable history, live risk lives on the event — and no AI result ever writes it back.
 - The simulator defaults to `--timestamps now` (current UTC); use `--timestamps file` for deterministic replay.
 - AI panels are explicit-trigger only: refreshing any page emits GETs, never an automatic model call. Failures (provider down → 503, protocol violation → 502) surface the backend message verbatim and never persist a row.
-- Approve ≠ Execute is the v1.1.0 safety boundary end-to-end: AI advises, humans decide, execution stays out of scope until Phase 3 (v2.0).
+- Approve ≠ Execute is the safety boundary end-to-end: AI advises, humans decide, execution is a separate controlled chain (Phase 3, v1.2.0). The MockExecutor proves the chain without producing external side effects; real adapters (Shuffle / Wazuh / TheHive) require explicit `.env` configuration plus credentials.

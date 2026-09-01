@@ -1,4 +1,4 @@
-# SentinelFlow API Reference (v1.1.0)
+# SentinelFlow API Reference (v1.2.0)
 
 Base URL: `http://localhost:8000/api/v1` · Interactive docs: `http://localhost:8000/docs`
 
@@ -48,7 +48,7 @@ Provider selection is deployment configuration (`AI_PROVIDER` = `mock` / `ollama
 
 ## Approval Queue (Phase 2, Approve ≠ Execute)
 
-Human decisions over AI response recommendations. "Pending" is a derived state (recommendations without a decision row) and is never persisted; the database stores exactly `approved` / `rejected`. Decisions record only — they never block an IP, touch `EventRisk`, or call any orchestrator.
+Human decisions over AI response recommendations. "Pending" is a derived state (recommendations without a decision row) and is never persisted; the database stores exactly `approved` / `rejected`. Decisions record only — they never block an IP, touch `EventRisk`, or call any orchestrator. Execution is a separate Phase 3 chain (see below).
 
 | Method | Path | Description |
 |---|---|---|
@@ -58,6 +58,21 @@ Human decisions over AI response recommendations. "Pending" is a derived state (
 | POST | `/response-recommendations/{recommendation_id}/reject` | Record a REJECT decision. Same body/contract as approve |
 
 Errors: `404` unknown recommendation · `409` already reviewed (one-shot decision; `UNIQUE(recommendation_id)` enforced).
+
+## Response Execution (Phase 3, v1.2.0)
+
+Controlled execution layered on top of approved recommendations. All write endpoints require `Authorization: Bearer <EXECUTION_TOKEN>` (the shared secret from `.env`; empty token → every write returns `401`). Read endpoints need no token.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/executions` | Dispatch an approved recommendation for execution. Body: `{alert_group_id, recommendation_id, action, target?, operator, note?}`. The Guard validates: action is executable, approval exists and has not been executed, adapter supports the action. `201` with the `execution_log` row (`status` = `dispatched` / `succeeded` / `failed` / `guard_rejected`). Adapter secrets are never returned; detail is redacted via `***` |
+| GET | `/executions?skip=&limit=` | Append-only execution audit trail, newest first. Each row includes `execution_id`, `adapter_name`, `action`, `target`, `operator`, `status`, `detail` (redacted), `external_execution_id`, `created_at`. Secrets never appear |
+| GET | `/executions/{execution_id}` | One execution row with full detail (redacted). `404` if missing |
+| POST | `/executions/compensate` | Request compensation for a previous execution. Body: `{execution_id, operator, note?}`. Requires Bearer token. `201` with the compensation `execution_log` row (`status` = `compensation_requested` / `compensation_succeeded` / `compensation_failed` / `guard_rejected`). Compensation is adapter-dependent: supported for Wazuh isolate/block (symmetric reversal); refused for `disable_account` and `escalate_to_incident` |
+
+**Execution status vocabulary**: `requested` → `dispatched` → `succeeded` / `failed`; compensation: `compensation_requested` → `compensation_succeeded` / `compensation_failed`; guard rejection: `guard_rejected` (terminal). All rows are append-only; no UPDATE / DELETE.
+
+**Adapter configuration** (`.env`): `EXECUTION_ADAPTER` selects the single active adapter (`mock` by default — offline DryRun, zero external requests). Real adapters (`shuffle` / `wazuh` / `thehive`) require explicit credentials and fail-closed startup validation.
 
 ## Incidents
 
@@ -81,4 +96,6 @@ Errors: `404` unknown recommendation · `409` already reviewed (one-shot decisio
 - Business conflicts (duplicate case, illegal transition, missing risk, already-reviewed recommendation) → `409` with a stable human-readable `detail`
 - Missing resources → `404` with `detail`
 - AI provider errors → `503` (misconfigured/unreachable) · protocol violations → `502` (never persisted)
+- Execution adapter errors → `503` (adapter misconfigured) · guard rejections → `201` with `status=guard_rejected` (not an HTTP error — the execution fact is recorded)
+- Missing `EXECUTION_TOKEN` or wrong token → `401` on all write execution endpoints
 - Errors are surfaced verbatim by the web console (no silent failures)

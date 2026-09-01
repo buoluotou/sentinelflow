@@ -1,4 +1,4 @@
-# SentinelFlow Architecture (v1.1.0)
+# SentinelFlow Architecture (v1.2.0)
 
 ## Overview
 
@@ -6,7 +6,7 @@ SentinelFlow is a monorepo with three runtime components:
 
 | Component | Tech | Role |
 |---|---|---|
-| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, AI analysis services, approval queue, REST API |
+| `backend/` | FastAPI + SQLAlchemy 2.0 + Alembic | Ingestion pipeline, risk engine, incident lifecycle, AI analysis services, approval queue, response execution, external adapters, REST API |
 | `frontend/` | React 19 + TypeScript + Vite + react-router-dom | SOC web console (dark theme) |
 | `simulator/` | Python stdlib CLI | Replays 5 attack scenarios against the API |
 
@@ -45,12 +45,18 @@ alert_groups (an "event")
   └── 1 ← N  ai_response_recommendations  append-only recommendation history
                  └── 1 ← 0..1 ai_response_approvals  one-shot human decision (UNIQUE)
 
+execution_log (append-only; FK approval_id → ai_response_approvals ON DELETE NO ACTION)
+  11 frozen columns: execution_id · alert_group_id · approval_id · adapter_name ·
+  action · target · operator · status (8 legal values) · detail (JSONB) ·
+  external_execution_id · created_at.
+  3 partial unique indexes enforce chain integrity.
+
 incidents carry a frozen risk_score snapshot copied at creation time and reach
 their event's AI history through read-only (viewonly) traversals — no incident
 FK on any AI table.
 ```
 
-All primary keys are UUIDs. Migrations are hand-written Alembic scripts (`backend/migrations/versions/`, currently 0001–0008) with full upgrade/downgrade support.
+All primary keys are UUIDs. Migrations are hand-written Alembic scripts (`backend/migrations/versions/`, currently 0001–0009) with full upgrade/downgrade support.
 
 ## Risk Engine (rules v1.0, frozen)
 
@@ -99,7 +105,35 @@ Explicit trigger (console button / API POST)
 
 - `ai_response_approvals` stores exactly `{approved, rejected}` (CHECK constraint + `UNIQUE(recommendation_id)`); **"pending" is derived** (recommendation without a decision row) and never persisted.
 - Decisions are INSERT-only, one-shot, with `reviewed_at` server-stamped; clients send only `reviewer` (+ optional comment), extra fields rejected.
-- Approving records a human decision. It never blocks an IP, creates an incident, touches `EventRisk`, or calls any orchestrator — execution remains Phase 3 (v2.0).
+- Approving records a human decision. It never blocks an IP, creates an incident, touches `EventRisk`, or calls any orchestrator — execution is Phase 3 (v1.2.0).
+
+## Response Execution Layer (Phase 3, v1.2.0)
+
+```
+Approved Recommendation
+  → Explicit Execute Intent   (client: execution_id + operator + note)
+  → Auth / Schema gate        (Bearer EXECUTION_TOKEN on write paths)
+  → execution_log: requested  (append-only row created in same transaction)
+  → Guard                     (5 rejection codes over EXECUTABLE_ACTIONS)
+  → ResponseExecutor          (Single-Active-Adapter: exactly ONE adapter)
+      ├─ MockExecutor          (default; zero-outbound DryRun)
+      ├─ ShuffleExecutor       (workflow orchestration)
+      ├─ WazuhExecutor         (endpoint / security response)
+      └─ TheHiveExecutor       (case creation; escalate_to_incident only)
+  → execution_log: dispatched → succeeded / failed
+  → Append-only audit         (secrets never persisted; redacted via ***)
+```
+
+Key semantics:
+
+- **Eight-word vocabulary** — `block_source_ip`, `isolate_host`, `disable_account`, `hunt_related_activity`, `escalate_to_incident`, `monitor_only` (execution vocabulary); plus `requested` / `guard_rejected` / `dispatched` / `succeeded` / `failed` (status vocabulary). Compensation adds `compensation_requested` / `compensation_succeeded` / `compensation_failed`.
+- **Guard** — five rejection codes (`action_not_executable`, `approval_not_found`, `approval_already_executed`, `executor_unsupported`, `adapter_misconfigured`); all checked before any outbound call.
+- **Single-Active-Adapter** — `EXECUTION_ADAPTER` names exactly ONE adapter; multi-value selection is rejected at startup. The selected adapter's `supports()` decides which actions it can execute; unsupported actions are `executor_unsupported`.
+- **Credential boundary** — each adapter has its own `AdapterCredentials` (Bearer API-key or Basic user/password shape); secrets travel only `.env → Settings → AdapterCredentials → Authorization header`; URL shape gate rejects query strings / userinfo in BASE_URL; `SecretRedactionFilter` prevents credential leakage in Python logging.
+- **Outcome handling** — frozen per-adapter outcome matrix (timeouts / HTTP faults / unavailable classified in `detail`); ambiguous answers (success without identity) raise `ExecutorOutcomeViolation`; zero automatic retry anywhere.
+- **Compensation** — symmetric where the adapter supports it (Wazuh: isolate→release, block→unblock); `disable_account` refuses compensation outright; `escalate_to_incident` is non-compensable (case lifecycle is human-led).
+- **Idempotency propagation** — `external_execution_id` tracks the adapter-side identity for dedup / reconciliation.
+- **Safety boundary** — No automatic approval. No automatic retry. No internal adapter fan-out. No hidden execution. Adapter implementations exist, but the default configuration stays offline (`EXECUTION_ADAPTER=mock`); real connections require explicit `.env` configuration plus credentials.
 
 ## Incident AI Context (read-only aggregation)
 
@@ -111,7 +145,8 @@ Explicit trigger (console button / API POST)
 api/v1/        HTTP only: request validation, exception → status-code mapping
 schemas/       Pydantic v2 request/response models
 services/      All business logic (normalization, dedup, risk, incidents, dashboard,
-               ai providers, ai analysis services, approvals, incident ai context)
+               ai providers, ai analysis services, approvals, incident ai context,
+               response execution, external adapters, credential boundary)
 models/        SQLAlchemy ORM
 ```
 
@@ -128,15 +163,16 @@ React pages → api/ client (fetch wrapper) → FastAPI
 - Incident action buttons mirror the frozen transition matrix **for display only**; validity is always decided by the backend state machine.
 - AI panels (explanation / risk summary / recommendation) are explicit-trigger: page load emits only GETs, never an automatic POST; every render is protocol-shaped and never shows a risk score.
 - The Approval Queue page records one-shot decisions (201 removes locally, 409 re-syncs from the server); the Incident Detail "AI Investigation" panel is read-only with zero buttons.
+- The Execute Console drives the execution chain (select action → confirm → observe result); the Execution Audit page shows the append-only `execution_log` with secret-redacted detail.
 - Vite dev proxy forwards `/api` and `/health` to `localhost:8000`.
 
-## Integration Points (reserved, not coupled)
+## Integration Points
 
-Upstream platforms are adapter targets only — their source is never vendored:
+Upstream platforms are adapter targets — their source is never vendored:
 
-| Platform | Planned role | State |
+| Platform | Role | State |
 |---|---|---|
-| Wazuh | Alert source adapter (`normalization/adapters/wazuh.py` returns 501 until implemented) | Interface reserved |
+| Wazuh | Alert source adapter (normalization) + endpoint response adapter (active-response) | Normalization: interface reserved (501). Response adapter: **shipped in v1.2.0** (Phase 3.2) |
 | Ollama / cloud LLMs | AI analysis providers behind the unified `AIProvider` interface | Shipped in v1.1.0 (Phase 2) |
-| Shuffle | Automated response execution behind the approval queue | Phase 3 (v2.0) |
-| TheHive | Case management interop | Under evaluation |
+| Shuffle | Workflow orchestration adapter | **Shipped in v1.2.0** (Phase 3.2) |
+| TheHive | Case management / investigation adapter | **Shipped in v1.2.0** (Phase 3.2) |

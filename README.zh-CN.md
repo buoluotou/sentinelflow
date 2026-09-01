@@ -2,7 +2,7 @@
 
 **面向 SOC 团队的开源安全告警编排与事件响应平台。**
 
-SentinelFlow 将原始安全告警转化为去重、带风险评分的事件与可管理的案件，并提供为快速分诊而生的 Web 控制台。Phase 1 交付一条完整的"检测→案件"流水线；Phase 2（v1.1.0）在其上叠加 AI 辅助分析 —— 告警解释、风险摘要与处置建议 —— 全部置于人工审批队列之后，并在每个案件上提供只读的 AI 调查视图。AI 输出仅为建议：**Approve ≠ Execute**（见[路线图](#路线图)）。
+SentinelFlow 将原始安全告警转化为去重、带风险评分的事件与可管理的案件，并提供为快速分诊而生的 Web 控制台。Phase 1 交付一条完整的“检测→案件”流水线；Phase 2（v1.1.0）在其上叠加 AI 辅助分析 —— 告警解释、风险摘要与处置建议 —— 全部置于人工审批队列之后，并在每个案件上提供只读的 AI 调查视图。Phase 3（v1.2.0）在同一审批链之后增加受控响应执行与外部适配器支持（Shuffle / Wazuh / TheHive）。AI 输出仅为建议：**Approve ≠ Execute**（见[路线图](#路线图)）。
 
 ```
 Simulator / SIEM 适配器
@@ -19,10 +19,14 @@ Simulator / SIEM 适配器
         ↓
    人工审批队列（Approval） 记录人类决定；执行不在范围内
         ↓
-   React Web 控制台          Dashboard / Events / Incident Queue / Approval Queue
+   响应执行器（Executor）   Guard / Policy → 适配器 → Shuffle / Wazuh / TheHive
+        ↓
+   执行审计（Audit）        追加式审计轨迹
+        ↓
+   React Web 控制台          Dashboard / Events / Incidents / Approvals / Execute Console / Audit
 ```
 
-## 特性（v1.1.0）
+## 特性（v1.2.0）
 
 ### Phase 1 — 检测到案件
 
@@ -40,9 +44,18 @@ Simulator / SIEM 适配器
 - **AI Provider 架构** — 统一 `AIProvider` 契约：Mock（默认，离线安全）、Ollama 与 OpenAI 兼容云端；冻结的结构化输出协议与类型化错误契约（404 / 503 / 502），经 `.env` 切换不改业务代码
 - **AI 告警解释** — 显式触发的攻击类型分析，含风险成因与置信度；事件详情页追加式历史（append-only）
 - **AI 风险摘要** — 关键发现、冻结的风险因子词表与分析师优先级；AI 绝不输出风险分（`EventRisk.score` 是唯一正式分）
-- **AI 处置建议** — 最多 5 条建议，取自冻结的六动作词表；空列表是一等答案（"无需处置"）
-- **审批队列（Approval Queue）** — 针对建议的一次性人工批准/驳回决定；"待审"是派生状态绝不落库；批准只记录决定，绝不执行任何动作
+- **AI 处置建议** — 最多 5 条建议，取自冻结的六动作词表；空列表是一等答案（“无需处置”）
+- **审批队列（Approval Queue）** — 针对建议的一次性人工批准/驳回决定；“待审”是派生状态绝不落库；批准只记录决定，绝不执行任何动作
 - **案件 AI 调查视图** — 案件详情页只读面板，单一 GET 聚合事件全部 AI 历史 + 审批审计；零按钮、零变更流量
+
+### Phase 3 — 受控响应执行与外部适配器
+
+- **执行核心（Phase 3.1）** — 追加式 `execution_log`（migration 0009）；八词词表；Guard 五种拒绝码覆盖 `EXECUTABLE_ACTIONS`；确定性零出站 `MockExecutor`（默认）；同步 Execute / Compensation 服务；API `POST /api/v1/executions` + `.../compensate` + 只读端点；Bearer `EXECUTION_TOKEN` 仅保护写入端点；React Execute Console 与 Execution Audit UI
+- **外部适配器架构（Phase 3.2）** — Shuffle / Wazuh / TheHive 从预留槽毕业为已实现适配器，共用统一 `ResponseExecutor` 契约；fail-closed 启动验证；Single-Active-Adapter 不变式；密钥隔离（凭据永不落审计记录）；URL 形状闸；日志脱敏过滤器
+- **Shuffle 工作流适配器** — 工作流编排：每个可执行动作恰好触发一个预配置工作流；可选反向工作流闸补偿能力；`succeeded = 触发确认`；零自动重试
+- **Wazuh 端点响应适配器** — 端点 / 安全响应：`isolate_host` / `disable_account` / `block_source_ip` 经 active-response API；Basic 认证（`WAZUH_API_USER` / `WAZUH_API_PASSWORD`）；端点允许时对称补偿
+- **TheHive 案件适配器** — 仅建案：`escalate_to_incident` 向 `POST /api/case` 提交冻结六字段报文；409 重复解析为 `succeeded + idempotent_duplicate`；零补偿 —— 案件生命周期属于调查
+- **安全边界** —— 无自动审批、无自动重试、无适配器内部扇出、无隐藏执行。适配器实现已存在，但默认配置保持离线（`EXECUTION_ADAPTER=mock`）；真实 Shuffle / Wazuh / TheHive 连接需要显式 `.env` 配置与凭据
 
 ## 快速开始
 
@@ -102,7 +115,7 @@ python simulator/runner/run.py --repeat 30
 
 ```bash
 cd backend
-python -m pytest -q        # 538+ 个测试（默认套件；tests/e2e/ 下的真实模型 E2E 不在默认收集内）
+python -m pytest -q        # 1132 个测试（默认套件；真实模型 E2E 与外部适配器测试不在默认收集内）
 ```
 
 ## 路线图
@@ -110,10 +123,11 @@ python -m pytest -q        # 538+ 个测试（默认套件；tests/e2e/ 下的�
 | 版本 | 里程碑 |
 |---|---|
 | v1.0.0-phase1 | 核心 SOC 平台：接入 → 归一化 → 去重 → 风险 → 案件 → 控制台 |
-| **v1.1.0** | AI 安全分析：告警解释、风险摘要、处置建议，全部置于人工审批队列之后，外加案件 AI 调查视图（统一接口对接 Ollama / 云端模型）—— 本版本 |
-| v2.0 | 自动化响应 / SOAR 集成（执行层叠加在审批队列之后） |
+| v1.1.0 | AI 安全分析：告警解释、风险摘要、处置建议，全部置于人工审批队列之后，外加案件 AI 调查视图 |
+| **v1.2.0** | 受控响应执行：Guard / Policy → 外部适配器（Shuffle / Wazuh / TheHive）→ 追加式审计 —— 本版本 |
+| v2.0 | 治理与可观测性：操作者身份 / RBAC、执行策略引擎、适配器健康与度量 |
 
-**Wazuh**、**Shuffle**、**TheHive** 等上游项目仅作为干净的适配器接口目标规划集成 —— 其源码永远不会被引入本仓库。
+**Shuffle**、**Wazuh**、**TheHive** 已作为外部响应适配器实现（Phase 3.2）—— 适配器代码在本仓库内，但其源码永远不会被引入。默认配置保持离线（`EXECUTION_ADAPTER=mock`）；真实连接需要显式 `.env` 配置。
 
 ## 项目结构
 
@@ -122,7 +136,7 @@ sentinelflow/
 ├── backend/          # FastAPI 后端（services/、models/、api/、Alembic 迁移）
 ├── frontend/         # React 19 + TypeScript + Vite 控制台
 ├── simulator/        # 攻击场景 + 标准库 Runner CLI
-├── integrations/     # 预留：外部平台适配器
+├── integrations/     # 外部平台适配器接口（Shuffle / Wazuh / TheHive）
 ├── infrastructure/   # 预留：部署资产
 ├── docs/             # 文档
 └── tests/            # 预留：集成与 E2E 测试
