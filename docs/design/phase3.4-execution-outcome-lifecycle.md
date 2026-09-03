@@ -1,6 +1,6 @@
 # Phase 3.4 设计：执行效果生命周期（Execution Outcome Lifecycle）
 
-> 状态：**设计冻结**（2026-09-01；冻结后不得再改设计，只允许按 §10 拆步实施；§11 开放点须先裁决再动对应子步）
+> 状态：**设计冻结（完整版）**（2026-09-01 冻结；2026-09-03 用户裁决 O1–O5 全部落定，§11 从开放点转为裁决记录；冻结后不得再改设计，只允许按 §10 拆步实施）
 > 范围：Phase 3.4 —— 把平台能力从"执行请求有没有成功送出去"升级为"**这次执行最终在外部世界产生了什么效果，平台能不能持续知道**"
 > 基线：`v1.3.0`（commit `48fbe41`，tag 冻结；其后的文档提交 `28dc16a` / `459e8bf` / `0bfdd9d` 不属于功能代码）。本文档不修改该提交，不修改 v1.1.0（`0f6e3fc`）/ v1.2.0（`2be74f8`）
 > 前置：`phase3-response-execution.md`（D1–D14 有效）+ `phase3.2-external-adapters.md`（E1–E5 有效）+ `phase3.3-governance-observability.md`（3.3 全部裁决有效）
@@ -58,6 +58,7 @@ Phase 3.4 的三个议题是一个不可拆分的整体（用户裁决：A + B +
 | **D3.4-06** | Outcome 层 append-only（只追加，不 UPDATE / DELETE） |
 | **D3.4-07** | External callback credential ≠ Operator credential（两个信任域） |
 | **D3.4-08** | Mock 默认继续完全离线（默认套件零外部请求不变） |
+| **D3.4-09** | Outcome fact 永不改写 Dispatch fact（O5）：`dispatch=succeeded + outcome=confirmed_failure` 是合法状态（命令成功送达但效果未达成）；`dispatch=failed` **不自动**产生 `confirmed_success`，但人工 reconcile 得到的外部事实**允许**记录为 `confirmed_success`（网络断裂 / 响应丢失可能使两层不一致）—— Outcome 层只记录事实，不替 Dispatch 改写历史 |
 
 ---
 
@@ -97,11 +98,24 @@ Layer 3 — Outcome      External Outcome Facts      "外面最终发生了什�
 - 同一执行允许多条 outcome 事实（时序追加，D3.4-06）；**派生态** = 最新有效事实（能派生就不改核心状态 —— 3.3 原则延续）
 - 治理拒绝链（`guard_rejected`）与补偿链不产生 outcome 语义（无外部效果可言）
 
-**候选词表（设计讨论候选，非冻结词表 —— 正式冻结见开放点 O1）**：
+**冻结词表（O1 裁决 ✅ 2026-09-03）**：
 
 ```
 unknown → pending → confirmed_success / confirmed_failure / reconciliation_failed
 ```
+
+边界定义（O1 裁决）：
+
+- `reconciliation_failed` = **对账动作本身失败**（读不到外部状态，事实来源是对账过程）
+- `confirmed_failure` = **确认外部效果失败**（事实来源是外部世界）
+- 两者事实来源不同，永不合并
+
+**两层共存合法性（O5 / D3.4-09）**：
+
+| Dispatch | Outcome | 语义 |
+|---|---|---|
+| `succeeded` | `confirmed_failure` | ✅ 合法：命令送达但效果未达成 |
+| `failed` | `confirmed_success` | ⚠ 异常/不一致场景：不允许**自动**产生；人工 reconcile 得到外部事实时**允许**如实记录（Outcome 层负责记录事实，不负责改写 Dispatch 历史） |
 
 ---
 
@@ -126,7 +140,7 @@ Webhook → Compensate     ✗
 - 身份闸：适配器回调凭据认证失败 → 拒绝（不落 outcome 事实，仅安全审计记录）
 - Schema 闸：必须携带可映射到已存在 `execution_id` 的关联键；未知字段拒绝（extra=forbid）
 - 归一化闸：外部私有状态 → §4 冻结词表；无法归一化 → 拒绝并审计
-- 乱序 / 重放：追加时序事实 + 派生取最新有效事实（具体策略见开放点 O2）
+- 乱序 / 重放（O2 裁决 ✅ 冻结）：全部追加时序事实（append-only 不删除），派生态取“最新观察时间（`observed_at`）”的有效事实；重放因不产生新事实而无副作用
 
 ---
 
@@ -180,14 +194,16 @@ Human            → Operator credential（人 → 平台）
 External adapter → Adapter callback credential（外部系统 → 平台）
 ```
 
-后续可由统一的 `AdapterCredentials` 结构管理（与出站凭据并列），但身份语义、配置项、校验路径必须分离。凭据空配置 = 该适配器入站通道关闭（fail-closed，与 3.2 出站凭据同规则）。具体凭据形状见开放点 O3。
+后续可由统一的 `AdapterCredentials` 结构管理（与出站凭据并列），但身份语义、配置项、校验路径必须分离。凭据空配置 = 该适配器入站通道关闭（fail-closed，与 3.2 出站凭据同规则）。
+
+**凭据形状（O3 裁决 ✅ 冻结）**：第一版静态 secret（`<ADAPTER>_CALLBACK_TOKEN`，与 3.2 出站凭据同风格：env 平铺、fail-closed、日志脱敏）；HMAC 签名留 v2。
 
 ---
 
 ## 9. Metrics / Health 演进
 
 - 派发口径指标（3.3 现状）：**冻结，一字不改**
-- 效果口径指标：**新增**派生视图（候选：outcome 确认率、confirmed_success / confirmed_failure 分布、未确认执行积压），具体范围见开放点 O4
+- 效果口径指标（O4 裁决 ✅ 冻结为最小集）：确认率 + confirmed_success / confirmed_failure 分布 + 未确认执行积压数；零写路径，纯派生
 - 前端 Observability 页**扩展**（新增效果区块），不重写既有区块；字段级镜像 API 响应的原则不变
 
 ---
@@ -196,15 +212,17 @@ External adapter → Adapter callback credential（外部系统 → 平台）
 
 用户裁决的关键顺序：**生命周期语义必须先稳定，传输机制围绕它设计** —— Outcome Model → Reconciliation Contract → Inbound Webhook → Long-running，**绝不先写异步执行**。
 
+**实施门槛（用户裁决 2026-09-03）**：3.4.1–3.4.3 全部完成前，不得提前写 Webhook（3.4.4），也不得提前把执行服务改成长任务（3.4.6）。Outcome 数据模型、派生规则、Reconciliation Contract 未冻结落地前，后续子步一律不开工。
+
 | 子步 | 内容 | 依赖 |
 |---|---|---|
-| **3.4.1** | Outcome Fact Model（模型 / 迁移 / 词表落地） | O1 裁决 |
-| **3.4.2** | Outcome State / Derivation（派生态 + 只读 API） | 3.4.1 |
+| **3.4.1** | Outcome Fact Model（模型 / 迁移 / 词表落地） | 无（基座；O1/O5 已裁决） |
+| **3.4.2** | Outcome Derivation / State（派生态 + 只读 API） | 3.4.1 |
 | **3.4.3** | Reconciliation Contract（归一化 + 来源区分） | 3.4.1 |
-| **3.4.4** | Webhook / Callback Inbound（凭据 + 验证闸 + 审计） | 3.4.3 + O2/O3 裁决 |
+| **3.4.4** | Webhook / Callback Inbound（凭据 + 验证闸 + 审计） | 3.4.3（O2/O3 已裁决） |
 | **3.4.5** | Manual Reconcile（操作者显式触发 + RBAC） | 3.4.3 |
 | **3.4.6** | Long-running Execution（生命周期正交化 + Mock 确定性模拟） | 3.4.2 + 3.4.4 |
-| **3.4.7** | Metrics / Health Evolution（效果派生视图 + UI 扩展） | 3.4.2 + O4 裁决 |
+| **3.4.7** | Outcome Metrics（效果派生视图 + UI 扩展） | 3.4.2（O4 已裁决） |
 | **3.4.8** | Cross-layer Regression | 3.4.1–3.4.7 |
 | **3.4.9** | Browser E2E | 3.4.8 |
 | **3.4.10** | Final Regression | 3.4.9 |
@@ -212,14 +230,17 @@ External adapter → Adapter callback credential（外部系统 → 平台）
 
 ---
 
-## 11. 待裁决开放点汇总
+## 11. 裁决记录（2026-09-03，全部落定）
 
-| 编号 | 议题 | 问题 | 建议 |
-|---|---|---|---|
-| **O1** | Outcome 词表 | 候选五词（§4）是否原样冻结？`reconciliation_failed` 与 `confirmed_failure` 的边界 | 建议原样冻结；`reconciliation_failed` = "对账动作本身失败（读不到外部状态）"，`confirmed_failure` = "确认外部效果失败"，两者事实来源不同 |
-| **O2** | 乱序 / 重放 | 晚到的旧事实与重放攻击的处理 | 建议：全部追加（append-only 不删除），派生态取"最新观察时间"的有效事实；重放因不产生新事实而无副作用 |
-| **O3** | 回调凭据形状 | 静态 secret（env 平铺）vs HMAC 签名 | 建议第一版静态 secret（`<ADAPTER>_CALLBACK_TOKEN`，与 3.2 出站凭据同风格）；HMAC 留 v2 |
-| **O4** | 效果指标范围 | 3.4.7 交付哪些效果派生指标 | 建议最小集：确认率 + confirmed 分布 + 未确认积压数；拒绝引入任何写路径 |
+| 编号 | 议题 | 裁决结果 |
+|---|---|---|
+| **O1** | Outcome 五词词表 | ✅ 原样冻结；`reconciliation_failed` = 对账动作本身失败（读不到外部状态），`confirmed_failure` = 确认外部效果失败，两者事实来源不同（§4） |
+| **O2** | 乱序 / 重放 | ✅ 冻结：全部追加（append-only），派生态取“最新观察时间”的有效事实；重放无副作用（§5） |
+| **O3** | 回调凭据形状 | ✅ 冻结：第一版静态 secret `<ADAPTER>_CALLBACK_TOKEN`（与 3.2 出站凭据同风格）；HMAC 留 v2（§8） |
+| **O4** | 效果指标范围 | ✅ 冻结最小集：确认率 + confirmed 分布 + 未确认积压数；零写路径（§9） |
+| **O5** | Outcome 不改写 Dispatch 历史 | ✅ 写入冻结条款 D3.4-09：`succeeded + confirmed_failure` 合法；`failed` 不自动产生 `confirmed_success`，但人工 reconcile 得到的外部事实允许如实记录（§2.2 / §4） |
+
+另：Dispatch ≠ Outcome（D3.4-04）与既有 `execution_log` + 新 Outcome Fact Layer 的分层结构（§3/§4）继续冻结不变。
 
 ---
 
