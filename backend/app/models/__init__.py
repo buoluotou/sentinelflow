@@ -18,6 +18,12 @@ from app.models.execution_log import (
     EXECUTION_LEGAL_COMBINATIONS,
     ExecutionLog,
 )
+from app.models.execution_outcome import (
+    CONFIRMED_OUTCOME_STATUSES,
+    OUTCOME_SOURCES,
+    OUTCOME_STATUSES,
+    ExecutionOutcome,
+)
 from app.models.incident import Incident
 
 __all__ = [
@@ -37,5 +43,9 @@ __all__ = [
     "EXECUTION_LEGAL_COMBINATIONS",
     "EventRisk",
     "ExecutionLog",
+    "ExecutionOutcome",
     "Incident",
+    "CONFIRMED_OUTCOME_STATUSES",
+    "OUTCOME_SOURCES",
+    "OUTCOME_STATUSES",
 ]
