@@ -1,23 +1,28 @@
-"""Reconciliation Contract — Phase 3.4.3-A: Contract Types + Validation.
+"""Reconciliation Contract — Phase 3.4.3-A (Contract Types + Validation)
++ 3.4.3-B (External State Mapping).
 
-This module is the INPUT layer of the Reconciliation Contract frozen in
+This module is the pure contract layer of the Reconciliation Contract frozen in
 docs/design/phase3.4-reconciliation-contract.md (Design Freeze ``a125f1e``).
-It answers exactly one question:
+It answers two questions, in two sealed steps:
 
-    given a raw ``ExternalObservation`` about what an external system says
-    happened to one execution, is it a WELL-FORMED contract input — and if
-    so, what is its normalized, validated form?
+    3.4.3-A  given a raw ``ExternalObservation`` about what an external system
+             says happened to one execution, is it a WELL-FORMED contract input
+             — and if so, what is its normalized, validated form?
+    3.4.3-B  given an ALREADY-VALIDATED ``adapter`` + ``external_state``, which
+             outcome word does the external system's OWN state denote?
 
 Pipeline position (design §14)::
 
     External State
           |  [3.4.3-A THIS MODULE]  ExternalObservation -> validation ->
           |                         NormalizedObservation (or reject)
-          |  [3.4.3-B]              external_state -> outcome_status (NOT here)
+          |  [3.4.3-B THIS MODULE]  adapter + external_state -> outcome_status
+          |                         (normalize_external_state, or reject)
     Outcome Fact (append-only, execution_outcome)
           |  [3.4.2 derivation]     observed_at DESC, id DESC -> derived state
 
-WHAT THIS STEP DOES (3.4.3-A, Contract Types + Validation ONLY):
+WHAT THIS MODULE DOES:
+  3.4.3-A (Contract Types + Validation):
   - domain types: ``ExternalObservation`` (input) / ``NormalizedObservation``
     (output), both immutable;
   - contract validation of the six required fields (RC-02);
@@ -27,20 +32,38 @@ WHAT THIS STEP DOES (3.4.3-A, Contract Types + Validation ONLY):
     ``ContractValidationFailure`` and NEVER becomes an Outcome Fact (§13);
   - trust-domain SHAPE: ``source -> {adapter_callback | human_operator}``
     (design §8) — the shape only, authentication is 3.4.4 / 3.4.5.
+  3.4.3-B (External State Mapping):
+  - ``normalize_external_state(adapter, external_state)`` — a PURE,
+    adapter-specific map of an ALREADY-VALIDATED external state onto the outcome
+    vocabulary (design §6), returning an immutable ``StateMapping``;
+  - per-adapter EVIDENCED vocabularies (``ADAPTER_STATE_VOCABULARIES``): only
+    states that existing adapter code / the frozen design evidence are frozen;
+    an adapter with no verifiable vocabulary stays EMPTY (a documented gap for
+    the 3.4.5 read path), never filled with a plausible-looking guess;
+  - ``UnrecognizedExternalState``: a state outside the evidenced vocabulary is
+    REFUSED (no fact), NEVER downgraded to ``unknown`` (§0 铁律 / §十).
 
-WHAT THIS STEP DELIBERATELY DOES NOT DO (deferred — design §2 / §15):
-  - NO ``external_state -> outcome_status`` MAPPING. That is 3.4.3-B. This
-    module does not import ``OUTCOME_STATUSES`` and defines no mapping
-    function, so it is STRUCTURALLY incapable of emitting an outcome word.
-    ``external_state`` is validated for SHAPE (present, non-blank) and
-    otherwise preserved RAW. A dispatch word ("succeeded" / "failed") passed
-    as ``external_state`` stays exactly that — it can never be turned into
-    ``confirmed_success`` / ``confirmed_failure`` here (D3.4-04 / RC-06).
-  - NO database, NO repository, NO ``execution_outcome`` INSERT, NO session.
-    ``validate_observation`` is a PURE function (the discipline of
-    ``app.services.outcomes.derivation`` / ``app.services.executions.state``).
+WHAT THIS MODULE DELIBERATELY DOES NOT DO (deferred — design §2 / §15):
+  - NO ``reconciliation_failed``. That word means "the reconcile action ran but
+    could not READ external state" (design §7-B / O1) — a READ-FAILURE path
+    (3.4.5). ``normalize_external_state`` is only ever called WITH a state in
+    hand, so it can NEVER emit that word: ``MAPPABLE_OUTCOME_STATUSES`` is
+    ``OUTCOME_STATUSES`` minus it, and ``StateMapping.__post_init__`` enforces
+    the exclusion structurally (§四).
+  - NO fabricated adapter states (user §十六). ``validate_observation`` (A)
+    preserves ``external_state`` RAW and never maps it; ``normalize_external_state``
+    (B) maps ONLY code/design-evidenced states and REFUSES the rest. A dispatch
+    word ("succeeded" / "failed") is in NO adapter's evidenced vocabulary, so it
+    can never become ``confirmed_success`` / ``confirmed_failure`` (D3.4-04 /
+    RC-06 / §五) — it is refused as unrecognized.
+  - NO database, NO repository, NO ``execution_outcome`` INSERT / UPDATE, NO
+    session. BOTH ``validate_observation`` and ``normalize_external_state`` are
+    PURE functions (the discipline of ``app.services.outcomes.derivation`` /
+    ``app.services.executions.state``).
   - NO HTTP / webhook / endpoint / callback transport (3.4.4).
-  - NO adapter read path / no external-system query (3.4.5).
+  - NO adapter read path / no external-system query / no adapter call: B is
+    ``state -> outcome`` ONLY, NEVER ``adapter -> HTTP -> state -> outcome``
+    (3.4.5).
   - NO authentication / credential check — the trust domain is a SHAPE only.
   - NO ``execution_id -> existing-chain`` mapping (design §13
     ``UnmappableExecutionId`` needs the DB, so it is 3.4.4 / 3.4.5). Here
@@ -48,11 +71,16 @@ WHAT THIS STEP DELIBERATELY DOES NOT DO (deferred — design §2 / §15):
   - NO retry / compensation / approval / fan-out / execution (RC-01).
 
 Vocabulary single-source: the ingress vocabulary (``webhook`` /
-``manual_reconcile``) is imported from
-``app.models.execution_outcome.OUTCOME_SOURCES``; the adapter-identity
-vocabulary from ``app.services.executions.registry.ADAPTER_NAMES``. Neither
-is duplicated here (no magic list). The OUTCOME STATUS vocabulary is
-deliberately NOT imported — this layer never produces an outcome state.
+``manual_reconcile``) and the OUTCOME STATUS vocabulary are both imported from
+``app.models.execution_outcome`` (``OUTCOME_SOURCES`` / ``OUTCOME_STATUSES``);
+the adapter-identity vocabulary from
+``app.services.executions.registry.ADAPTER_NAMES``. None is duplicated here (no
+magic list). 3.4.3-A never produced an outcome word; 3.4.3-B maps onto them and
+imports ``OUTCOME_STATUSES`` to GUARANTEE every emitted word is a frozen one
+(and never ``reconciliation_failed``). The per-adapter external-state words are
+NOT imported from the adapters — they are re-frozen here with inline evidence
+citations, and a test cross-checks the Wazuh set against
+``wazuh._CONFIRMED_AGENT_STATUSES`` so the link can never silently drift.
 
 Sanitized errors: rejection messages name the FIELD and the vocabulary, but
 never echo a raw ``external_reference`` / ``external_state`` value (they are
@@ -67,7 +95,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 
-from app.models.execution_outcome import OUTCOME_SOURCES
+from app.models.execution_outcome import OUTCOME_SOURCES, OUTCOME_STATUSES
 from app.services.executions.registry import ADAPTER_NAMES
 
 #: Bounded clock-skew tolerance for ``observed_at`` (design §10.5, RC-09).
@@ -164,6 +192,25 @@ class InvalidSource(ContractValidationFailure):
     def __init__(self, message: str, source: object | None = None):
         super().__init__(message)
         self.source = source
+
+
+class UnrecognizedExternalState(ContractValidationFailure):
+    """``external_state`` is present and well-shaped (it passed 3.4.3-A) but its
+    VALUE is outside the adapter's evidenced vocabulary — the 3.4.3-B mapping
+    contract does not accept it (design §6 归一化闸 / §13). This completes the §13
+    rejection family 3.4.3-A began: ``MissingExternalState`` above is the SHAPE
+    check, this is the MAPPING check.
+
+    THE §0 铁律: an unrecognized state is NEVER downgraded to ``unknown`` (that
+    word is reserved for a RECOGNIZED-but-ambiguous legitimate state) and NEVER
+    to ``reconciliation_failed`` (that requires a qualified reconcile that could
+    not READ the state). It is REFUSED — NO Outcome Fact. Carries the ``adapter``
+    (not a secret) but NEVER echoes the raw ``external_state`` value (external
+    private data — the same non-echo discipline as the rest of this family)."""
+
+    def __init__(self, message: str, adapter: object | None = None):
+        super().__init__(message)
+        self.adapter = adapter
 
 
 @dataclass(frozen=True)
@@ -369,4 +416,300 @@ def validate_observation(
         observed_at=observed_at,
         source=source_normalized,
         trust_domain=trust_domain_for(source_normalized),
+    )
+
+
+# ===========================================================================
+# Phase 3.4.3-B — External State Mapping (design §6)
+# ===========================================================================
+#
+# 3.4.3-A answered "is this a well-formed observation?". 3.4.3-B answers the
+# NEXT question: given an ALREADY-VALIDATED ``adapter`` + ``external_state``,
+# which outcome word does the external system's OWN state denote? This is
+# ``state -> outcome`` ONLY — NEVER ``adapter -> HTTP -> state -> outcome`` (the
+# read path is 3.4.5).
+#
+# THE GOVERNING CONSTRAINT (user 2026-09-03 §十六, design §6): DO NOT FABRICATE.
+# A state word is frozen into a vocabulary ONLY when existing adapter code (or
+# the frozen design) evidences it. Where an adapter has no verifiable external
+# terminal-state vocabulary, its table stays EMPTY and every state is refused as
+# ``UnrecognizedExternalState`` — the concrete enumeration lands with the 3.4.5
+# read path, never invented here. "宁可返回 mapping rejection，不要猜测."
+#
+# STILL DEFERRED: NO ``reconciliation_failed`` (that is the read-failure verdict,
+# 3.4.5 — a mapper is only ever called WITH a state in hand, so it can never
+# mean "could not read the state"); NO HTTP / webhook / adapter read client /
+# polling (3.4.4 / 3.4.5); NO DB / repository / INSERT / UPDATE (still PURE);
+# NO retry / compensation / execution (RC-01).
+
+#: The outcome words ``normalize_external_state`` may produce — the frozen five
+#: MINUS ``reconciliation_failed`` (design §6/§7, user §四). That fifth word is
+#: the READ-FAILURE verdict ("ran a reconcile, could not read external state",
+#: O1) produced by the 3.4.5 read-failure path, never by an external_state
+#: semantic mapping. Single source: ``OUTCOME_STATUSES`` (never a magic list).
+MAPPABLE_OUTCOME_STATUSES = OUTCOME_STATUSES - {"reconciliation_failed"}
+
+
+@dataclass(frozen=True)
+class AdapterStateVocabulary:
+    """ONE adapter's evidenced external-state -> outcome-word mapping (design §6
+    "per-adapter 私有状态词表"). Explicit, auditable, testable — never an if/elif
+    chain over raw strings (user §十二).
+
+    Each frozenset holds the external state words whose semantics denote that
+    outcome. An EMPTY set is a DELIBERATE, DOCUMENTED GAP (no code evidence) —
+    NOT an oversight; filling one requires 3.4.5 read-path evidence, never a
+    plausible-looking guess (the专项 tests pin these empties so they cannot be
+    silently fabricated).
+
+    ``case_insensitive`` / ``state_key`` encode the ONLY normalizations an
+    adapter's OWN code evidences (§十三): Wazuh lower-cases ``agent_status``
+    (wazuh.py:246) and reads it from ``body["agent_status"]`` (wazuh.py:243), so
+    both are code-specified for Wazuh and for NO other adapter. Neither trims —
+    wazuh.py does not trim, so the mapping does not either.
+    """
+
+    adapter: str
+    terminal_success_states: frozenset[str]
+    terminal_failure_states: frozenset[str]
+    pending_states: frozenset[str]
+    ambiguous_states: frozenset[str]
+    case_insensitive: bool = False
+    state_key: str | None = None
+    evidence: str = ""
+
+
+#: The per-adapter vocabularies. Keys are EXACTLY ``ADAPTER_NAMES`` (a test pins
+#: this — every validated adapter has a table, and no table exists for a
+#: non-adapter). Evidence citations are inline; the anti-fabrication rule governs
+#: every entry.
+ADAPTER_STATE_VOCABULARIES: dict[str, AdapterStateVocabulary] = {
+    "wazuh": AdapterStateVocabulary(
+        adapter="wazuh",
+        # EVIDENCE — the ONLY adapter with a code-frozen external-state vocab:
+        # wazuh.py:97-99 ``_CONFIRMED_AGENT_STATUSES``, "agent_status values that
+        # still count as an unambiguous synchronous confirmation". Wazuh active
+        # -response is SYNCHRONOUS (202/accepted is fail-closed, never a waiting
+        # state), so agent_status IS the effect status — UNLIKE Shuffle (trigger
+        # ≠ completion, E4) and TheHive (created ≠ resolved). Note the words are
+        # Wazuh's OWN ("success", never the dispatch word "succeeded").
+        terminal_success_states=frozenset(
+            {"completed", "confirmed", "done", "success", "ok"}
+        ),
+        # GAP (design §6, user §九, deferred to 3.4.5): Wazuh code declares NO
+        # terminal-FAILURE agent_status. Its failure words (adapter_unavailable /
+        # timeout / adapter_error) are TRANSPORT classifications in the DISPATCH
+        # layer, NOT external agent_status values — so confirmed_failure has no
+        # evidence here and is NEVER fabricated. A Wazuh "failed"-like state is
+        # unrecognized -> refused (tested + pinned below).
+        terminal_failure_states=frozenset(),
+        # EVIDENCE: wazuh.py:94-96 comment names "running" as a real agent_status
+        # that is not-yet-confirmed -> external effect in progress -> pending
+        # (design §7-C, user §九 "处理中").
+        pending_states=frozenset({"running"}),
+        # EVIDENCE: the same comment names "unknown" as a real agent_status. It is
+        # a RECOGNIZED-but-ambiguous legitimate state -> unknown (design §7-D).
+        # This is NOT the forbidden "unrecognized -> unknown": "unknown" here is
+        # an in-vocabulary Wazuh value whose SEMANTICS are unclear, exactly what
+        # the outcome word ``unknown`` is reserved for (§0 铁律).
+        ambiguous_states=frozenset({"unknown"}),
+        # EVIDENCE: wazuh.py:246 lower-cases agent_status before matching, so
+        # case-folding IS code-specified for Wazuh (§十三 permits adapter-specific
+        # normalization). No trim — wazuh.py does not trim, so neither do we.
+        case_insensitive=True,
+        # EVIDENCE: wazuh.py:243 reads the state from body["agent_status"], so a
+        # Mapping external_state carries the word under this key.
+        state_key="agent_status",
+        evidence=(
+            "wazuh.py _CONFIRMED_AGENT_STATUSES (L97-99) + agent_status "
+            "comment (L94-96)"
+        ),
+    ),
+    "shuffle": AdapterStateVocabulary(
+        adapter="shuffle",
+        # GAP (design §6/§7, user §七): Shuffle is TRIGGER-ONLY — E4 freezes
+        # ``succeeded == "workflow trigger confirmed"``, explicitly NOT "workflow
+        # fully completed" (shuffle.py:8-12, 250). The adapter parses only the
+        # synchronous dispatch response (``success:true`` + external_execution_id);
+        # it has NO read path and NO workflow terminal-state vocabulary, so
+        # external_execution_id must NEVER imply confirmed_success and NO Shuffle
+        # state word can be frozen without fabrication. The concrete vocabulary
+        # lands with the 3.4.5 read path (design §6: "随 3.4.5 adapter read path
+        # 一起落地"). Every Shuffle external_state is therefore unrecognized.
+        terminal_success_states=frozenset(),
+        terminal_failure_states=frozenset(),
+        pending_states=frozenset(),
+        ambiguous_states=frozenset(),
+        case_insensitive=False,
+        state_key=None,
+        evidence=(
+            "GAP: no verifiable workflow terminal-state vocabulary "
+            "(3.4.5 read path)"
+        ),
+    ),
+    "thehive": AdapterStateVocabulary(
+        adapter="thehive",
+        # GAP (design §6/§8, user §八): TheHive creates a case (``case_id``,
+        # thehive.py:241-252) and NEVER auto-closes it — "case created ≠ case
+        # resolved"; investigation is human-led. ``case_id`` is a REFERENCE, not a
+        # lifecycle STATE, and the adapter has no read path and no case-status
+        # vocabulary. The concrete enumeration lands with the 3.4.5 read path.
+        # Every TheHive external_state is therefore unrecognized.
+        terminal_success_states=frozenset(),
+        terminal_failure_states=frozenset(),
+        pending_states=frozenset(),
+        ambiguous_states=frozenset(),
+        case_insensitive=False,
+        state_key=None,
+        evidence=(
+            "GAP: no verifiable case-lifecycle state vocabulary "
+            "(3.4.5 read path)"
+        ),
+    ),
+    "mock": AdapterStateVocabulary(
+        adapter="mock",
+        # UNSUPPORTED BY DESIGN (user §六, design §9): Mock has ZERO outbound
+        # traffic and NO external system (mock.py:4-6), so it can never produce an
+        # external outcome. This is PERMANENT — not a 3.4.5 gap. Any Mock
+        # external_state is refused as unrecognized (no external effect exists to
+        # observe).
+        terminal_success_states=frozenset(),
+        terminal_failure_states=frozenset(),
+        pending_states=frozenset(),
+        ambiguous_states=frozenset(),
+        case_insensitive=False,
+        state_key=None,
+        evidence="no external outcome by design (Mock is offline DryRun)",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class StateMapping:
+    """The PURE result of mapping one validated external_state onto the outcome
+    vocabulary (user §十四: a domain result, NOT a DB write). Immutable.
+
+    ``outcome_status`` is guaranteed to be one of ``MAPPABLE_OUTCOME_STATUSES`` —
+    ``__post_init__`` refuses any non-outcome word (a typo in a vocabulary branch)
+    and refuses ``reconciliation_failed`` STRUCTURALLY (§四: a state-mapping can
+    never be the read-failure verdict). ``observed_state`` preserves the RAW
+    extracted word (§十三), ``normalized_state`` the form actually matched, and
+    ``mapping_reason`` the auditable why (design §5: detail = mapping notes).
+    """
+
+    adapter: str
+    outcome_status: str
+    observed_state: str
+    normalized_state: str
+    mapping_reason: str
+
+    def __post_init__(self):
+        if self.outcome_status not in OUTCOME_STATUSES:
+            # Defensive (mirrors derivation.derive_outcome_state): a mapping must
+            # only ever emit a frozen outcome word. The four branches hardcode
+            # literals, so this fires only on an internal typo — never on input.
+            raise ValueError(
+                "StateMapping.outcome_status must be a frozen outcome word "
+                "(design §6); got an out-of-vocabulary value"
+            )
+        if self.outcome_status not in MAPPABLE_OUTCOME_STATUSES:
+            # The only OUTCOME_STATUSES member that is not mappable is
+            # reconciliation_failed — the read-failure verdict (3.4.5), never a
+            # state-mapping product (§四). Enforced structurally, not by comment.
+            raise ValueError(
+                "normalize_external_state can never produce "
+                "reconciliation_failed — that is the read-failure path (design "
+                "§7-B / O1, 3.4.5), not an external_state mapping (§四)"
+            )
+
+
+def _extract_state_word(
+    vocab: AdapterStateVocabulary, external_state: object
+) -> str | None:
+    """Pull the state WORD out of a validated ``external_state`` (design §4:
+    ``str | Mapping``). PURE; returns None when no word can be evidenced. The raw
+    payload is NEVER modified (§十三).
+
+    - a bare ``str`` IS the state word (returned RAW — the adapter's own
+      normalization is applied by the caller, not here);
+    - a ``Mapping`` yields ``mapping[state_key]`` when the adapter evidences a key
+      (Wazuh ``agent_status``, wazuh.py:243) and that value is a ``str``;
+    - anything else (a Mapping with no evidenced key / a missing key / a non-str
+      value) -> None -> ``UnrecognizedExternalState``.
+    """
+    if isinstance(external_state, str):
+        return external_state
+    if isinstance(external_state, Mapping):
+        if vocab.state_key is None:
+            return None
+        value = external_state.get(vocab.state_key)
+        return value if isinstance(value, str) else None
+    return None
+
+
+def normalize_external_state(
+    adapter: str, external_state: str | Mapping
+) -> StateMapping:
+    """Map one ALREADY-VALIDATED ``external_state`` onto the outcome vocabulary,
+    adapter-specifically (design §6). PURE: no DB, no HTTP, no ORM, no executor,
+    no adapter call, no side effect, no mutation of the input (user §十一).
+
+    INPUT CONTRACT (user §三): the caller ran 3.4.3-A ``validate_observation``
+    first, so ``adapter`` is a known identity and ``external_state`` is present
+    and well-shaped. This function does NOT re-run A's validator; an ``adapter``
+    absent from ``ADAPTER_STATE_VOCABULARIES`` is a caller bug (``KeyError``) —
+    the same philosophy as ``trust_domain_for`` on an unvalidated source.
+
+    OUTPUT: a ``StateMapping`` whose ``outcome_status`` ∈
+    ``MAPPABLE_OUTCOME_STATUSES`` (never ``reconciliation_failed``). An
+    ``external_state`` outside the adapter's evidenced vocabulary raises
+    ``UnrecognizedExternalState`` — NO Outcome Fact, NEVER guessed to ``unknown``
+    (user §十 / §0 铁律). Deterministic: the same ``(adapter, external_state)``
+    always yields the same result or the same exception type.
+
+    THE ANTI-FABRICATION RULE (user §十六): only code/design-evidenced states are
+    frozen. Wazuh maps ``_CONFIRMED_AGENT_STATUSES`` -> confirmed_success,
+    ``running`` -> pending, ``unknown`` -> unknown, and has NO evidenced failure
+    state. Shuffle / TheHive / Mock have NO evidenced external-state vocabulary
+    at all, so EVERY state they report is unrecognized until the 3.4.5 read path
+    supplies real evidence.
+    """
+    vocab = ADAPTER_STATE_VOCABULARIES[adapter]
+    word = _extract_state_word(vocab, external_state)
+    if word is None:
+        raise UnrecognizedExternalState(
+            f"{adapter} reported an external_state this contract cannot map "
+            "onto the outcome vocabulary: no evidenced state word could be "
+            "extracted (design §6 / §13). Refused — NEVER guessed to unknown, "
+            "NEVER reconciliation_failed, NO Outcome Fact.",
+            adapter=adapter,
+        )
+    # Adapter-specific normalization ONLY where the adapter's own code evidences
+    # it (§十三): Wazuh lower-cases agent_status (wazuh.py:246). Never a trim.
+    candidate = word.lower() if vocab.case_insensitive else word
+    if candidate in vocab.terminal_success_states:
+        outcome_status = "confirmed_success"
+    elif candidate in vocab.terminal_failure_states:
+        outcome_status = "confirmed_failure"
+    elif candidate in vocab.pending_states:
+        outcome_status = "pending"
+    elif candidate in vocab.ambiguous_states:
+        outcome_status = "unknown"
+    else:
+        raise UnrecognizedExternalState(
+            f"{adapter} reported an external_state outside its evidenced "
+            "vocabulary (design §6 归一化闸 / §13 UnrecognizedExternalState). "
+            "Refused — an unrecognized state is NEVER downgraded to unknown and "
+            "NEVER to reconciliation_failed; NO Outcome Fact is produced.",
+            adapter=adapter,
+        )
+    return StateMapping(
+        adapter=adapter,
+        outcome_status=outcome_status,
+        observed_state=word,
+        normalized_state=candidate,
+        mapping_reason=(
+            f"{adapter} external state matched the {outcome_status} vocabulary "
+            f"[{vocab.evidence}]"
+        ),
     )
