@@ -10,6 +10,7 @@ from app.api.v1.normalize import router as normalize_router
 from app.api.v1.response_approval import router as response_approval_router
 from app.api.v1.response_execution import router as response_execution_router
 from app.api.v1.response_recommendation import router as response_recommendation_router
+from app.api.v1.webhooks import router as webhooks_router
 
 router = APIRouter()
 router.include_router(ai_analysis_router)
@@ -22,3 +23,4 @@ router.include_router(normalize_router)
 router.include_router(response_approval_router)
 router.include_router(response_execution_router)
 router.include_router(response_recommendation_router)
+router.include_router(webhooks_router)

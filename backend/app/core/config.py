@@ -125,6 +125,25 @@ class Settings(BaseSettings):
     # no further configuration surface is needed.
     THEHIVE_TIMEOUT_SECONDS: float = 30.0
 
+    # Phase 3.4.4-A: external-adapter CALLBACK (inbound webhook) tokens —
+    # one per RECOGNIZED adapter. This is a THIRD trust domain, completely
+    # separate from BOTH the outbound *_API_KEY credentials above AND the
+    # human-operator registry (design §8 / D3.4-07: External Adapter
+    # Callback Identity is never Human Operator Identity). Bound per-route:
+    # POST /api/v1/webhooks/{adapter} authenticates ONLY against
+    # <ADAPTER>_CALLBACK_TOKEN — never a body field, never another
+    # adapter's token. Empty stays fail-closed for THAT adapter's INBOUND
+    # channel only (one uniform 401); an unconfigured callback token NEVER
+    # blocks app startup and is deliberately NOT wired into
+    # validate_adapter_config() (which guards the OUTBOUND dispatch path).
+    # Values end in TOKEN, so _SENSITIVE_FIELD_SUFFIXES auto-masks them in
+    # repr; they never enter logs / responses / exceptions / audit / DB.
+    # mock has NO callback token by design (offline DryRun, no external
+    # callback identity) — it is never a webhook channel (spec §5 / §17).
+    SHUFFLE_CALLBACK_TOKEN: str = ""
+    WAZUH_CALLBACK_TOKEN: str = ""
+    THEHIVE_CALLBACK_TOKEN: str = ""
+
     DATABASE_URL: str = (
         "postgresql+psycopg://sentinelflow:change_me@localhost:5432/sentinelflow"
     )
