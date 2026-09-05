@@ -27,13 +27,26 @@ Coverage map (acceptance gate — spec §15 items 1-20, plus §16 / §12 / §14)
   OPERATORS_JSON reuse — the callback trust domain is disjoint.
 - Token secrecy (§15.15-17 / §12): never in a log / response / exception /
   repr.
-- AST import surface (§16): webhooks.py imports ONLY {__future__, secrets,
-  fastapi, app.core.config}; defines ONLY the three sanctioned functions;
-  never references EXECUTION_TOKEN / OPERATORS_JSON / operators / executor.
+- AST import surface (§16): webhooks.py stays within a bounded callback
+  allowlist — the Gate-1 auth core {__future__, secrets, fastapi,
+  app.core.config} plus, from 3.4.4-E, the wiring it legitimately needs
+  (get_db / Session / the Gate-2 body schema / the outcome-fact orchestration
+  / the frozen 3.4.3 exception family the router maps to HTTP); it defines
+  ONLY the three sanctioned functions and never references EXECUTION_TOKEN /
+  OPERATORS_JSON / operators / executor / outbound IO / derivation / direct
+  ORM construction.
 
-AUTH ONLY. No schema, no correlation, no mapping, no persistence (spec §3);
-those arrive in 3.4.4-B..E. The Shuffle/TheHive Gate-4 fail-closed behaviour
-is untouched here and must not be relaxed to "make a demo pass".
+GATE 1 FOCUS. This file locks callback AUTHENTICATION. The three stub-phase
+HTTP assertions that depended on a BODY-LESS POST reaching a 200 ACK — the
+wazuh accepted-ACK placeholder, the all-three-channels placeholder, and the
+identity-not-echoed-via-HTTP check — were RETIRED ahead of 3.4.4-E, not
+weakened: a real callback must now carry a Gate-2 body (a body-less POST is a
+422), and Shuffle/TheHive are refused by the Gate-4 fail-closed mapping, so
+the accepted-ACK + identity-not-echoed + persistence behaviour is proven
+end-to-end in tests/test_webhook_persistence.py (3.4.4-E). The Gate-1
+rejection surface (uniform 401 / 404, no Outcome Fact) stays here unchanged,
+and the Shuffle/TheHive Gate-4 fail-closed behaviour is untouched and must not
+be relaxed to "make a demo pass".
 """
 import ast
 import inspect
@@ -71,6 +84,29 @@ NON_ASCII_BEARER = "Bearer caf" + chr(233)
 
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+#: The bounded import surface webhooks.py may use. The Gate-1 authentication
+#: core (the 3.4.4-A exact four) PLUS the modules the 3.4.4-E callback wiring
+#: legitimately needs: the get_db dependency + Session type, the Gate-2 body
+#: schema / Schema->Contract conversion, the outcome-fact orchestration
+#: service, and the FROZEN 3.4.3 exception family the router maps to HTTP
+#: (§12 keeps that mapping in the router; domain exceptions never import
+#: FastAPI). This is an UPPER BOUND — the operator trust domain, the executor
+#: / dispatch service, outbound adapter IO, derivation, and direct ORM
+#: construction all stay forbidden (test_no_forbidden_symbol_imported).
+ALLOWED_WEBHOOK_MODULES = {
+    "__future__",
+    "secrets",
+    "fastapi",
+    "app.core.config",
+    "app.core.database",
+    "sqlalchemy.orm",
+    "app.schemas.webhook",
+    "app.services.outcomes.webhook",
+    "app.services.outcomes.correlation",
+    "app.services.outcomes.reconciliation",
+}
 
 
 # --------------------------------------------------------------------------
@@ -363,13 +399,19 @@ class TestIdentityBinding:
         assert ident in CALLBACK_ADAPTERS
         assert WAZUH_TOKEN not in ident  # never echoes the secret
 
-    def test_identity_via_http_is_not_echoed(self, client, all_tokens):
-        # §14: the stub ack is minimal and credential-free.
-        resp = client.post(f"{WEBHOOK}/wazuh", headers=_bearer(WAZUH_TOKEN))
-        assert resp.status_code == 200
-        assert resp.json() == {"accepted": True}
-        assert WAZUH_TOKEN not in resp.text
-        assert "wazuh" not in resp.text  # identity not echoed either
+    # 3.4.4-E relaxation: the fourth identity-binding check here used to be
+    # test_identity_via_http_is_not_echoed — a BODY-LESS POST to /wazuh
+    # asserting a 200 {"accepted": true} whose text echoed neither the
+    # credential nor the adapter identity. It was RETIRED, not weakened: under
+    # the full E wiring a body-less POST is a Gate-2 422 (a real callback must
+    # carry a Gate-2 body), so "200 on no body" is no longer a true property.
+    # The identity/credential-not-echoed-in-the-response guarantee is preserved
+    # and re-proven end-to-end in tests/test_webhook_persistence.py (3.4.4-E),
+    # where a VALID Wazuh callback returns 200 {"accepted": true} and the
+    # response text is asserted to carry no token, no adapter identity, no
+    # external_state and no raw payload. The three UNIT checks above still lock
+    # identity binding at the source: the trusted identity is the server-side
+    # route adapter, never the credential content, never a client string.
 
 
 # --------------------------------------------------------------------------
@@ -452,23 +494,20 @@ class TestTokenSecrecy:
 
 
 # --------------------------------------------------------------------------
-# 12. Endpoint surface — Gate 1 ONLY (§14 / §3)
+# 12. Endpoint surface — Gate 1 rejection behaviour (§14 / §3)
 # --------------------------------------------------------------------------
 class TestEndpointSurface:
-    def test_valid_callback_returns_accepted_ack(self, client, all_tokens):
-        resp = client.post(f"{WEBHOOK}/wazuh", headers=_bearer(WAZUH_TOKEN))
-        assert resp.status_code == 200
-        assert resp.json() == {"accepted": True}
-
-    def test_all_three_channels_reachable(self, client, all_tokens):
-        for adapter, token in (
-            ("shuffle", SHUFFLE_TOKEN),
-            ("wazuh", WAZUH_TOKEN),
-            ("thehive", THEHIVE_TOKEN),
-        ):
-            resp = client.post(f"{WEBHOOK}/{adapter}", headers=_bearer(token))
-            assert resp.status_code == 200, adapter
-            assert resp.json() == {"accepted": True}
+    # 3.4.4-E relaxation: the two stub-phase ACK placeholders that used to
+    # open this class — a body-less POST returning 200 {"accepted": true} for
+    # wazuh, and the same for all three channels — were RETIRED, not weakened.
+    # A real callback must now carry a Gate-2 body (a body-less POST is a 422),
+    # and Shuffle/TheHive are refused by the Gate-4 fail-closed mapping, so
+    # "every channel ACKs 200 with no body" is no longer a true property. The
+    # accepted-ACK + Outcome-Fact persistence behaviour is proven end-to-end
+    # in tests/test_webhook_persistence.py (3.4.4-E). What this class STILL
+    # locks here — byte-for-byte unchanged — is the Gate-1 rejection surface:
+    # an unauthenticated / header-less / unconfigured callback is a uniform
+    # 401 that never reaches the ACK, and a body-less callback writes no fact.
 
     def test_unauthenticated_callback_never_reaches_ack(self, client, all_tokens):
         resp = client.post(f"{WEBHOOK}/wazuh", headers=_bearer("wrong-token"))
@@ -518,20 +557,31 @@ def _imported_webhooks():
 
 
 class TestImportSurface:
-    def test_modules_are_exactly_the_authentication_dependencies(self):
-        # §16: ONLY these four modules — proves no operators / executor /
-        # execution service / response_execution / persistence / HTTP-client
-        # import sneaks into the callback gate.
+    def test_modules_stay_within_the_callback_wiring_allowlist(self):
+        # §16 (relaxed for 3.4.4-E): the Gate-1 auth core is ALWAYS present,
+        # and nothing beyond the bounded callback allowlist may be imported —
+        # so no operators / executor / response_execution / outbound-HTTP /
+        # derivation / direct-ORM module can sneak into the callback gate once
+        # the E wiring (get_db / Session / body schema / orchestration /
+        # frozen 3.4.3 exception family) is in place.
         modules, _, _ = _imported_webhooks()
-        assert modules == {"__future__", "secrets", "fastapi", "app.core.config"}
+        assert {"__future__", "secrets", "fastapi", "app.core.config"} <= modules
+        assert modules <= ALLOWED_WEBHOOK_MODULES
 
     def test_no_forbidden_symbol_imported(self):
+        # §6/§16 (relaxed for 3.4.4-E): the callback gate must never pull in
+        # the operator trust domain, the executor / dispatch service, outbound
+        # adapter IO, derivation, or direct ORM construction. Two fragments
+        # the auth-only stub forbade are legitimately needed by the E wiring
+        # and are therefore NOT forbidden here: "sqlalchemy" (the Session type
+        # for the get_db dependency) and "reconciliation" (the FROZEN 3.4.3
+        # ContractValidationFailure family the router maps to HTTP — §12 keeps
+        # that mapping in the router, never in the domain).
         modules, names, _ = _imported_webhooks()
         for mod in modules:
             for bad in (
                 "operators", "executor", "response_execution", "registry",
-                "derivation", "reconciliation", "sqlalchemy", "httpx",
-                "requests", "models",
+                "derivation", "httpx", "requests", "models",
             ):
                 assert bad not in mod, f"module {mod} pulls in forbidden {bad}"
         # §6/§16: operator identity machinery must never be imported.
