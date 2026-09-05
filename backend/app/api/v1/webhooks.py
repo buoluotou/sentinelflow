@@ -1,4 +1,4 @@
-"""Adapter Callback Authentication — Webhook inbound Gate 1 (Phase 3.4.4-A).
+"""Adapter Callback Webhook — Gate 1 authentication (3.4.4-A) + endpoint wiring (3.4.4-E).
 
 The FIRST of four frozen inbound gates (design §5 of the Outcome Lifecycle
 doc and §15 of the Reconciliation Contract):
@@ -10,7 +10,7 @@ doc and §15 of the Reconciliation Contract):
         -> Gate 4 Semantic Mapping  (3.4.4-D)
         -> Outcome Fact Append      (3.4.4-E)
 
-This module answers ONE question and nothing else:
+Gate 1 (``authenticate_callback``) answers ONE question and nothing else:
 
     "Is this HTTP callback from a trusted external adapter?"
 
@@ -37,20 +37,36 @@ collapses to ONE uniform 401 with a static detail, so a response can never
 disclose whether a token exists, which adapter it belongs to, or anything
 about its value (length / prefix / suffix).
 
-3.4.4-A scope: AUTHENTICATION ONLY. This module deliberately implements no
-request-body schema, no correlation, no external-state mapping and no
-persistence (spec §3 / §14). The endpoint below is a minimal stub returning
-the frozen success ack ``{"accepted": true}`` once — and only once — Gate 1
-passes. Gates 2-4 and the Outcome Fact append arrive in 3.4.4-B..E, and the
-Shuffle/TheHive fail-closed mapping behaviour is inherited unchanged.
+3.4.4-E scope: Gate 1 (``authenticate_callback``) is UNCHANGED and byte-frozen;
+the endpoint below now WIRES the full inbound pipeline. It adds the Gate-2 body
+(``WebhookCallbackRequest``), folds in the server-side trusted adapter via
+``to_external_observation``, delegates Gates 2-4 plus the append-only Outcome
+Fact INSERT to ``app.services.outcomes.webhook``, maps each domain rejection to
+its frozen HTTP status (401 auth / 404 unsupported-adapter + correlation / 422
+contract + mapping / 500 persistence), and returns the frozen ack
+``{"accepted": true}`` only once the fact is committed (spec §11 / §12 / §32).
+HTTP mapping lives HERE, never in the domain (spec §12). The router itself
+carries NO persistence surface — the service owns the transaction — and never
+echoes the ORM, the external_state, or any credential (spec §16 / §25). The
+Shuffle/TheHive fail-closed mapping behaviour is inherited unchanged: a refused
+state is a 422, never a fabricated fact.
 """
 from __future__ import annotations
 
 import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.database import get_db
+from app.schemas.webhook import WebhookCallbackRequest, to_external_observation
+from app.services.outcomes.correlation import UnmappableExecutionId
+from app.services.outcomes.reconciliation import ContractValidationFailure
+from app.services.outcomes.webhook import (
+    OutcomePersistenceError,
+    persist_callback_outcome,
+)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -84,6 +100,22 @@ CALLBACK_AUTH_FAILURE_DETAIL = "callback authentication failed"
 #: discloses NO credential metadata (the caller chose the adapter in the URL,
 #: so "no such channel" leaks nothing about any token).
 CALLBACK_UNSUPPORTED_ADAPTER_DETAIL = "unsupported callback adapter"
+
+#: Correlation failure (Gate 3, spec §12 / §31): the execution_id is
+#: well-formed but maps to NO existing chain -> 404. STATIC detail: it echoes
+#: no execution_id, no external_state, no credential.
+CALLBACK_CORRELATION_FAILURE_DETAIL = "execution correlation failed"
+
+#: Contract / semantic-mapping rejection (spec §12 / §31): a Gate-2 contract
+#: violation or a Gate-4 refused state -> 422 (the Gate-2 body TYPE check is
+#: FastAPI's own automatic 422). STATIC detail — leaks nothing about the
+#: refused value, never the external_state, never a credential.
+CALLBACK_VALIDATION_FAILURE_DETAIL = "callback validation failed"
+
+#: Outcome Fact persistence failure (spec §10 / §12 / §31): the append failed
+#: and the service rolled the transaction back -> 500. NEVER accepted=true,
+#: NEVER a reconciliation state. STATIC detail, no DB internals, no credential.
+CALLBACK_PERSISTENCE_FAILURE_DETAIL = "outcome persistence failed"
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
@@ -155,19 +187,47 @@ def authenticate_callback(
 
 @router.post("/{adapter}", status_code=200)
 def receive_adapter_callback(
+    payload: WebhookCallbackRequest,
     authenticated_adapter: str = Depends(authenticate_callback),
+    db: Session = Depends(get_db),
 ) -> dict[str, bool]:
-    """POST /api/v1/webhooks/{adapter} — the 3.4.4-A minimal stub.
+    """POST /api/v1/webhooks/{adapter} — the full 3.4.4-E inbound wiring.
 
-    Gate 1 ONLY: authenticate the callback, then return the frozen success
-    ack ``{"accepted": true}`` (spec §14, frozen decision #2). Deliberately
-    NO request-body schema, NO correlation, NO external-state mapping and NO
-    persistence (spec §3) — those are 3.4.4-B..E. Any Gate 1 failure raises
-    inside ``authenticate_callback`` BEFORE this body runs, so an
-    unauthenticated callback never reaches the ack.
+    Gate 1 (``authenticate_callback``, a dependency) runs FIRST and short-
+    circuits a bad callback to a uniform 401 / 404 before the body is ever
+    considered. Then, in the frozen order (spec §13):
 
-    ``authenticated_adapter`` is the server-side trusted identity resolved by
-    Gate 1 (consumed from 3.4.4-E onward). It is intentionally NOT echoed in
-    the response: the ack stays minimal and credential-free.
+      - Gate 2 Schema: FastAPI validates ``payload`` against
+        ``WebhookCallbackRequest`` (extra / missing / mistyped -> its own 422);
+        ``to_external_observation`` folds in the SERVER-SIDE trusted adapter +
+        the frozen ``webhook`` source (never a body field, spec §5 / §6);
+      - Gates 2-4 + the append-only Outcome Fact INSERT are delegated to
+        ``persist_callback_outcome`` (the service owns the transaction, so this
+        router carries no persistence surface);
+      - the frozen ack ``{"accepted": true}`` is returned ONLY after the fact
+        is committed (spec §11 / §32) — never 201 / 204, never the ORM, never
+        the external_state, never a credential (spec §16 / §25).
+
+    HTTP mapping lives HERE (spec §12): ``UnmappableExecutionId`` (Gate 3, a
+    ``ContractValidationFailure`` subclass) -> 404 and is caught BEFORE its
+    base; any other ``ContractValidationFailure`` (Gate 2 contract / Gate 4
+    refused state) -> 422; ``OutcomePersistenceError`` (rolled-back DB failure)
+    -> 500. Every detail is STATIC, so a rejection leaks nothing about the
+    refused value.
     """
+    observation = to_external_observation(payload, adapter=authenticated_adapter)
+    try:
+        persist_callback_outcome(db, observation)
+    except UnmappableExecutionId as exc:
+        raise HTTPException(
+            status_code=404, detail=CALLBACK_CORRELATION_FAILURE_DETAIL
+        ) from exc
+    except ContractValidationFailure as exc:
+        raise HTTPException(
+            status_code=422, detail=CALLBACK_VALIDATION_FAILURE_DETAIL
+        ) from exc
+    except OutcomePersistenceError as exc:
+        raise HTTPException(
+            status_code=500, detail=CALLBACK_PERSISTENCE_FAILURE_DETAIL
+        ) from exc
     return {"accepted": True}
