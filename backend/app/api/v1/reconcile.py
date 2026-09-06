@@ -1,4 +1,4 @@
-"""Manual Reconcile API — secured route + correlation wiring (Phase 3.4.5-A2-B).
+"""Manual Reconcile API — secured route + read-registry wiring (Phase 3.4.5-A2-C).
 
 The PULL-side counterpart to the webhook (PUSH-side) inbound path. Where a
 webhook lets an EXTERNAL SYSTEM report an outcome, Manual Reconcile lets an
@@ -8,34 +8,45 @@ current state for one past execution and append what it finds as an Outcome Fact
 
     Authenticated Operator -> POST /api/v1/executions/{execution_id}/reconcile
         -> Operator RBAC (reuse authenticate_operator)   <- 3.4.5-A2-A (sealed)
-        -> Correlation / External Reference              <- THIS STEP (A2-B)
-        -> ReadAdapterRegistry / ReadAdapter.read         <- A2-C
+        -> Correlation / External Reference              <- 3.4.5-A2-B (sealed)
+        -> ReadAdapterRegistry / ReadAdapter.read         <- THIS STEP (A2-C)
         -> Read Failure -> reconciliation_failed          <- A2-D
         -> 3.4.3 Validation / Mapping / Fact Append       <- A2-E
 
-A2-A established the seam (RBAC + the empty body + a 501 stub). A2-B wires the
-platform side of history-driven reconcile: the route parses ``execution_id`` to a
-UUID and delegates to ``reconcile_execution``, which CORRELATES (reusing 3.4.4-C)
-and extracts the adapter + external_reference read-only from ``execution_log``,
-then stops at ``NotImplementedError`` because no read adapter exists yet. The
-route maps the domain rejections to HTTP exactly as ``webhooks.py`` does:
+A2-A established the seam (RBAC + the empty body + a 501 stub); A2-B wired
+correlation + read-only external-reference extraction. A2-C hands that context to
+the A1 ``ReadAdapterRegistry``: the route still parses ``execution_id`` to a UUID
+and delegates to ``reconcile_execution``, which now CORRELATES (reusing 3.4.4-C),
+extracts the adapter + external_reference, then resolves a reader. Because the
+PRODUCTION registry is EMPTY (spec §3), EVERY adapter rejects there — no reader is
+ever fabricated. The route maps the domain rejections to HTTP exactly as
+``webhooks.py`` does:
 
   - a malformed ``execution_id`` OR one that maps to no chain -> 404
     (``UnmappableExecutionId``, caught BEFORE its ``ContractValidationFailure``
     base); the two are deliberately INDISTINGUISHABLE (one uniform static detail);
   - a chain with no reconcilable external reference -> 422
-    (``MissingExternalReference``, a ``ContractValidationFailure``);
-  - a correlated, reference-bearing chain -> 501 (``NotImplementedError``) — an
-    honest "not yet implemented", NEVER a 200 ``accepted`` and NEVER a fabricated
-    reconciliation success (spec §20 / §21 / §36).
+    (``MissingExternalReference``, a ``ContractValidationFailure``) — this gate runs
+    BEFORE the registry (spec §10 / §17 item 14);
+  - a correlated, reference-bearing chain whose adapter has NO reader -> 404
+    (``UnsupportedAdapterRead``, a ``ReadAdapterError`` — NOT a
+    ``ContractValidationFailure``): the registry refuses to fake support. This is
+    the production outcome for shuffle / wazuh / thehive / mock today (spec §8);
+  - a reader that EXISTS and returns (only via a test-injected ``FakeReadAdapter``,
+    never production) -> the pipeline still STOPS at ``NotImplementedError`` -> 501,
+    because C maps NO state and persists NO fact (A2-E) — NEVER a 200 ``accepted``
+    (spec §16).
 
-A2-B performs NO external read, NO ``ReadAdapterRegistry`` access, NO mapping, NO
-Outcome persistence, and NO execution / dispatch / compensation (spec §2 / §25).
-HTTP mapping lives HERE, never in the domain (mirrors ``webhooks.py``); when the
-pipeline completes the SERVICE will own the transaction (A2-E), so this router
-carries NO persistence surface and never echoes the ORM, an external state, or a
-credential. Every rejection detail is STATIC (spec §13 / §21): it leaks no
-execution_id, no operator, no adapter, no reference value and no credential.
+``UnsupportedAdapterRead`` (registry lookup found no reader) is DISTINCT from
+``reconciliation_failed`` (a real ``read()`` that failed at transport level — A2-D):
+the former has NO read attempt, so it is a rejection with NO Outcome Fact, never a
+failure fact (spec §9). A2-C performs NO real external read (the registry is empty),
+NO mapping, NO Outcome persistence, and NO execution / dispatch / compensation
+(spec §2 / §14 / §25). HTTP mapping lives HERE, never in the domain (mirrors
+``webhooks.py``); the SERVICE will own the transaction when the pipeline completes
+(A2-E), so this router carries NO persistence surface and never echoes the ORM, an
+external state, or a credential. Every rejection detail is STATIC (spec §13 / §21):
+it leaks no execution_id, no operator, no adapter, no reference value, no credential.
 """
 from __future__ import annotations
 
@@ -51,6 +62,7 @@ from app.schemas.reconcile import (
     ManualReconcileResponse,
 )
 from app.services.executions.operators import Operator
+from app.services.manual_reconcile import UnsupportedAdapterRead
 from app.services.outcomes.correlation import UnmappableExecutionId
 from app.services.outcomes.manual_reconcile import reconcile_execution
 from app.services.outcomes.reconciliation import ContractValidationFailure
@@ -68,6 +80,15 @@ RECONCILE_CORRELATION_FAILURE_DETAIL = "execution correlation failed"
 #: external reference -> 422. STATIC: leaks nothing about the refused value, never
 #: the adapter, never a credential.
 RECONCILE_VALIDATION_FAILURE_DETAIL = "reconcile validation failed"
+
+#: Registry-capability rejection (spec §8): ``UnsupportedAdapterRead`` — the chain
+#: correlated and carries a reference, but the ReadAdapterRegistry has NO reader for
+#: its adapter (EVERY adapter, in the empty production registry) -> 404. A
+#: ``ReadAdapterError``, NOT a ``ContractValidationFailure``. STATIC: it names no
+#: adapter and echoes no external_reference (the A1 non-echo discipline). Distinct
+#: from the correlation 404 (which means "no chain"); this one means "chain exists,
+#: no reader" — and is NOT reconciliation_failed (no read was attempted, spec §9).
+RECONCILE_UNSUPPORTED_ADAPTER_DETAIL = "adapter read unsupported"
 
 #: ONE uniform "not yet implemented" detail (3.4.5-A2-A, unchanged). STATIC by
 #: design: it carries NO execution_id, NO operator name, NO adapter, NO credential
@@ -88,7 +109,7 @@ def manual_reconcile(
     authenticated: Operator = Depends(authenticate_operator),
     db: Session = Depends(get_db),
 ) -> ManualReconcileResponse:
-    """POST /api/v1/executions/{execution_id}/reconcile — the 3.4.5-A2-B seam.
+    """POST /api/v1/executions/{execution_id}/reconcile — the 3.4.5-A2-C seam.
 
     Order mirrors ``webhooks.py`` (auth gate FIRST, then body, then service):
 
@@ -108,17 +129,21 @@ def manual_reconcile(
         a correlation-input failure -> the SAME uniform 404 as an absent chain
         (spec §7 / §21);
       - ``reconcile_execution`` correlates (reuse 3.4.4-C) + extracts the adapter /
-        external_reference read-only from ``execution_log`` (A2-B), then raises
-        ``NotImplementedError`` because no read adapter exists yet -> 501.
+        external_reference read-only from ``execution_log`` (A2-B), then resolves a
+        reader from the ``ReadAdapterRegistry`` (A2-C). The production registry is
+        EMPTY, so every adapter raises ``UnsupportedAdapterRead`` -> 404; a reader
+        only exists under a test-injected ``FakeReadAdapter``, and even then the
+        pipeline stops at ``NotImplementedError`` -> 501 (no mapping / persistence).
 
     HTTP mapping lives HERE, never in the domain (mirrors ``webhooks.py``):
     ``UnmappableExecutionId`` (a ``ContractValidationFailure`` subclass) -> 404 and
-    is caught BEFORE its base; any other ``ContractValidationFailure``
+    is caught BEFORE its base; ``UnsupportedAdapterRead`` (a ``ReadAdapterError``, a
+    SEPARATE family) -> 404; any other ``ContractValidationFailure``
     (``MissingExternalReference``) -> 422; ``NotImplementedError`` -> 501. Every
     detail is STATIC, so a rejection leaks nothing about the refused value.
 
     ``response_model`` / ``status_code=200`` declare the frozen §4.4 success
-    contract for documentation; A2-B NEVER reaches a 200 (the pipeline always
+    contract for documentation; A2-C NEVER reaches a 200 (the pipeline always
     stops at 404 / 422 / 501), so no success is ever implied. The §4.4 rich
     rejected envelope (``reason`` enum) lands with the success path in A2-E; until
     then a rejection is a static-detail ``HTTPException`` on the A2-A skeleton
@@ -140,6 +165,15 @@ def manual_reconcile(
         raise HTTPException(
             status_code=404, detail=RECONCILE_CORRELATION_FAILURE_DETAIL
         ) from exc
+    except UnsupportedAdapterRead as exc:
+        # Registry-capability rejection (spec §8): the chain correlated + carries a
+        # reference, but NO reader exists for its adapter (every adapter, in the
+        # empty production registry). A ReadAdapterError (NOT a ContractValidation
+        # Failure) -> 404, a rejection with NO Outcome Fact — and NOT
+        # reconciliation_failed (no read was attempted, spec §9).
+        raise HTTPException(
+            status_code=404, detail=RECONCILE_UNSUPPORTED_ADAPTER_DETAIL
+        ) from exc
     except ContractValidationFailure as exc:
         # MissingExternalReference (chain exists, no reconcilable handle) -> 422.
         # STATIC detail — leaks nothing about the refused adapter / reference.
@@ -147,7 +181,8 @@ def manual_reconcile(
             status_code=422, detail=RECONCILE_VALIDATION_FAILURE_DETAIL
         ) from exc
     except NotImplementedError as exc:
-        # Correlated + reference-bearing, but no read adapter yet -> honest 501.
+        # A reader existed and returned (test-only FakeReadAdapter), but C maps no
+        # state and persists no fact (A2-E) -> honest 501, never a 200 accepted.
         raise HTTPException(
             status_code=501, detail=RECONCILE_NOT_IMPLEMENTED_DETAIL
         ) from exc

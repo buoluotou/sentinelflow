@@ -23,18 +23,25 @@ beside ``webhook.py`` and will IMPORT the read contract from
 ``app/services/manual_reconcile/read/`` in A2-C. The dependency direction is
 one-way: pipeline -> read contract, NEVER the reverse.
 
-3.4.5-A2-B SCOPE (spec §1-§17): correlation + read-only external-reference
-extraction, and NOTHING more.
+3.4.5-A2-C SCOPE (spec §1-§16): correlation + read-only external-reference
+extraction (A2-B, REUSED unchanged) wired into the A1 ``ReadAdapterRegistry`` and
+exercised by a test-only ``FakeReadAdapter`` — and NOTHING more.
 
-    execution_id -> correlate_execution (REUSE 3.4.4-C) -> the ExecutionLog
-    chain -> adapter identity (detail["executor"]) -> external_reference
+    execution_id -> correlate_execution (REUSE 3.4.4-C) -> the ExecutionLog chain
+        -> adapter identity (detail["executor"]) -> external_reference    (A2-B)
+        -> ReadAdapterRegistry.get(adapter)                               (A1)
+        -> reader.read(AdapterReadRequest) -> AdapterReadResult           (A2-C)
 
-``extract_context`` answers "which adapter and which external object does this
-execution_id's historical dispatch chain refer to" and returns a pure
-``CorrelatedExecutionContext``. ``reconcile_execution`` calls it, then STOPS with
-``NotImplementedError`` (the router's 501): there is NO read adapter yet, so B
-NEVER reads an external system, NEVER maps a state, NEVER persists a fact, and
-NEVER fabricates a reconciliation success (spec §2 / §15 / §20 / §23).
+``extract_context`` (A2-B) answers "which adapter and which external object does
+this execution_id's historical chain refer to". ``read_external_state`` (A2-C)
+hands that context to the registry and returns the RAW ``AdapterReadResult``.
+``reconcile_execution`` calls it, then STOPS with ``NotImplementedError`` (the
+router's 501): C maps NO external state onto an outcome word and persists NO fact
+(both A2-E), so it NEVER reads a REAL external system — the PRODUCTION registry is
+EMPTY, so EVERY adapter (shuffle / wazuh / thehive / mock / unknown) rejects at
+``registry.get`` with ``UnsupportedAdapterRead`` (the router's 404, spec §3 / §8) —
+and NEVER returns 200, NEVER fabricates a reconciliation success (spec §2 / §14 /
+§15 / §16).
 
 DETERMINISTIC ROW SELECTION (spec §7 — the crux of this step, DERIVED from the
 existing frozen execution service, never invented here). One execution_id maps to
@@ -64,12 +71,17 @@ and ``rows[-1]`` is the terminal row. Compensation is a FRESH execution_id
 (``compensate_response``), so a chain is homogeneous in direction and the two
 selections never mix a forward dispatch with its undo.
 
-READ-ONLY (spec §16 / §17): SELECT only — no INSERT / UPDATE / DELETE / COMMIT, no
-mutation of ``execution_log`` (byte-identical before/after), no Outcome Fact.
-FORBIDDEN in B (spec §2, proven by an AST import-surface test):
-ReadAdapterRegistry / AdapterReadRequest / adapter.read / HTTP /
-Shuffle-Wazuh-TheHive read / FakeReadAdapter / Mapping / Outcome persistence /
-reconciliation_failed / derived state / retry / compensation / execution.
+READ-ONLY (spec §16 / §24): SELECT only — no INSERT / UPDATE / DELETE / COMMIT, no
+mutation of ``execution_log`` (byte-identical before/after), no Outcome Fact. The
+read side is PHYSICALLY isolated from the write side (spec §21): this module
+imports ONLY ``app.services.manual_reconcile.read`` (the A1 contract) and NEVER
+``app.services.executions`` — no ``ResponseExecutor`` / ``create_executor`` / write
+adapter is reachable, proven by an AST import-surface test.
+STILL FORBIDDEN in C (spec §2 / §14 / §15, AST-proven): a REAL Shuffle-Wazuh-TheHive
+read / HTTP (urllib / requests / httpx) / ``FakeReadAdapter`` in app code (it is
+test-only, spec §22) / state Mapping (external_state -> an outcome word) / Outcome
+persistence / reconciliation_failed / derived state / retry / compensation /
+execution.
 
 FORWARD TRANSACTION CONTRACT (mirrors webhook.py, spec §17 / §24): when the
 pipeline completes (A2-E), the SERVICE will own the transaction (every gate runs
@@ -89,7 +101,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.execution_log import ExecutionLog
-from app.services.executions.registry import ADAPTER_NAMES
+from app.services.manual_reconcile.read import (
+    AdapterReadRequest,
+    AdapterReadResult,
+    ReadAdapterRegistry,
+    default_read_adapter_registry,
+)
 from app.services.outcomes.correlation import correlate_execution
 from app.services.outcomes.reconciliation import MissingExternalReference
 
@@ -152,13 +169,19 @@ def _extract_adapter(rows: list[ExecutionLog]) -> str:
     """The chain's adapter identity = ``detail["executor"]`` of the FIRST
     chronological row (spec §6 — execution-history driven, NEVER the client, the
     path, or the operator). Follows the frozen ``metrics.py::_adapter_of``
-    precedent (the requested row). Validated against ``ADAPTER_NAMES`` (the
-    registry vocabulary 3.4.3-B already reuses, spec §13 — NOT a copied
-    registry): an identity outside it has no reference-key mapping, so the chain
-    is not reconcilable -> fail-closed ``MissingExternalReference`` (spec §13 /
-    §17), never a guessed adapter."""
+    precedent (the requested row).
+
+    A2-C (spec §10): the adapter is returned AS-IS (any non-empty string). The
+    ``ReadAdapterRegistry`` is now the SOLE adapter-capability boundary, so an
+    identity it has no reader for — ``mock`` / ``shuffle`` / ``wazuh`` /
+    ``thehive`` in the EMPTY production registry, or an unknown name — rejects
+    THERE with ``UnsupportedAdapterRead``, NOT here. The A2-B ``ADAPTER_NAMES``
+    vocabulary gate is deliberately GONE: it pre-empted the registry the spec now
+    routes through. Only a STRUCTURALLY absent / non-string executor (a corrupt
+    chain with no adapter identity to hand the registry at all) is fail-closed here
+    as ``MissingExternalReference`` (spec §13), never a guessed adapter."""
     executor = _detail_of(rows[0]).get("executor")
-    if not isinstance(executor, str) or executor not in ADAPTER_NAMES:
+    if not isinstance(executor, str) or not executor:
         raise MissingExternalReference(
             "execution chain carries no reconcilable adapter identity"
         )
@@ -216,27 +239,83 @@ def extract_context(
     )
 
 
-def reconcile_execution(
-    session: Session, execution_id: uuid.UUID, operator: str
-) -> NoReturn:
-    """Manual Reconcile pipeline entrypoint — 3.4.5-A2-B.
+def read_external_state(
+    session: Session,
+    execution_id: uuid.UUID,
+    registry: ReadAdapterRegistry,
+) -> AdapterReadResult:
+    """A2-C (spec §7): correlation + reference extraction (REUSE ``extract_context``,
+    spec §19) -> ``registry.get(adapter)`` -> ``reader.read(request)`` -> the RAW
+    ``AdapterReadResult``. The platform chain this step proves end to end::
 
-    Runs correlation + external-reference extraction (``extract_context``), then
-    STOPS: with no read adapter yet, it raises ``NotImplementedError`` (the
-    router's static 501) — NEVER a 200 ``accepted`` and NEVER a fabricated
-    reconciliation success (spec §20 / §36). A2-C resolves a reader and reads the
-    external state EXACTLY ONCE; A2-D maps a read transport failure to a
-    ``reconciliation_failed`` fact; A2-E validates + maps + appends the Outcome
-    Fact and owns the transaction.
+        execution_id -> CorrelatedExecutionContext (A2-B)
+                     -> registry.get(context.adapter)          (A1 read contract)
+                     -> AdapterReadRequest(execution_id, adapter, external_reference)
+                     -> reader.read(request) -> AdapterReadResult
 
-    ``operator`` is the AUTHENTICATED recorder identity (``Operator.name``)
-    carried for the future fact (A2-E). It NEVER influences the adapter or the
-    reference, which come ONLY from ``execution_log`` (spec §6 / §15) — that
-    ``extract_context`` does not even take ``operator`` is the structural proof
-    (spec §18 item 15).
+    ORDER is load-bearing (spec §10 / §17 item 14): ``extract_context`` runs FIRST,
+    so a chain missing its external reference rejects with
+    ``MissingExternalReference`` BEFORE the registry is consulted; only a
+    reference-bearing context reaches ``registry.get``. The registry is the SOLE
+    adapter-capability gate: the EMPTY production registry (or ``mock`` / an unknown
+    adapter) raises ``UnsupportedAdapterRead`` (spec §8 / §11) — a rejection, NO
+    Outcome Fact, and NEVER ``reconciliation_failed`` (that needs a real ``read()``
+    failing at transport level, spec §9 / §25 — A2-D).
+
+    ``external_reference`` is a non-empty ``str`` by the time the request is built:
+    ``mock`` / unknown adapters carry ``None`` and reject at ``registry.get`` first
+    (no reader), and shuffle / wazuh / thehive reject earlier still if the handle is
+    absent. The ``AdapterReadRequest`` is built ONLY from the historical context —
+    NO operator, NO credential, NO client value (spec §12 / §18); this function does
+    not even take an ``operator``. C performs NO mapping (spec §15) and NO
+    persistence (spec §14): the raw result is returned untouched.
     """
-    extract_context(session, execution_id)
+    context = extract_context(session, execution_id)
+    reader = registry.get(context.adapter)
+    request = AdapterReadRequest(
+        execution_id=context.execution_id,
+        adapter=context.adapter,
+        external_reference=context.external_reference,
+    )
+    return reader.read(request)
+
+
+def reconcile_execution(
+    session: Session,
+    execution_id: uuid.UUID,
+    operator: str,
+    registry: ReadAdapterRegistry | None = None,
+) -> NoReturn:
+    """Manual Reconcile pipeline entrypoint — 3.4.5-A2-C.
+
+    Correlation + external-reference extraction (``extract_context``, A2-B) ->
+    ``ReadAdapterRegistry`` -> ``reader.read()`` -> ``AdapterReadResult``
+    (``read_external_state``). With the EMPTY production registry EVERY adapter
+    rejects at ``registry.get`` with ``UnsupportedAdapterRead`` (the router's 404,
+    spec §8 / §16) BEFORE any read; only a test-injected ``FakeReadAdapter``
+    (spec §4 / §22 — NEVER the production default) reaches ``read()``.
+
+    C STOPS at the raw ``AdapterReadResult``: it does NOT map the external state
+    onto an outcome word (spec §15, A2-E) and does NOT persist a fact (spec §14,
+    A2-E), so there is NO success envelope to return — it raises
+    ``NotImplementedError`` (the router's honest 501), NEVER a 200 ``accepted`` and
+    NEVER a fabricated reconciliation success (spec §16). A read TRANSPORT failure
+    (a real ``read()`` that times out / cannot connect) is NOT converted here either
+    — that ``reconciliation_failed`` mapping is A2-D (spec §25).
+
+    ``registry`` defaults to ``default_read_adapter_registry()`` (EMPTY) so the
+    router — and production — always fail closed; a test passes an EXPLICIT registry
+    instance (constructor injection, spec §22), never a global mutation.
+
+    ``operator`` is the AUTHENTICATED recorder identity (``Operator.name``) carried
+    for the future fact (A2-E) and for audit. It NEVER reaches the read: it is not
+    passed to ``read_external_state`` and ``AdapterReadRequest`` has no operator /
+    credential field (spec §12 / §18) — operator identity is authorization + audit,
+    NEVER an adapter credential.
+    """
+    resolved = registry if registry is not None else default_read_adapter_registry()
+    read_external_state(session, execution_id, resolved)
     raise NotImplementedError(
-        "Manual Reconcile external read lands in 3.4.5-A2-C; "
-        "3.4.5-A2-B establishes correlation + external-reference extraction only"
+        "Manual Reconcile outcome mapping + persistence land in 3.4.5-A2-E; "
+        "3.4.5-A2-C reaches ReadAdapter -> AdapterReadResult only"
     )

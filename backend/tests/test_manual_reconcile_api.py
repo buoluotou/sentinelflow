@@ -1,15 +1,19 @@
 """3.4.5-A2 Manual Reconcile — secured-route acceptance tests (the A2-A seam as
-evolved by A2-B correlation wiring).
+evolved by A2-B correlation wiring and A2-C read-registry integration).
 
 Locks the ROUTE contract that needs NO seeded chain. A2-A established the seam
 (RBAC + the empty body + an honest placeholder); A2-B wired correlation + read-only
-external-reference extraction into it (spec §20 / §21), so the placeholder status
-EVOLVES: an execution_id that maps to NO chain (or is malformed) is now a uniform
-404, a chain with no reconcilable handle is a 422, and only a correlated,
-reference-bearing chain reaches the honest 501 (no read adapter yet). The 501/422
-paths that REQUIRE a seeded chain — and the whole §18 correlation/extraction core —
-live in ``test_manual_reconcile_correlation.py``; this file stays seeding-free and
-proves the invariants that hold regardless of history:
+external-reference extraction into it (spec §20 / §21); A2-C hands that context to
+the A1 ``ReadAdapterRegistry``. The placeholder status therefore EVOLVES: an
+execution_id that maps to NO chain (or is malformed) is a uniform 404, a chain with
+no reconcilable handle is a 422, and a correlated, reference-bearing chain now
+rejects at the EMPTY production registry with ``UnsupportedAdapterRead`` -> 404 (no
+reader exists for ANY adapter yet) — the honest 501 is reachable ONLY under a
+test-injected ``FakeReadAdapter`` (``test_manual_reconcile_reader.py``). The
+404/422/501 paths that REQUIRE a seeded chain — and the whole §18
+correlation/extraction core — live in ``test_manual_reconcile_correlation.py`` and
+``test_manual_reconcile_reader.py``; this file stays seeding-free and proves the
+invariants that hold regardless of history:
 
 - RBAC (§36 / §28 items 1-3): executor/admin are admitted PAST auth (a 404 on an
   unseeded id — never 401/403); viewer/reviewer -> 403; missing/wrong/malformed/
@@ -33,9 +37,10 @@ proves the invariants that hold regardless of history:
 - A2-B scope (§20 / §21): execution_id is now PARSED + CORRELATED — a non-UUID and
   a nonexistent chain both yield the SAME uniform 404.
 
-No external read, no ReadAdapterRegistry access, no mapping, no persistence, no
-execution — those land in A2-C..E. The A2-A commit (4b09d18) stays byte-frozen;
-this file evolves only where §20 / §21 changed the placeholder's status code.
+No REAL external read (the production registry is EMPTY), no mapping, no
+persistence, no execution — mapping/persistence land in A2-E. The A2-A commit
+(4b09d18) stays byte-frozen; this file evolves only where §20 / §21 (A2-B) and §8 /
+§16 (A2-C) changed the placeholder's status code, never its RBAC / schema invariants.
 """
 import json
 import uuid
@@ -61,8 +66,9 @@ from app.services.outcomes.manual_reconcile import reconcile_execution
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
 #: A well-formed but NON-EXISTENT execution id. A2-B CORRELATES (spec §20), so an
-#: unseeded id maps to no chain -> the uniform 404 (never the 501 stub, which now
-#: needs a seeded reference-bearing chain — see test_manual_reconcile_correlation.py).
+#: unseeded id maps to no chain -> the uniform 404 (never the registry's 404
+#: UnsupportedAdapterRead, which needs a seeded reference-bearing chain — see
+#: test_manual_reconcile_correlation.py / test_manual_reconcile_reader.py).
 EXECUTION_ID = "22222222-2222-2222-2222-222222222222"
 
 #: Fields a client must NEVER be able to smuggle into the empty body (§6/§7/§8).
@@ -172,8 +178,9 @@ class TestOperatorRBAC:
 class TestHonestRejection:
     def test_authorized_unseeded_is_404_not_200(self, client, operators):
         # An authorized operator on an unseeded id is NEVER answered with a fake
-        # 200 accepted; correlation rejects it (spec §20). The 501 placeholder (a
-        # seeded reference-bearing chain) is proven in the correlation suite.
+        # 200 accepted; correlation rejects it (spec §20). The seeded-chain outcomes
+        # (404 UnsupportedAdapterRead, and the 501 under a test-injected fake reader)
+        # are proven in the correlation / reader suites.
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
         assert r.status_code == 404
         assert r.status_code != 200
@@ -271,10 +278,12 @@ class TestNoSideEffects:
 # --------------------------------------------------------------------------
 class TestServiceGate:
     def test_unseeded_uuid_raises_unmappable(self, db_session):
-        # A2-B signature is (session, uuid.UUID, operator) and CORRELATES first: an
-        # unseeded UUID -> UnmappableExecutionId (3.4.4-C), before any placeholder.
-        # The NotImplementedError (a seeded reference-bearing chain) is proven in
-        # test_manual_reconcile_correlation.py.
+        # The signature is (session, uuid.UUID, operator, registry=None) and
+        # CORRELATES first: an unseeded UUID -> UnmappableExecutionId (3.4.4-C),
+        # before the registry is ever consulted. The seeded-chain outcomes
+        # (UnsupportedAdapterRead at the empty registry, and the NotImplementedError
+        # under a test-injected fake reader) are proven in the correlation / reader
+        # suites.
         with pytest.raises(UnmappableExecutionId):
             reconcile_execution(db_session, uuid.UUID(EXECUTION_ID), "exec-op")
 
