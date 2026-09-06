@@ -1,34 +1,41 @@
-"""3.4.5-A2-A Manual Reconcile — secured-route acceptance tests.
+"""3.4.5-A2 Manual Reconcile — secured-route acceptance tests (the A2-A seam as
+evolved by A2-B correlation wiring).
 
-Locks the A2-A seam ONLY (spec §35 / §36): the route is safely established,
-RBAC is enforced by REUSING ``authenticate_operator``, the empty body forbids
-every smuggled field, and everything else is an honest 501 placeholder — never
-a 200 ``accepted``, never a fabricated reconciliation success, never a fact,
-never an execution.
+Locks the ROUTE contract that needs NO seeded chain. A2-A established the seam
+(RBAC + the empty body + an honest placeholder); A2-B wired correlation + read-only
+external-reference extraction into it (spec §20 / §21), so the placeholder status
+EVOLVES: an execution_id that maps to NO chain (or is malformed) is now a uniform
+404, a chain with no reconcilable handle is a 422, and only a correlated,
+reference-bearing chain reaches the honest 501 (no read adapter yet). The 501/422
+paths that REQUIRE a seeded chain — and the whole §18 correlation/extraction core —
+live in ``test_manual_reconcile_correlation.py``; this file stays seeding-free and
+proves the invariants that hold regardless of history:
 
-Coverage map (A2-A acceptance gate):
-- RBAC (§36 / §28 items 1-3): executor/admin -> endpoint (501); viewer/reviewer
-  -> 403; missing/wrong/malformed/empty/unconfigured token -> 401; legacy
-  EXECUTION_TOKEN still admitted (backwards compatible).
-- Placeholder (§36): authorized -> 501 (NOT 200), STATIC detail, never
-  ``accepted=true``, detail leaks no identity/execution_id/token.
+- RBAC (§36 / §28 items 1-3): executor/admin are admitted PAST auth (a 404 on an
+  unseeded id — never 401/403); viewer/reviewer -> 403; missing/wrong/malformed/
+  empty/unconfigured token -> 401; legacy EXECUTION_TOKEN still admitted.
+- Honest rejection (§36 / §20): an authorized operator on an unseeded id gets a
+  STATIC 404, NEVER a 200 ``accepted``, never a fabricated reconciliation success,
+  and the detail leaks no identity / execution_id / token.
 - Request schema (§6 / §28 items 27-30): the body is EMPTY; ANY field
   (operator/source/adapter/external_reference/external_state/execution_id/
   observed_at/outcome_status/api_key/authorization/token/password) -> 422;
   auth precedes body validation (an unauthenticated caller cannot probe the
-  schema).
-- No side effects (§25 / §28 items 31-35 / §29 zero-fact): 501/403/401 write
-  ZERO execution_outcome rows and ZERO execution_log rows — no read, no
-  persist, no dispatch, no execution.
-- Service stub (§35): ``reconcile_execution`` raises NotImplementedError and
-  writes nothing.
+  schema). This is the §19 boundary guard: a client can never smuggle the adapter
+  or the reference the pipeline extracts from history.
+- No side effects (§25 / §29 zero-fact): 404/403/401 write ZERO execution_outcome
+  rows and ZERO execution_log rows — no read, no persist, no dispatch, no execution.
+- Service gate (§35, evolved): ``reconcile_execution(session, uuid, operator)``
+  correlates FIRST — an unseeded UUID raises ``UnmappableExecutionId`` (3.4.4-C)
+  and writes nothing.
 - Structural (§28 items 40-41): the reconcile router exposes EXACTLY ONE POST
   route — no accidental extra capability.
-- A2-A scope (§35): execution_id is an opaque path string (no correlation / no
-  UUID parse yet — a non-UUID still reaches the 501 stub).
+- A2-B scope (§20 / §21): execution_id is now PARSED + CORRELATED — a non-UUID and
+  a nonexistent chain both yield the SAME uniform 404.
 
-No external read, no ReadAdapterRegistry access, no correlation, no mapping, no
-persistence, no execution — those land in A2-B..E. No change to any sealed layer.
+No external read, no ReadAdapterRegistry access, no mapping, no persistence, no
+execution — those land in A2-C..E. The A2-A commit (4b09d18) stays byte-frozen;
+this file evolves only where §20 / §21 changed the placeholder's status code.
 """
 import json
 import uuid
@@ -46,14 +53,16 @@ from app.schemas.reconcile import (
     ManualReconcileRequest,
     ManualReconcileResponse,
 )
+from app.services.outcomes.correlation import UnmappableExecutionId
 from app.services.outcomes.manual_reconcile import reconcile_execution
 
 #: The reconcile path template (execution_id is a PATH param). A2-A does NOT
 #: parse/correlate it, so any string reaches the stub.
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: A well-formed but NON-EXISTENT execution id. A2-A never correlates, so the
-#: chain need not exist — the request still reaches the 501 stub.
+#: A well-formed but NON-EXISTENT execution id. A2-B CORRELATES (spec §20), so an
+#: unseeded id maps to no chain -> the uniform 404 (never the 501 stub, which now
+#: needs a seeded reference-bearing chain — see test_manual_reconcile_correlation.py).
 EXECUTION_ID = "22222222-2222-2222-2222-222222222222"
 
 #: Fields a client must NEVER be able to smuggle into the empty body (§6/§7/§8).
@@ -103,13 +112,18 @@ def operators(monkeypatch):
 # RBAC (§36 / §28 items 1-3) — reuse authenticate_operator, never a new stack
 # --------------------------------------------------------------------------
 class TestOperatorRBAC:
-    def test_executor_reaches_endpoint_501(self, client, operators):
+    def test_executor_admitted_past_auth_404(self, client, operators):
+        # An executor is admitted PAST auth + RBAC + body: on an unseeded id the
+        # pipeline correlates and 404s (spec §20) — proving admission (a 401/403
+        # would mean the auth gate rejected it before the service ever ran).
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
-        assert r.status_code == 501
+        assert r.status_code == 404
+        assert r.status_code not in (401, 403)
 
-    def test_admin_reaches_endpoint_501(self, client, operators):
+    def test_admin_admitted_past_auth_404(self, client, operators):
         r = client.post(_url(), json={}, headers=_auth("tok-admin"))
-        assert r.status_code == 501
+        assert r.status_code == 404
+        assert r.status_code not in (401, 403)
 
     def test_viewer_forbidden_403(self, client, operators):
         r = client.post(_url(), json={}, headers=_auth("tok-viewer"))
@@ -142,31 +156,36 @@ class TestOperatorRBAC:
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
         assert r.status_code == 401
 
-    def test_legacy_execution_token_admitted_501(self, client, monkeypatch):
-        # Legacy EXECUTION_TOKEN fallback -> synthetic executor -> endpoint.
+    def test_legacy_execution_token_admitted_404(self, client, monkeypatch):
+        # Legacy EXECUTION_TOKEN fallback -> synthetic executor -> admitted past
+        # auth (a 404 on the unseeded id, never 401/403).
         monkeypatch.setattr(settings, "OPERATORS_JSON", "")
         monkeypatch.setattr(settings, "EXECUTION_TOKEN", "legacy-tok")
         r = client.post(_url(), json={}, headers=_auth("legacy-tok"))
-        assert r.status_code == 501
+        assert r.status_code == 404
+        assert r.status_code not in (401, 403)
 
 
 # --------------------------------------------------------------------------
-# Placeholder semantics (§36) — honest 501, never a fabricated success
+# Honest rejection (§36 / §20) — never a fabricated success, seeding-free
 # --------------------------------------------------------------------------
-class TestPlaceholderSemantics:
-    def test_authorized_is_501_not_200(self, client, operators):
+class TestHonestRejection:
+    def test_authorized_unseeded_is_404_not_200(self, client, operators):
+        # An authorized operator on an unseeded id is NEVER answered with a fake
+        # 200 accepted; correlation rejects it (spec §20). The 501 placeholder (a
+        # seeded reference-bearing chain) is proven in the correlation suite.
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
-        assert r.status_code == 501
+        assert r.status_code == 404
         assert r.status_code != 200
 
-    def test_501_detail_is_static(self, client, operators):
+    def test_404_detail_is_static(self, client, operators):
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
-        assert r.json()["detail"] == "manual reconcile not yet implemented"
+        assert r.json()["detail"] == "execution correlation failed"
 
     def test_never_accepted_true(self, client, operators):
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
         body = r.json()
-        # A2-A must NOT return a fake success envelope (§36).
+        # A2-B must NOT return a fake success envelope (§20 / §36).
         assert body.get("accepted") is not True
         assert "outcome_status" not in body
 
@@ -189,9 +208,12 @@ class TestRequestBodyForbidden:
         assert r.status_code == 422
 
     def test_empty_body_passes_schema_gate(self, client, operators):
-        # {} clears the schema (then 501 at the stub) — NOT a 422.
+        # {} clears the schema gate — NOT a 422. On the unseeded id it then 404s at
+        # correlation (spec §20); the point here is that the EMPTY body itself is
+        # never a schema rejection.
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
-        assert r.status_code == 501
+        assert r.status_code != 422
+        assert r.status_code == 404
 
     def test_unauth_with_smuggled_body_is_401_not_422(self, client, operators):
         # The auth dependency runs BEFORE body validation: an unauthenticated
@@ -221,13 +243,14 @@ class TestRequestBodyForbidden:
 # No side effects (§25 / §28 items 31-35 / §29 zero-fact)
 # --------------------------------------------------------------------------
 class TestNoSideEffects:
-    def test_501_writes_no_outcome_fact(self, client, db_session, operators):
+    def test_404_writes_no_outcome_fact(self, client, db_session, operators):
         client.post(_url(), json={}, headers=_auth("tok-exec"))
         rows = db_session.execute(select(ExecutionOutcome)).scalars().all()
         assert rows == []
 
-    def test_501_writes_no_execution_log(self, client, db_session, operators):
-        # Manual Reconcile must NEVER dispatch / execute (§25).
+    def test_404_writes_no_execution_log(self, client, db_session, operators):
+        # Manual Reconcile must NEVER dispatch / execute (§25), and correlation is
+        # read-only — the unseeded 404 path creates no execution_log row.
         client.post(_url(), json={}, headers=_auth("tok-exec"))
         rows = db_session.execute(select(ExecutionLog)).scalars().all()
         assert rows == []
@@ -244,16 +267,20 @@ class TestNoSideEffects:
 
 
 # --------------------------------------------------------------------------
-# Service stub (§35) — minimal entrypoint, always raises, writes nothing
+# Service gate (§35, evolved by A2-B) — correlation runs FIRST, writes nothing
 # --------------------------------------------------------------------------
-class TestServiceStub:
-    def test_reconcile_execution_raises_not_implemented(self, db_session):
-        with pytest.raises(NotImplementedError):
-            reconcile_execution(db_session, EXECUTION_ID, "exec-op")
+class TestServiceGate:
+    def test_unseeded_uuid_raises_unmappable(self, db_session):
+        # A2-B signature is (session, uuid.UUID, operator) and CORRELATES first: an
+        # unseeded UUID -> UnmappableExecutionId (3.4.4-C), before any placeholder.
+        # The NotImplementedError (a seeded reference-bearing chain) is proven in
+        # test_manual_reconcile_correlation.py.
+        with pytest.raises(UnmappableExecutionId):
+            reconcile_execution(db_session, uuid.UUID(EXECUTION_ID), "exec-op")
 
-    def test_stub_writes_no_outcome_fact(self, db_session):
-        with pytest.raises(NotImplementedError):
-            reconcile_execution(db_session, EXECUTION_ID, "exec-op")
+    def test_gate_writes_no_outcome_fact(self, db_session):
+        with pytest.raises(UnmappableExecutionId):
+            reconcile_execution(db_session, uuid.UUID(EXECUTION_ID), "exec-op")
         assert db_session.execute(select(ExecutionOutcome)).scalars().all() == []
 
 
@@ -277,19 +304,27 @@ class TestRouteStructure:
 
 
 # --------------------------------------------------------------------------
-# A2-A scope (§35) — no correlation / no UUID parse yet
+# A2-B scope (§20 / §21) — execution_id is now PARSED + CORRELATED
 # --------------------------------------------------------------------------
-class TestA2AScope:
-    def test_execution_id_is_opaque_no_correlation(self, client, operators):
-        # A non-UUID path STILL reaches the stub (501), proving A2-A does no
-        # correlation and no UUID validation (those land in A2-B -> 404).
+class TestA2BScope:
+    def test_non_uuid_is_404(self, client, operators):
+        # A2-B PARSES the path id: a non-UUID is a correlation-input failure -> the
+        # uniform 404 (in A2-A it reached the 501 stub; correlation now gates it).
         r = client.post(_url(eid="not-a-uuid"), json={}, headers=_auth("tok-exec"))
-        assert r.status_code == 501
+        assert r.status_code == 404
 
-    def test_nonexistent_execution_still_501(self, client, operators):
-        # A2-A does not require the chain to exist (no correlation yet).
+    def test_nonexistent_execution_is_404(self, client, operators):
+        # A2-B CORRELATES: a well-formed id with no chain -> 404 (spec §20).
         r = client.post(_url(), json={}, headers=_auth("tok-exec"))
-        assert r.status_code == 501
+        assert r.status_code == 404
+
+    def test_non_uuid_and_nonexistent_are_indistinguishable(self, client, operators):
+        # §21 non-discrimination: the SAME static detail for a malformed id and an
+        # absent chain — a caller cannot tell a format failure from a nonexistent one.
+        a = client.post(_url(eid="not-a-uuid"), json={}, headers=_auth("tok-exec"))
+        b = client.post(_url(), json={}, headers=_auth("tok-exec"))
+        assert a.status_code == b.status_code == 404
+        assert a.json()["detail"] == b.json()["detail"]
 
 
 # --------------------------------------------------------------------------
