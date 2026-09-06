@@ -121,9 +121,11 @@ Derivation（复用 3.4.2，observed_at DESC / id DESC，不改）
 | execution correlation 失败（链不存在） | ❌ | `404` | rejected；与现有 `GET /executions/{id}` 一致（§5/§7） |
 | missing `external_reference` | ❌ | `422` | rejected；`MissingExternalReference`（§6/§7，RC-05） |
 | unsupported external state（词表外） | ❌ | `422` | rejected；`UnrecognizedExternalState`（§7，3.4.3-B） |
-| mock execution / 无 read adapter | ❌ | `422` | rejected；`UnsupportedAdapterRead`（§14/§15/§16） |
+| mock execution / 无 read adapter | ❌ | `404` | rejected；`UnsupportedAdapterRead`（§14/§15/§16；原 `422`，见下方 Amendment） |
 
 **冻结要点**：只有前两类落 fact（`source=manual_reconcile`）；其余全部 **rejected，不请求外部、不落 fact、仅审计**（§6/§7）。
+
+> **Amendment（2026-09-06，3.4.5-A2 放行期，用户裁决 Option A）**：`UnsupportedAdapterRead`（mock / 无 read adapter）的 HTTP 语义由原 **`422` 修订为 `404`**。三方一致依据：(1) 3.4.5-A2 指令 §22/§23 明确 “unsupported reader → 404/rejected，而非 reconciliation_failed”；(2) 已封板的 webhook 先例（`api/v1/webhooks.py`：`CALLBACK_UNSUPPORTED_ADAPTER_DETAIL` → `404`）对 “unsupported adapter channel” 一贯用 404；(3) 3.4.5-A1 裁决 `UnsupportedAdapterRead` 属 `ReadAdapterError` 轻量族、**不是** `ContractValidationFailure`，故不会被 422（contract validation）handler 捕获——`404` 才与异常族语义一致（capability missing ≠ contract violation）。本修订**同时取代** §10.1、§14、§15 中 “mock / 无 read adapter → 422” 的表述；各处原文数值以 “原 422” 括注保留以便审计（不抹原文）。**边界不变**：`MissingExternalReference`（§6.3）与 `UnrecognizedExternalState`（§4.3）仍是 **`422`**——它们是 `ContractValidationFailure`，本修订**只**影响 `UnsupportedAdapterRead`。
 
 ### 4.4 响应 envelope（语义冻结，字段名实现期定）
 
@@ -259,7 +261,7 @@ Read Contract **绝不拥有**：`execute` / `compensate` / `dispatch` / `trigge
 | execution correlation failure | **rejected**（404） |
 | missing external_reference | **rejected**（422，RC-05） |
 | unsupported / unrecognized external state | **rejected**（422） |
-| mock / 无 read adapter | **rejected**（422，§14/§15/§16） |
+| mock / 无 read adapter | **rejected**（404，§14/§15/§16；原 422，见 §4.3 Amendment） |
 
 ### 10.2 confirmed_failure 的严格来源（§11）
 
@@ -317,7 +319,7 @@ Read Contract **绝不拥有**：`execute` / `compensate` / `dispatch` / `trigge
 ## 14. Mock 行为（§15 — 冻结）
 
 - Mock **没有真实 external system**。
-- Manual Reconcile 对**历史 mock execution**（`detail["executor"] == "mock"`）：**必须明确为 Unsupported / Rejected**（§4.3 的 422，`UnsupportedAdapterRead`），**不落 fact**。
+- Manual Reconcile 对**历史 mock execution**（`detail["executor"] == "mock"`）：**必须明确为 Unsupported / Rejected**（§4.3 的 404，`UnsupportedAdapterRead`；原 422，见 §4.3 Amendment），**不落 fact**。
 - **不能创建 MOCK read adapter**；**不能创建 mock external outcome**。
 - 与 `ADAPTER_STATE_VOCABULARIES["mock"]`（四集全空，PERMANENT，offline，never receives facts）一致：mock 永远不产出外部事实。
 
@@ -328,7 +330,7 @@ Read Contract **绝不拥有**：`execute` / `compensate` / `dispatch` / `trigge
 - 每个真实 adapter 的 **read client（B/C/D）与现有 write executor 物理分离**：write 在 `services/executions/{shuffle,wazuh,thehive}.py`（`ResponseExecutor` 子类）；read 在 `services/manual_reconcile/read/{shuffle,wazuh,thehive}.py`（`AdapterReadContract` 实现）。
 - **ReadAdapterRegistry**（与 write 的 `create_executor` 平行）按 `detail["executor"]` 解析对应 read client。
 - **3.4.5-A 冻结时，ReadAdapterRegistry 无任何生产 concrete read adapter**（B/C/D blocked，§16）。因此 A 的生产运行时：
-  - 对 shuffle/wazuh/thehive 的 reconcile → **无 read adapter 注册 → rejected（`UnsupportedAdapterRead`，422），不落 fact**（**不是** `reconciliation_failed`，因为根本未发生读尝试）。
+  - 对 shuffle/wazuh/thehive 的 reconcile → **无 read adapter 注册 → rejected（`UnsupportedAdapterRead`，404；原 422，见 §4.3 Amendment），不落 fact**（**不是** `reconciliation_failed`，因为根本未发生读尝试）。
   - 对 mock → rejected（§14）。
 - **A 的管线与 `reconciliation_failed` 语义通过注入的 test-only fake read adapter 完整验证**（§18），与 3.4.4-E 用 `FakeWebhookMapper` 验证持久化缝的做法一致；**生产可达性随 B/C/D 落地**。
 - 这是 fail-closed、证据门控的诚实行为：A **不伪造**任何外部读取结果。
