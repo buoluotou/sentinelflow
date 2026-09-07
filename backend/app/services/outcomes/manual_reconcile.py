@@ -23,25 +23,33 @@ beside ``webhook.py`` and will IMPORT the read contract from
 ``app/services/manual_reconcile/read/`` in A2-C. The dependency direction is
 one-way: pipeline -> read contract, NEVER the reverse.
 
-3.4.5-A2-C SCOPE (spec §1-§16): correlation + read-only external-reference
-extraction (A2-B, REUSED unchanged) wired into the A1 ``ReadAdapterRegistry`` and
-exercised by a test-only ``FakeReadAdapter`` — and NOTHING more.
+3.4.5-A2-D SCOPE: correlation + read-only external-reference extraction (A2-B,
+REUSED unchanged) wired into the A1 ``ReadAdapterRegistry`` (A2-C, REUSED
+unchanged), PLUS the FIRST real verdict this pipeline can reach — a READ
+TRANSPORT FAILURE becomes ``reconciliation_failed`` and appends ONE Outcome
+Fact. Mapping a SUCCESSFUL external read onto an outcome word, and persisting
+that success, remain A2-E.
 
     execution_id -> correlate_execution (REUSE 3.4.4-C) -> the ExecutionLog chain
         -> adapter identity (detail["executor"]) -> external_reference    (A2-B)
         -> ReadAdapterRegistry.get(adapter)                               (A1)
         -> reader.read(AdapterReadRequest) -> AdapterReadResult           (A2-C)
+        -> read() RAISED a transport failure -> reconciliation_failed      (A2-D)
 
 ``extract_context`` (A2-B) answers "which adapter and which external object does
 this execution_id's historical chain refer to". ``read_external_state`` (A2-C)
-hands that context to the registry and returns the RAW ``AdapterReadResult``.
-``reconcile_execution`` calls it, then STOPS with ``NotImplementedError`` (the
-router's 501): C maps NO external state onto an outcome word and persists NO fact
-(both A2-E), so it NEVER reads a REAL external system — the PRODUCTION registry is
-EMPTY, so EVERY adapter (shuffle / wazuh / thehive / mock / unknown) rejects at
-``registry.get`` with ``UnsupportedAdapterRead`` (the router's 404, spec §3 / §8) —
-and NEVER returns 200, NEVER fabricates a reconciliation success (spec §2 / §14 /
-§15 / §16).
+hands that context to the registry and returns the RAW ``AdapterReadResult``; it
+is a PURE PROPAGATOR — a transport failure raised by ``read()`` surfaces
+UNCHANGED there (the A2-C ``TestReadFailureSignal`` locks it), so the conversion
+lives ONLY in ``reconcile_execution``. That entrypoint now has TWO exits: a read
+that FAILS in transit (timeout / connection / DNS / 5xx / unavailable) is caught
+and appended as ONE ``reconciliation_failed`` fact -> HTTP 200 (design §4.3); a
+read that SUCCEEDS still STOPS at ``NotImplementedError`` (the router's 501),
+because mapping + success-persistence are A2-E. The PRODUCTION registry stays
+EMPTY, so EVERY adapter (shuffle / wazuh / thehive / mock / unknown) still
+rejects at ``registry.get`` with ``UnsupportedAdapterRead`` (the router's 404,
+spec §3 / §8) BEFORE any read — a CAPABILITY rejection that is NEVER
+``reconciliation_failed`` and writes ZERO facts (A2-D §6).
 
 DETERMINISTIC ROW SELECTION (spec §7 — the crux of this step, DERIVED from the
 existing frozen execution service, never invented here). One execution_id maps to
@@ -71,36 +79,41 @@ and ``rows[-1]`` is the terminal row. Compensation is a FRESH execution_id
 (``compensate_response``), so a chain is homogeneous in direction and the two
 selections never mix a forward dispatch with its undo.
 
-READ-ONLY (spec §16 / §24): SELECT only — no INSERT / UPDATE / DELETE / COMMIT, no
-mutation of ``execution_log`` (byte-identical before/after), no Outcome Fact. The
-read side is PHYSICALLY isolated from the write side (spec §21): this module
-imports ONLY ``app.services.manual_reconcile.read`` (the A1 contract) and NEVER
+WRITE SURFACE (A2-D, spec §22 / §23): the read-FAILURE path now owns ONE
+transaction and performs ONE APPEND-ONLY INSERT into ``execution_outcome`` (a
+``reconciliation_failed`` fact), REUSING the EXISTING persistence vocabulary from
+``webhook.py`` (the ``ExecutionOutcomeFact`` alias + ``OutcomePersistenceError``) —
+never a second ORM writer (A2-D §22). Every gate (auth -> correlation -> external
+reference -> registry -> the read attempt itself) runs BEFORE ``session.add``; then
+add -> flush -> commit; on ``SQLAlchemyError`` rollback so NO partial fact survives
+and raise ``OutcomePersistenceError`` -> the router maps a 5xx, never accepted=true
+(A2-D §23). ``execution_log`` stays byte-identical (SELECT only — never UPDATE /
+DELETE), the fact INSERT is never UPDATE / UPSERT / MERGE / DELETE (A2-D §13), and
+NO derived state is stored (computed on read by ``derive_outcome_state()``). The
+read side stays PHYSICALLY isolated from the WRITE side (spec §21): this module
+imports the A1 read contract + the outcomes persistence helper and NEVER
 ``app.services.executions`` — no ``ResponseExecutor`` / ``create_executor`` / write
 adapter is reachable, proven by an AST import-surface test.
-STILL FORBIDDEN in C (spec §2 / §14 / §15, AST-proven): a REAL Shuffle-Wazuh-TheHive
-read / HTTP (urllib / requests / httpx) / ``FakeReadAdapter`` in app code (it is
-test-only, spec §22) / state Mapping (external_state -> an outcome word) / Outcome
-persistence / reconciliation_failed / derived state / retry / compensation /
-execution.
-
-FORWARD TRANSACTION CONTRACT (mirrors webhook.py, spec §17 / §24): when the
-pipeline completes (A2-E), the SERVICE will own the transaction (every gate runs
-BEFORE ``session.add``; then add -> flush -> commit; on ``SQLAlchemyError``
-rollback so NO partial fact survives and raise ``OutcomePersistenceError`` -> the
-router maps a 5xx). The write is an APPEND-ONLY INSERT into ``execution_outcome``
-— never UPDATE / UPSERT / MERGE / DELETE, never a rewrite of ``execution_log``,
-never a stored derived state (computed on read by ``derive_outcome_state()``).
+STILL FORBIDDEN in D (AST- + runtime-proven): a REAL Shuffle-Wazuh-TheHive read /
+HTTP (urllib / requests / httpx) / ``FakeReadAdapter`` in app code (test-only, spec
+§22) / mapping a SUCCESSFUL external_state onto an outcome word (A2-E) / persisting
+a SUCCESS fact (A2-E) / retry / compensation / execution. A read FAILURE is the ONE
+path that writes, and it writes exactly ONE ``reconciliation_failed`` fact — never
+``confirmed_failure`` (a mapped external state, 3.4.3-B).
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import NoReturn
+from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models.execution_log import ExecutionLog
+from app.schemas.reconcile import MANUAL_RECONCILE_SOURCE, ManualReconcileResponse
+from app.services.manual_reconcile import ReadTransportError
 from app.services.manual_reconcile.read import (
     AdapterReadRequest,
     AdapterReadResult,
@@ -108,7 +121,12 @@ from app.services.manual_reconcile.read import (
     default_read_adapter_registry,
 )
 from app.services.outcomes.correlation import correlate_execution
+from app.services.outcomes.derivation import derive_outcome_state
 from app.services.outcomes.reconciliation import MissingExternalReference
+from app.services.outcomes.webhook import (
+    ExecutionOutcomeFact,
+    OutcomePersistenceError,
+)
 
 #: The per-adapter external-reference key inside the TERMINAL dispatch row's
 #: ``detail`` (design §6.2, FROZEN — the three key names differ). ``mock`` is
@@ -285,37 +303,136 @@ def reconcile_execution(
     execution_id: uuid.UUID,
     operator: str,
     registry: ReadAdapterRegistry | None = None,
-) -> NoReturn:
-    """Manual Reconcile pipeline entrypoint — 3.4.5-A2-C.
+) -> ManualReconcileResponse:
+    """Manual Reconcile pipeline entrypoint — 3.4.5-A2-D.
 
     Correlation + external-reference extraction (``extract_context``, A2-B) ->
-    ``ReadAdapterRegistry`` -> ``reader.read()`` -> ``AdapterReadResult``
-    (``read_external_state``). With the EMPTY production registry EVERY adapter
-    rejects at ``registry.get`` with ``UnsupportedAdapterRead`` (the router's 404,
-    spec §8 / §16) BEFORE any read; only a test-injected ``FakeReadAdapter``
-    (spec §4 / §22 — NEVER the production default) reaches ``read()``.
+    ``ReadAdapterRegistry`` -> ``reader.read()`` (``read_external_state``, A2-C).
+    With the EMPTY production registry EVERY adapter rejects at ``registry.get``
+    with ``UnsupportedAdapterRead`` (the router's 404, spec §8 / §16) BEFORE any
+    read; only a test-injected ``FakeReadAdapter`` (spec §4 / §22 — NEVER the
+    production default) reaches ``read()``.
 
-    C STOPS at the raw ``AdapterReadResult``: it does NOT map the external state
-    onto an outcome word (spec §15, A2-E) and does NOT persist a fact (spec §14,
-    A2-E), so there is NO success envelope to return — it raises
-    ``NotImplementedError`` (the router's honest 501), NEVER a 200 ``accepted`` and
-    NEVER a fabricated reconciliation success (spec §16). A read TRANSPORT failure
-    (a real ``read()`` that times out / cannot connect) is NOT converted here either
-    — that ``reconciliation_failed`` mapping is A2-D (spec §25).
+    TWO exits once a reader is actually invoked (A2-D):
+
+      - the read FAILS at the TRANSPORT layer — a ``ReadTransportError`` or a
+        builtin ``TimeoutError`` / ``ConnectionError`` / ``OSError`` raised by
+        ``read()`` (A2-D §7) — is caught HERE and turned into ONE
+        ``reconciliation_failed`` Outcome Fact, then a 200
+        ``ManualReconcileResponse`` (design §4.3). This is the ONLY path that
+        produces ``reconciliation_failed``, and it is NEVER ``confirmed_failure``
+        (that word is a mapped EXTERNAL state, 3.4.3-B — A2-E);
+      - the read SUCCEEDS still STOPS at ``NotImplementedError`` (the router's
+        501): mapping the external state onto an outcome word + persisting a
+        SUCCESS fact are A2-E, so a successful read is NEVER turned into a
+        fabricated verdict (spec §15 / §16).
+
+    ``UnsupportedAdapterRead`` (NO reader — a CAPABILITY failure) is a
+    ``ReadAdapterError`` SIBLING of ``ReadTransportError`` and is NEVER caught
+    here, so it still propagates to the router's 404 with ZERO facts (A2-D §6:
+    capability != transport — "no reader exists" must never masquerade as "reader
+    tried and failed"). ONE read attempt, NO retry / sleep / backoff / loop
+    (A2-D §15).
 
     ``registry`` defaults to ``default_read_adapter_registry()`` (EMPTY) so the
-    router — and production — always fail closed; a test passes an EXPLICIT registry
-    instance (constructor injection, spec §22), never a global mutation.
+    router — and production — always fail closed; a test passes an EXPLICIT
+    registry instance (constructor injection, spec §22), never a global mutation.
 
-    ``operator`` is the AUTHENTICATED recorder identity (``Operator.name``) carried
-    for the future fact (A2-E) and for audit. It NEVER reaches the read: it is not
-    passed to ``read_external_state`` and ``AdapterReadRequest`` has no operator /
-    credential field (spec §12 / §18) — operator identity is authorization + audit,
-    NEVER an adapter credential.
+    ``operator`` is the AUTHENTICATED human recorder identity (``Operator.name``).
+    On the failure path it becomes the fact's ``operator`` (A2-D §11 — the human
+    trust domain, NEVER the webhook's ``adapter:{identity}`` machine domain). It
+    NEVER reaches the read: ``read_external_state`` takes no operator and
+    ``AdapterReadRequest`` has no operator / credential field (spec §12 / §18).
     """
     resolved = registry if registry is not None else default_read_adapter_registry()
-    read_external_state(session, execution_id, resolved)
+    try:
+        read_external_state(session, execution_id, resolved)
+    except (ReadTransportError, TimeoutError, ConnectionError, OSError) as exc:
+        # A2-D §7: a reader EXISTED and read() was ACTUALLY invoked, then failed in
+        # transit — this, and ONLY this, is reconciliation_failed. UnsupportedAdapterRead
+        # is a ReadAdapterError SIBLING (never a builtin, never a ReadTransportError), so
+        # it is NOT caught here and still rejects 404 / zero-fact (§6). ONE attempt, no
+        # retry (§15). read_external_state stays a PURE PROPAGATOR; the conversion lives
+        # here alone (the A2-C TestReadFailureSignal locks that split).
+        #
+        # Re-extract the context for the fact's provenance. extract_context is READ-ONLY
+        # and idempotent and performs NO read, so reader.read() was called EXACTLY once.
+        context = extract_context(session, execution_id)
+        # §9: a read failure carries NO trustworthy external timestamp, so the fact time
+        # is the SERVER OBSERVATION time — never dressed up as an external event time
+        # (observed_at_kind="server-observation" declares this to the caller).
+        #
+        # §9 "然后仍然 validate_observation()": the TIMESTAMP discipline that validator
+        # enforces (_normalize_observed_at: aware / UTC / within MAX_FUTURE_SKEW) is
+        # honored BY CONSTRUCTION — datetime.now(timezone.utc) is aware and is the
+        # present instant, so it is never naive nor excessively future. The validator
+        # FUNCTION is deliberately NOT called: it validates an ExternalObservation whose
+        # contract REQUIRES a present external_state, and a READ FAILURE has NONE (§21 —
+        # it never reaches mapping). Fabricating a state to satisfy it would break the §0
+        # anti-fabrication 铁律; a read failure is the ABSENCE of an observation, not a
+        # malformed one. The sealed A2-B boundary also forbids importing it here.
+        observed_at = datetime.now(timezone.utc)
+        # §10 / §25: a SAFE STATIC classification only — never str(exc), never a callback
+        # token / operator token / adapter API key / Authorization header / password. The
+        # secret never enters detail because it is never read from the exception at all.
+        if isinstance(exc, ReadTransportError) and exc.category:
+            failure_category = exc.category
+        elif isinstance(exc, TimeoutError):
+            failure_category = "timeout"
+        elif isinstance(exc, ConnectionError):
+            failure_category = "connection_failure"
+        else:
+            failure_category = "transport_error"
+        detail = {
+            "adapter": context.adapter,
+            "external_reference": context.external_reference,
+            "failure_category": failure_category,
+            "reason": "read_transport_failure",
+        }
+        fact = ExecutionOutcomeFact(
+            execution_id=context.execution_id,
+            outcome_status="reconciliation_failed",
+            source=MANUAL_RECONCILE_SOURCE,
+            operator=operator,
+            observed_at=observed_at,
+            detail=detail,
+            # id / created_at intentionally unset -> model defaults (§8, append-only).
+        )
+        # §22 / §23: REUSE webhook.py's persistence vocabulary (the ExecutionOutcomeFact
+        # alias + OutcomePersistenceError) — ONE append-only INSERT, never a second ORM
+        # writer. Every gate ran BEFORE session.add; on SQLAlchemyError rollback so NO
+        # partial fact survives and surface a 5xx (never accepted=true).
+        try:
+            session.add(fact)
+            session.flush()
+            session.commit()
+        except SQLAlchemyError as persist_exc:
+            session.rollback()
+            raise OutcomePersistenceError(
+                "reconciliation_failed fact persistence failed; the transaction was "
+                "rolled back and no fact was written"
+            ) from persist_exc
+        # §13 / §20: the current state is DERIVED over the whole fact series (latest by
+        # observed_at DESC, id DESC wins) — never stored. The historical facts (e.g. a
+        # prior confirmed_success) are untouched; this only APPENDED one row.
+        observations = list(
+            session.scalars(
+                select(ExecutionOutcomeFact).where(
+                    ExecutionOutcomeFact.execution_id == context.execution_id
+                )
+            )
+        )
+        return ManualReconcileResponse(
+            accepted=True,
+            execution_id=context.execution_id,
+            adapter=context.adapter,
+            outcome_status="reconciliation_failed",
+            observed_at=observed_at,
+            source=MANUAL_RECONCILE_SOURCE,
+            derived_outcome_status=derive_outcome_state(observations),
+            observed_at_kind="server-observation",
+        )
     raise NotImplementedError(
-        "Manual Reconcile outcome mapping + persistence land in 3.4.5-A2-E; "
-        "3.4.5-A2-C reaches ReadAdapter -> AdapterReadResult only"
+        "Manual Reconcile outcome mapping + success persistence land in 3.4.5-A2-E; "
+        "3.4.5-A2-D converts a READ TRANSPORT FAILURE to reconciliation_failed only"
     )

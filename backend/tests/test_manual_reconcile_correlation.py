@@ -9,8 +9,12 @@ adapter-specific external reference are lifted READ-ONLY from the historical
 extraction, updated for the two A2-C shifts: the ADAPTER_NAMES vocabulary gate is
 GONE (§10 — an unknown adapter is extracted as-is and the registry rejects it), and
 a seeded chain now rejects at the EMPTY production registry with
-``UnsupportedAdapterRead`` -> 404 (not the A2-B ``NotImplementedError`` -> 501). It
-still performs NO real external read, NO mapping, NO persistence, NO execution.
+``UnsupportedAdapterRead`` -> 404 (not the A2-B ``NotImplementedError`` -> 501).
+A2-D then adds the read-FAILURE path (a real ``read()`` that fails in transit ->
+``reconciliation_failed`` -> ONE fact -> 200), proven in
+``test_manual_reconcile_read_failure.py``; THIS file still proves correlation +
+extraction and that the CAPABILITY-failure path (no reader) persists NOTHING — no
+real external read, no mapping, no execution, no fact on any path it exercises.
 
 The suite nails the properties that make B safe (spec §1-§19):
 
@@ -42,9 +46,14 @@ The suite nails the properties that make B safe (spec §1-§19):
    ``MissingExternalReference`` (3.4.3-B) + the A1 READ contract
    (``app.services.manual_reconcile.read``: AdapterReadRequest / AdapterReadResult /
    ReadAdapterRegistry / default_read_adapter_registry). The WRITE side
-   (``app.services.executions``) is NO LONGER imported at all (§10 / §21). No
-   executor, no FakeReadAdapter, no transport, no mapping, no persistence, no retry,
-   no compensation, no FastAPI.
+   (``app.services.executions``) is STILL not imported at all (§10 / §21), and the
+   ``app.models.execution_outcome`` model is STILL not imported DIRECTLY. A2-D
+   EXTENDS this allowlist with the read-FAILURE persistence + envelope surface
+   (``datetime`` / ``sqlalchemy.exc`` / the ``webhook`` ``ExecutionOutcomeFact`` +
+   ``OutcomePersistenceError`` reuse / ``derivation`` / ``schemas.reconcile`` /
+   ``ReadTransportError``) and DROPS ``typing`` / ``NoReturn`` (the entrypoint now
+   RETURNS the envelope on that path). Still no executor, no FakeReadAdapter, no
+   HTTP client, no mapping, no retry, no compensation, no FastAPI.
 
 The AST assertions parse imports, never prose, so the docstring's legitimate
 NAMING of ReadAdapterRegistry / adapter.read / HTTP / mapping / retry /
@@ -89,38 +98,60 @@ NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: The exact import surface C is allowed (spec §2 / §7 / §13 / §21). ``__future__``
-#: is the ``from __future__ import annotations`` line; ``app.services.manual_reconcile
-#: .read`` is the A1 READ contract (AdapterReadRequest / AdapterReadResult /
-#: ReadAdapterRegistry / default_read_adapter_registry) the pipeline now integrates
-#: (§7) — the WRITE side ``app.services.executions`` is NO LONGER imported at all
-#: (the A2-B ADAPTER_NAMES vocabulary gate is gone, §10); ``app.services.outcomes.
-#: correlation`` is the mandated 3.4.4-C reuse.
+#: The exact import surface D is allowed (spec §2 / §7 / §13 / §21, EXTENDED by
+#: A2-D). ``__future__`` is the ``from __future__ import annotations`` line;
+#: ``app.services.manual_reconcile.read`` is the A1 READ contract (AdapterReadRequest
+#: / AdapterReadResult / ReadAdapterRegistry / default_read_adapter_registry) the
+#: pipeline integrates (§7), and ``app.services.manual_reconcile`` adds the A2-D
+#: ``ReadTransportError`` sibling. A2-D ADDS the read-FAILURE persistence + envelope
+#: surface: ``datetime`` (server observation time, §9), ``sqlalchemy.exc``
+#: (SQLAlchemyError -> rollback, §23), ``app.services.outcomes.webhook`` (the REUSED
+#: ``ExecutionOutcomeFact`` alias + ``OutcomePersistenceError``, §22 — NOT a second
+#: ORM writer), ``app.services.outcomes.derivation`` (``derive_outcome_state``, §13),
+#: and ``app.schemas.reconcile`` (the frozen ``ManualReconcileResponse`` envelope +
+#: ``MANUAL_RECONCILE_SOURCE``, §4.4). The WRITE side ``app.services.executions`` is
+#: STILL not imported at all (§21), and ``app.models.execution_outcome`` is STILL not
+#: imported DIRECTLY (reached only via the webhook alias, so it stays FORBIDDEN
+#: below). ``typing`` / ``NoReturn`` are GONE: reconcile_execution now RETURNS the
+#: envelope on the read-failure path instead of always raising.
 ALLOWED_MODULES = {
     "__future__",
     "uuid",
     "dataclasses",
-    "typing",
+    "datetime",
     "sqlalchemy",
+    "sqlalchemy.exc",
     "sqlalchemy.orm",
     "app.models.execution_log",
+    "app.schemas.reconcile",
+    "app.services.manual_reconcile",
     "app.services.manual_reconcile.read",
     "app.services.outcomes.correlation",
+    "app.services.outcomes.derivation",
     "app.services.outcomes.reconciliation",
+    "app.services.outcomes.webhook",
 }
 ALLOWED_NAMES = {
     "annotations",
     "dataclass",
-    "NoReturn",
+    "datetime",
+    "timezone",
     "select",
+    "SQLAlchemyError",
     "Session",
     "ExecutionLog",
+    "MANUAL_RECONCILE_SOURCE",
+    "ManualReconcileResponse",
+    "ReadTransportError",
     "AdapterReadRequest",
     "AdapterReadResult",
     "ReadAdapterRegistry",
     "default_read_adapter_registry",
     "correlate_execution",
+    "derive_outcome_state",
     "MissingExternalReference",
+    "ExecutionOutcomeFact",
+    "OutcomePersistenceError",
 }
 ALLOWED_FUNCS = {
     "_select_chain",

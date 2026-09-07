@@ -55,3 +55,42 @@ class UnsupportedAdapterRead(ReadAdapterError):
     def __init__(self, message: str, adapter: object | None = None):
         super().__init__(message)
         self.adapter = adapter
+
+
+class ReadTransportError(ReadAdapterError):
+    """A reader EXISTED and was INVOKED, but the external read failed in transit.
+
+    The SIBLING of ``UnsupportedAdapterRead`` under ``ReadAdapterError`` — and the
+    two are STRICTLY disjoint (design §6, the crux of 3.4.5-A2-D):
+
+      - ``UnsupportedAdapterRead`` = NO reader exists for the adapter (a
+        CAPABILITY failure) -> a REJECTION: HTTP 404, ZERO Outcome Facts, NEVER
+        ``reconciliation_failed``.
+      - ``ReadTransportError`` = a reader existed, ``read()`` was actually called,
+        and that call failed at the TRANSPORT layer (timeout / connection refused
+        / DNS / HTTP 5xx / adapter unavailable — design §7) -> the Manual
+        Reconcile service maps it to ``reconciliation_failed`` and appends ONE
+        Outcome Fact (design §8).
+
+    A concrete reader MAY raise this domain type explicitly, or it MAY raise a
+    builtin transport error (``TimeoutError`` / ``ConnectionError`` / ``OSError``)
+    — the A1 ``ReadAdapter.read`` contract documents both, and the A2-D service
+    catches the UNION so either shape closes to the SAME ``reconciliation_failed``
+    verdict. Because it derives from ``ReadAdapterError`` (NOT from a builtin) and
+    is a SIBLING — never a parent — of ``UnsupportedAdapterRead``, catching it can
+    NEVER swallow a capability rejection (design §6: capability != transport).
+
+    Carries an OPTIONAL ``category`` — a SAFE static classification (``timeout`` /
+    ``connection_failure`` / ``transport_error`` / ``adapter_unavailable``, design
+    §10) the service renders into the Outcome Fact detail. It NEVER carries a
+    callback token, operator token, adapter API key, Authorization header,
+    password, or raw external payload: the service records ONLY this static
+    category, never ``str(exc)`` (design §25).
+
+    Zero imports, like the rest of this family (design §19 — the read layer stays
+    importable without any DB / HTTP / executor coupling).
+    """
+
+    def __init__(self, message: str, category: str | None = None):
+        super().__init__(message)
+        self.category = category

@@ -16,6 +16,7 @@ NO API, NO DB, NO HTTP, NO mapping in A1 (design §12/§13/§14/§19).
 """
 from app.services.manual_reconcile.exceptions import (
     ReadAdapterError,
+    ReadTransportError,
     UnsupportedAdapterRead,
 )
 from app.services.manual_reconcile.read import (
@@ -32,6 +33,7 @@ __all__ = [
     "ReadAdapter",
     "ReadAdapterError",
     "ReadAdapterRegistry",
+    "ReadTransportError",
     "UnsupportedAdapterRead",
     "default_read_adapter_registry",
 ]
