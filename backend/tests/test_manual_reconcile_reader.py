@@ -33,8 +33,14 @@ WHAT C DELIBERATELY DOES NOT DO (spec §2 / §14 / §15 / §23 / §24, AST- + ru
 below): NO real Shuffle/Wazuh/TheHive read, NO HTTP (urllib / requests / httpx), NO
 ``normalize_external_state`` / mapping (A2-E), NO Outcome persistence / INSERT / UPDATE
 / DELETE / COMMIT, NO executor / dispatch, NO retry, NO compensation. ``reconcile_execution``
-still STOPS at ``NotImplementedError`` even after a successful fake read (spec §16 — the
-pipeline reaches ``AdapterReadResult`` and no further; NEVER a 200 ``accepted``).
+STOPPED at ``NotImplementedError`` after a successful fake read AT THE A2-C SEAL (spec §16
+— the pipeline reached ``AdapterReadResult`` and no further; NEVER a 200 ``accepted``). A2-E
+replaced that stub with the real mapping edge, so a SHUFFLE fake read is now REFUSED at
+3.4.3-B (``UnrecognizedExternalState`` — shuffle has NO evidenced vocabulary, §四) with the
+SAME §16 guarantee UNWEAKENED: ZERO Outcome Facts and NEVER a 200 ``accepted``. The three
+``reconcile_execution`` tests below now assert ``UnrecognizedExternalState`` (was
+``NotImplementedError``); every OTHER assertion (``call_count == 1`` / ``_outcome_count == 0``
+/ the request-attribute checks) is VERBATIM UNCHANGED.
 
 Spec §17 checklist (items 1-27), §18 (no client override), §22 (structural fake
 isolation), §23 (no external I/O), §24 (no DB write), §25 (read-failure signal) are all
@@ -76,7 +82,10 @@ from app.services.outcomes.manual_reconcile import (
     read_external_state,
     reconcile_execution,
 )
-from app.services.outcomes.reconciliation import MissingExternalReference
+from app.services.outcomes.reconciliation import (
+    MissingExternalReference,
+    UnrecognizedExternalState,
+)
 
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -478,12 +487,15 @@ class TestFakeReaderIntegration:
         assert not hasattr(result, "outcome_status")
 
     def test_27_reader_invoked_exactly_once_through_reconcile(self, db_session):
-        # §17.27: through the full reconcile_execution entrypoint (which then stops at
-        # NotImplementedError), the reader is still invoked EXACTLY once.
+        # §17.27: through the full reconcile_execution entrypoint the reader is still
+        # invoked EXACTLY once. A2-E FLAG: the entrypoint no longer stops at the A2-C
+        # NotImplementedError stub — a SHUFFLE read now reaches 3.4.3-B mapping, which
+        # REFUSES it (shuffle has no evidenced vocabulary, §四) with
+        # UnrecognizedExternalState -> ZERO facts. The call_count invariant is UNCHANGED.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnrecognizedExternalState):
             reconcile_execution(db_session, eid, "exec-op", registry=ReadAdapterRegistry([fake]))
         assert fake.call_count == 1
 
@@ -790,10 +802,12 @@ class TestNoClientOverride:
         # §18: reconcile_execution carries an operator, but it NEVER reaches the read
         # — the request the fake receives has no operator / credential attribute, and
         # the adapter + reference are the HISTORICAL ones regardless of the operator.
+        # A2-E FLAG: the shuffle read is now REFUSED at 3.4.3-B (UnrecognizedExternalState,
+        # §四) instead of the A2-C NotImplementedError stub; every assertion below is VERBATIM.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-truth"))
         fake = FakeReadAdapter("shuffle")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnrecognizedExternalState):
             reconcile_execution(db_session, eid, "attacker-op", registry=ReadAdapterRegistry([fake]))
         request = fake.last_request
         assert request.adapter == "shuffle"
@@ -816,17 +830,20 @@ class TestNoClientOverride:
 
 
 # ---------------------------------------------------------------------------
-# spec §16 — reconcile_execution stops at the raw result (never a 200 accepted)
+# spec §16 — reconcile_execution never fabricates a 200 for an unevidenced read
 # ---------------------------------------------------------------------------
 class TestReconcileStopsAtResult:
     def test_reconcile_with_fake_reader_reads_then_not_implemented(self, db_session):
-        # §16: even WITH a reader that returns successfully, reconcile_execution stops
-        # at NotImplementedError (no mapping / persistence in C) — NEVER a 200, and
-        # the read happened exactly once first.
+        # §16: even WITH a reader that returns successfully, reconcile_execution NEVER
+        # fabricates a 200 for a SHUFFLE read. A2-E FLAG: the A2-C NotImplementedError
+        # stub is GONE — the read now reaches 3.4.3-B mapping, which REFUSES the shuffle
+        # state ("succeeded" is unevidenced for shuffle, §四) with UnrecognizedExternalState.
+        # The §16 invariant is UNWEAKENED: the read happened exactly once and ZERO facts
+        # were persisted (call_count / _outcome_count VERBATIM UNCHANGED).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", result=_result("succeeded"))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnrecognizedExternalState):
             reconcile_execution(db_session, eid, "exec-op", registry=ReadAdapterRegistry([fake]))
         assert fake.call_count == 1
         assert _outcome_count(db_session) == 0

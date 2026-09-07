@@ -1,4 +1,4 @@
-"""Manual Reconcile API — secured route + read-failure persistence (Phase 3.4.5-A2-D).
+"""Manual Reconcile API — secured route + outcome mapping/persistence (Phase 3.4.5-A2-E).
 
 The PULL-side counterpart to the webhook (PUSH-side) inbound path. Where a
 webhook lets an EXTERNAL SYSTEM report an outcome, Manual Reconcile lets an
@@ -10,8 +10,8 @@ current state for one past execution and append what it finds as an Outcome Fact
         -> Operator RBAC (reuse authenticate_operator)   <- 3.4.5-A2-A (sealed)
         -> Correlation / External Reference              <- 3.4.5-A2-B (sealed)
         -> ReadAdapterRegistry / ReadAdapter.read         <- 3.4.5-A2-C (sealed)
-        -> Read Failure -> reconciliation_failed          <- THIS STEP (A2-D)
-        -> 3.4.3 Validation / Mapping / Fact Append       <- A2-E
+        -> Read Failure -> reconciliation_failed          <- 3.4.5-A2-D (sealed)
+        -> Read Success -> 3.4.3 Validate / Map / Append    <- THIS STEP (A2-E)
 
 A2-A established the seam (RBAC + the empty body + a 501 stub); A2-B wired
 correlation + read-only external-reference extraction. A2-C hands that context to
@@ -35,22 +35,27 @@ ever fabricated. The route maps the domain rejections to HTTP exactly as
   - a reader that EXISTS and its ``read()`` FAILS in transit (only via a
     test-injected ``FakeReadAdapter``, never production) -> ONE
     ``reconciliation_failed`` fact is appended -> 200 ``ManualReconcileResponse``
-    (A2-D, design §4.3) — the FIRST real verdict this route can return;
-  - a reader that EXISTS and its ``read()`` SUCCEEDS -> the pipeline still STOPS at
-    ``NotImplementedError`` -> 501, because D maps NO external state and persists NO
-    SUCCESS fact (A2-E) — NEVER a fabricated 200 (spec §16).
+    (A2-D, design §4.3);
+  - a reader that EXISTS and its ``read()`` SUCCEEDS -> the external_state is
+    validated (3.4.3-A) + mapped (3.4.3-B) and ONE mapped Outcome Fact is appended
+    -> 200 ``ManualReconcileResponse`` (A2-E, design §4.4). When the state is
+    outside 3.4.3-B's evidenced vocabulary (EVERY shuffle / thehive / mock state
+    today) mapping raises ``UnrecognizedExternalState`` -> 422 with ZERO facts —
+    NEVER a fabricated 200 (spec §四 / §十四).
 
 ``UnsupportedAdapterRead`` (registry lookup found no reader) is DISTINCT from
 ``reconciliation_failed`` (a real ``read()`` that failed at transport level — A2-D):
 the former has NO read attempt, so it is a rejection with NO Outcome Fact, never a
-failure fact (spec §9). A2-D performs NO real external read (the registry is empty),
-NO mapping and NO execution / dispatch / compensation (spec §2 / §14 / §25); its ONE
-write is the read-FAILURE ``reconciliation_failed`` append. HTTP mapping lives HERE,
-never in the domain (mirrors ``webhooks.py``); the SERVICE owns the read-failure
-transaction (A2-D — the full success pipeline in A2-E), so this router maps that
-path's ``OutcomePersistenceError`` to a 500 and never echoes the ORM, an external
-state, or a credential. Every rejection detail is STATIC (spec §13 / §21): it leaks
-no execution_id, no operator, no adapter, no reference value, no credential.
+failure fact (spec §9). A2-E performs NO real external read (the production registry
+is empty — the real Shuffle/Wazuh/TheHive adapters are 3.4.5-B/C/D, §二十), NO
+execution / dispatch / compensation and NO retry (spec §二十五); its writes are the
+read-FAILURE ``reconciliation_failed`` append (A2-D) and the SUCCESS mapped-fact
+append (A2-E). HTTP mapping lives HERE, never in the domain (mirrors
+``webhooks.py``); the SERVICE owns both transactions (the failure inline, the success
+via ``manual_persist``), so this router maps either path's ``OutcomePersistenceError``
+to a 500 and never echoes the ORM, a raw external payload, or a credential. Every
+rejection detail is STATIC (spec §十三 / §二十一): it leaks no execution_id, no
+operator, no adapter, no reference value, no credential.
 """
 from __future__ import annotations
 
@@ -95,14 +100,7 @@ RECONCILE_VALIDATION_FAILURE_DETAIL = "reconcile validation failed"
 #: no reader" — and is NOT reconciliation_failed (no read was attempted, spec §9).
 RECONCILE_UNSUPPORTED_ADAPTER_DETAIL = "adapter read unsupported"
 
-#: ONE uniform "not yet implemented" detail (3.4.5-A2-A, unchanged). STATIC by
-#: design: it carries NO execution_id, NO operator name, NO adapter, NO credential
-#: and NO internal exception text — nothing an attacker can discriminate on. A2-B
-#: correlates + extracts, then stops here (no read adapter yet) -> an honest 501,
-#: never a fabricated success (spec §20 / §36).
-RECONCILE_NOT_IMPLEMENTED_DETAIL = "manual reconcile not yet implemented"
-
-#: Persistence-infrastructure failure (A2-D §23): ``OutcomePersistenceError`` — the
+#: Persistence-infrastructure failure (A2-D §23 / A2-E §十六): ``OutcomePersistenceError`` — the
 #: ``reconciliation_failed`` fact append itself FAILED at the DB layer and was
 #: ROLLED BACK (no partial fact survives) -> 500. NEVER accepted=true, NEVER a 4xx
 #: contract rejection, and NEVER an infra error laundered into reconciliation_failed
@@ -121,7 +119,7 @@ def manual_reconcile(
     authenticated: Operator = Depends(authenticate_operator),
     db: Session = Depends(get_db),
 ) -> ManualReconcileResponse:
-    """POST /api/v1/executions/{execution_id}/reconcile — the 3.4.5-A2-D seam.
+    """POST /api/v1/executions/{execution_id}/reconcile — the 3.4.5-A2-E seam.
 
     Order mirrors ``webhooks.py`` (auth gate FIRST, then body, then service):
 
@@ -145,27 +143,29 @@ def manual_reconcile(
         reader from the ``ReadAdapterRegistry`` (A2-C). The production registry is
         EMPTY, so every adapter raises ``UnsupportedAdapterRead`` -> 404. A reader
         only exists under a test-injected ``FakeReadAdapter``; once one is invoked
-        the pipeline has TWO exits (A2-D): a read that FAILS in transit is appended
-        as ONE ``reconciliation_failed`` fact and returns 200 (the FIRST real
-        verdict this route reaches), while a read that SUCCEEDS still stops at
-        ``NotImplementedError`` -> 501 (mapping + success persistence are A2-E).
+        the pipeline has TWO real exits: a read that FAILS in transit is appended as
+        ONE ``reconciliation_failed`` fact and returns 200 (A2-D), while a read that
+        SUCCEEDS is validated + mapped + appended as ONE mapped fact and returns 200
+        (A2-E) — or, when the state is unevidenced, raises ``UnrecognizedExternalState``
+        -> 422 with ZERO facts (spec §四 / §十四).
 
     HTTP mapping lives HERE, never in the domain (mirrors ``webhooks.py``):
     ``UnmappableExecutionId`` (a ``ContractValidationFailure`` subclass) -> 404 and
     is caught BEFORE its base; ``UnsupportedAdapterRead`` (a ``ReadAdapterError``, a
     SEPARATE family) -> 404; any other ``ContractValidationFailure``
-    (``MissingExternalReference``) -> 422; ``NotImplementedError`` -> 501; and the
-    read-FAILURE path's ``OutcomePersistenceError`` (the fact append itself failed
-    and was ROLLED BACK, A2-D §23) -> 500, never accepted=true. Every detail is
-    STATIC, so a rejection leaks nothing about the refused value.
+    (``MissingExternalReference`` / ``UnrecognizedExternalState`` / ``InvalidObservedAt``)
+    -> 422; and EITHER path's ``OutcomePersistenceError`` (the fact append itself
+    failed and was ROLLED BACK) -> 500, never accepted=true. Every detail is STATIC,
+    so a rejection leaks nothing about the refused value.
 
-    ``response_model`` / ``status_code=200`` declare the frozen §4.4 envelope.
-    A2-D reaches a 200 for the FIRST time — but ONLY on the read-FAILURE path,
-    returning the ``reconciliation_failed`` fact it appended (design §4.3). A
-    SUCCESSFUL read still stops at 501, and every rejection is a static-detail
-    ``HTTPException`` on the A2-A skeleton (spec §21 "沿用 A2-A skeleton"); the
-    §4.4 rich rejected envelope (``reason`` enum) and the success fact land in
-    A2-E, so no fabricated success is ever implied.
+    ``response_model`` / ``status_code=200`` declare the frozen §4.4 envelope, which
+    A2-E now RETURNS on both real exits: the read-FAILURE path returns the
+    ``reconciliation_failed`` fact (design §4.3, A2-D) and the SUCCESS path returns
+    the mapped fact (design §4.4, A2-E) — the SAME ``ManualReconcileResponse``
+    envelope, never a second response schema (spec §二十三 / §二十四). Every rejection
+    is a static-detail ``HTTPException`` on the A2-A skeleton; a successful read of an
+    UNEVIDENCED state is a 422 refusal, never a fabricated 200. The A2-A 501 stub is
+    GONE — the pipeline now reaches a real verdict on every reader-invoked path.
     """
     try:
         execution_uuid = uuid.UUID(execution_id)
@@ -198,18 +198,12 @@ def manual_reconcile(
         raise HTTPException(
             status_code=422, detail=RECONCILE_VALIDATION_FAILURE_DETAIL
         ) from exc
-    except NotImplementedError as exc:
-        # A reader existed and read() SUCCEEDED (test-only FakeReadAdapter), but D
-        # maps no external state and persists no SUCCESS fact (A2-E) -> honest 501,
-        # never a fabricated 200. (A read FAILURE returns 200 ABOVE, never here.)
-        raise HTTPException(
-            status_code=501, detail=RECONCILE_NOT_IMPLEMENTED_DETAIL
-        ) from exc
     except OutcomePersistenceError as exc:
-        # Persistence-infrastructure failure (A2-D §23): the reconciliation_failed
-        # fact append FAILED at the DB layer and was ROLLED BACK (no partial fact
-        # survives) -> 500. NEVER accepted=true, NEVER an infra error laundered into
-        # reconciliation_failed (mirrors webhooks.py). STATIC detail.
+        # Persistence-infrastructure failure (A2-D §23 / A2-E §十六): the Outcome Fact
+        # append — a reconciliation_failed fact (read failure) OR a mapped success
+        # fact (read success) — FAILED at the DB layer and was ROLLED BACK (no partial
+        # fact survives) -> 500. NEVER accepted=true, NEVER an infra error laundered
+        # into reconciliation_failed (mirrors webhooks.py). STATIC detail.
         raise HTTPException(
             status_code=500, detail=RECONCILE_PERSISTENCE_FAILURE_DETAIL
         ) from exc

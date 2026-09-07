@@ -98,8 +98,8 @@ NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: The exact import surface D is allowed (spec §2 / §7 / §13 / §21, EXTENDED by
-#: A2-D). ``__future__`` is the ``from __future__ import annotations`` line;
+#: The exact import surface D/E is allowed (spec §2 / §7 / §13 / §21, EXTENDED
+#: by A2-D + A2-E). ``__future__`` is the ``from __future__ import annotations`` line;
 #: ``app.services.manual_reconcile.read`` is the A1 READ contract (AdapterReadRequest
 #: / AdapterReadResult / ReadAdapterRegistry / default_read_adapter_registry) the
 #: pipeline integrates (§7), and ``app.services.manual_reconcile`` adds the A2-D
@@ -128,6 +128,7 @@ ALLOWED_MODULES = {
     "app.services.manual_reconcile.read",
     "app.services.outcomes.correlation",
     "app.services.outcomes.derivation",
+    "app.services.outcomes.manual_persist",
     "app.services.outcomes.reconciliation",
     "app.services.outcomes.webhook",
 }
@@ -149,6 +150,7 @@ ALLOWED_NAMES = {
     "default_read_adapter_registry",
     "correlate_execution",
     "derive_outcome_state",
+    "persist_reconcile_outcome",
     "MissingExternalReference",
     "ExecutionOutcomeFact",
     "OutcomePersistenceError",

@@ -24,8 +24,11 @@ SIDE BY SIDE on the SAME chain (``TestCaseAAndCaseBSideBySide``):
 fact source is the reconciliation process) is NEVER ``confirmed_failure`` (the
 outside world was read and said the effect was NOT achieved — a MAPPED external
 state, 3.4.3-B, A2-E). A2-D writes the former and can never write the latter: it
-performs NO mapping (spec §16 / §21), so a SUCCESSFUL read still stops at
-``NotImplementedError`` -> 501 with ZERO facts.
+performs NO mapping (spec §16 / §21), so at the A2-D SEAL a SUCCESSFUL read stopped at
+``NotImplementedError`` -> 501 with ZERO facts. (A2-E FLAG: A2-E replaced that stub — a
+SUCCESSFUL SHUFFLE read is now REFUSED at 3.4.3-B mapping with ``UnrecognizedExternalState``
+-> 422 and STILL ZERO facts, since shuffle has no evidenced vocabulary, §四. The A2-D
+read-FAILURE path proven below is byte-identical and untouched.)
 
 WHAT D DELIBERATELY DOES NOT DO (AST- + runtime-proven below): NO real
 Shuffle/Wazuh/TheHive read, NO HTTP, NO mapping / ``normalize_external_state``, NO
@@ -87,7 +90,10 @@ from app.services.outcomes.manual_reconcile import (
     read_external_state,
     reconcile_execution,
 )
-from app.services.outcomes.reconciliation import MissingExternalReference
+from app.services.outcomes.reconciliation import (
+    MissingExternalReference,
+    UnrecognizedExternalState,
+)
 from app.services.outcomes.webhook import OutcomePersistenceError
 
 #: Fixed clock for seeding the DISPATCH chain (execution_log.created_at). The
@@ -786,13 +792,16 @@ class TestReadFailureGateOrdering:
         assert _outcome_count(db_session) == 0
 
     def test_16_successful_read_maps_nothing_zero_fact(self, db_session):
-        # spec §26 item 16 / §16: D performs NO mapping — a SUCCESSFUL read stops at
-        # NotImplementedError (mapping + success persistence are A2-E) and writes
-        # ZERO facts. A "mapping failure" (here: mapping absent) is never a fact.
+        # spec §26 item 16 / §16: a SUCCESSFUL SHUFFLE read maps to NOTHING and writes
+        # ZERO facts. A2-E FLAG: at the A2-D seal this stopped at the NotImplementedError
+        # stub; A2-E replaced it with the real 3.4.3-B mapping edge, which REFUSES the
+        # shuffle state ("succeeded" is unevidenced for shuffle, §四) with
+        # UnrecognizedExternalState -> STILL zero facts. The invariant is UNWEAKENED and
+        # the two assertions below are VERBATIM UNCHANGED.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", result=_result("succeeded"))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(UnrecognizedExternalState):
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert fake.call_count == 1  # the read DID succeed
         assert _outcome_count(db_session) == 0  # but nothing was mapped / persisted
