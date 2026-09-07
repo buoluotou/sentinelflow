@@ -21,7 +21,7 @@
 
 **本设计的核心结论：**
 
-- **Selected Strategy = Option 3**：Wazuh command-level reconciliation **unsupported / Evidence-Gapped**；`ADAPTER_STATE_VOCABULARIES["wazuh"]` 四集 **全部裁定为 ∅**（§8-§11），与 shuffle/thehive/mock 结构一致。
+- **Selected Strategy = Option 3（版本限定：For Wazuh 5.1.0-alpha0）**：Wazuh command-level reconciliation **unsupported / Evidence-Gapped**；`ADAPTER_STATE_VOCABULARIES["wazuh"]` 四集 **全部裁定为 ∅**（§8-§11），与 shuffle/thehive/mock 结构一致。**此为当前版本证据结论，非"Wazuh 永久无 outcome vocabulary"**（版本边界见 §18.2）。
 - **Previous Mapping = INVALID**：`{completed,confirmed,done,success,ok}→confirmed_success`、`running→pending`、`unknown→unknown` 的原始证据（`wazuh.py:94-99` 常量 + 注释）来自 **write 适配器的虚构同步 dispatch 响应**，非真实 Wazuh command-lifecycle 状态（§4）。
 - **关键架构发现（本门最重要的新认知）**：`ADAPTER_STATE_VOCABULARIES["wazuh"]` 是 **path-agnostic 的单一语义映射**，经 `mapping.py:103 → normalize_external_state` 被 **LIVE 的 webhook 入站路径（3.4.4-D/E，已封板）** 复用，**不是** 仅供未来 read path 的 dormant 词表。**因此无法"只空 read 不空 webhook"**：清空 Wazuh 词表必然同时改变已封板 3.4.4 webhook 的 LIVE 行为（§15）。
 - **Blast radius = 六道已封板门**：3.4.3-B / 3.4.4-D / 3.4.4-E / 3.4.4-F / A2-E / A2-F 的测试均 pin 了 Wazuh success 词表；其中 `test_reconciliation.py:1126 test_only_wazuh_has_an_evidenced_vocabulary` 的**前提会被反转**（清空后**无任何** adapter 拥有 evidenced 词表）（§15）。
@@ -36,15 +36,17 @@
 
 | 版本域 | 值 | 证据 | 状态 |
 |---|---|---|---|
-| **仓库审计对象** | Wazuh **5.1.0-alpha0** | `wazuh-main/VERSION.json` + `wazuh-docker-main/VERSION.json` 双证 `{"version":"5.1.0","stage":"alpha0"}` | CONFIRMED（仅对仓库源码成立） |
-| **生产部署版本** | **UNKNOWN** | 无部署环境 / 生产 VERSION.json / `GET /` API info 证据 | **未确认** |
+| **仓库审计对象（source）** | Wazuh **5.1.0-alpha0** | `wazuh-main/VERSION.json` + `wazuh-docker-main/VERSION.json` 双证 `{"version":"5.1.0","stage":"alpha0"}` | CONFIRMED（仅对仓库源码成立） |
+| **部署模板镜像 tag（docker）** | Wazuh **5.1.0（GA tag，无 `-alpha0`）** | `wazuh-docker-main/{single,multi}-node/docker-compose.yml`：`wazuh/wazuh-manager:5.1.0` / `wazuh-indexer:5.1.0` / `wazuh-dashboard:5.1.0` / `wazuh-agent:5.1.0`；`build-images.sh:11-12 WAZUH_IMAGE_VERSION=IMAGE_TAG=5.1.0`（仅 dev build 追加 `-alpha0`/`-beta1`） | **与审计对象不一致**（GA tag ≠ alpha0 源码 build） |
+| **生产部署版本** | **UNKNOWN** | `WAZUH_BASE_URL=""`（config.py:95 / .env.example:42，外部且未配置）；`sentinelflow/docker-compose.yml` + `infrastructure/` **无 Wazuh 服务**；无 live API 可查 `GET /` | **未确认（B0.1）** |
 
 **约束：**
 
-- 本文档所有关于"真实 Wazuh 行为"的结论 **仅对 5.1.0-alpha0 成立**。5.x 是 Indexer-based AR + comms-agent 新架构，与 4.x 有实质差异。
+- 本文档所有关于"真实 Wazuh 行为"的结论 **仅对 5.1.0-alpha0 源码成立**。5.x 是 Indexer-based AR + comms-agent 新架构，与 4.x 有实质差异；**5.1.0 GA 与 5.1.0-alpha0 亦为不同 build，API surface 可能有别**。
 - **官方当前在线文档展示的是另一条版本线**（用户裁决①）：不得拿当前官网页面字段直接替换 5.1.0-alpha0 的结论；官方在线文档只能作为**交叉印证**，不能反证仓库版本。
-- **若生产环境确为 5.1.0-alpha0** → 本 Audit 可作为正式版本基线；**若为 4.x / 其它 5.x** → 必须重做**版本化 Evidence Audit**，本 B0 结论不自动适用。
-- **Production Version 确认路径**（进入 Implementation Gate 前必须完成）：部署环境实测 / 生产 `VERSION.json` / `GET /`（API info endpoint）三选一明确确认。
+- **B0.1 版本确认发现（2026-09-07）**：工作区内部即存在版本分歧 —— 审计对象（source）= `5.1.0-alpha0`，但**唯一的具体部署产物**（docker compose 模板）pin 的是 `5.1.0` **GA 镜像 tag**，二者 label 不同；且 SentinelFlow 不 co-deploy Wazuh（外部、`WAZUH_BASE_URL` 默认空）。故**生产版本无法从工作区自证**，且有**具体证据反对**"生产 = 5.1.0-alpha0"的假定。
+- **若生产环境确为 5.1.0-alpha0** → 本 Audit 可作为正式版本基线；**若为 5.1.0 GA / 4.x / 其它 5.x build** → 必须重做**版本化 Evidence Audit**，本 B0 结论不自动适用。
+- **Production Version 确认路径**（进入 Implementation Gate 前必须完成，B0.1 未能自证）：必须由用户在**真实生产部署**上确认 —— live API `GET /`（或 `GET /manager/version` / `GET /cluster/version`）/ 部署镜像 tag（`docker inspect`）/ manager `wazuh-control -V` + indexer 版本。**仅需 version/build 信息，绝不索取或打印任何凭据（API key/password/JWT/callback/operator token）。**
 
 ---
 
@@ -381,10 +383,10 @@ write 适配器 `wazuh.py` 的 dispatch 层（`_CONFIRMED_AGENT_STATUSES` 用于
 | **Timestamp** | **FAIL**（仅 trigger time，无 effect time；禁伪装） | §12 |
 | **Auth** | **FAIL**（真实 JWT vs write Basic 不一致；read auth 未设计） | §13 |
 | **Previous Mapping** | **INVALID**（证据 = 虚构 write 响应体，非 command-lifecycle） | §4 |
-| **Selected Strategy** | **Option 3 — command-level reconciliation unsupported / Evidence-Gapped；Wazuh 词表四集全空** | §6/§8-§11 |
+| **Selected Strategy** | **Option 3（For Wazuh 5.1.0-alpha0）— command-level reconciliation unsupported / Evidence-Gapped；四集全空（版本限定，非永久）** | §6/§8-§11/§18.2 |
 | **3.4.3-B Amendment Needed** | **YES**（但**本轮不落代码**；独立 Implementation Gate 以 forward commit 执行，禁改 8b89fe7） | §15/§16 |
 
-### 18.2 词表最终裁定（经 B0 Design Review，非先验写死）
+### 18.2 词表最终裁定（**版本限定：For Wazuh 5.1.0-alpha0**；经 B0 Design Review，非先验写死，非永久真理）
 
 ```python
 "wazuh": AdapterStateVocabulary(
@@ -395,14 +397,18 @@ write 适配器 `wazuh.py` 的 dispatch 层（`_CONFIRMED_AGENT_STATUSES` 用于
     ambiguous_states=frozenset(),          # §11 ∅
     case_insensitive=False,                # 无词可折叠，与 shuffle/thehive/mock 对齐
     state_key=None,                        # 无 evidenced state word
-    evidence="3.4.5-B0: Wazuh command-level outcome Evidence-Gapped (Option 3); "
-             "prior {completed,confirmed,done,success,ok}/running/unknown traced to a "
-             "fictional synchronous active-response write contract, refuted by real "
-             "5.1.0 spec.yaml AgentStatus + AR_SCHEMA (no command-effect read).",
+    evidence="3.4.5-B0 (For Wazuh 5.1.0-alpha0 ONLY): command-level outcome "
+             "Evidence-Gapped (Option 3); prior {completed,confirmed,done,success,ok}/"
+             "running/unknown traced to a fictional synchronous active-response write "
+             "contract, refuted by real 5.1.0-alpha0 spec.yaml AgentStatus + AR_SCHEMA "
+             "(no command-effect read). NOT a permanent Wazuh verdict - a different "
+             "Wazuh version/build requires a fresh version-scoped Evidence Audit.",
 )
 ```
 
 > **§八/§十 合规声明**：此"全空"结论**不是先验写死**，而是 §5-§13 逐项证据检验后**推理得出**（每个旧词的 evidence 段均断裂）。若 Implementation Gate 前出现新的可靠证据（真实版本确认 + 真实命令级 read path），本裁定**必须重开**。
+>
+> **版本边界（用户 2026-09-07 正式修正）**：上述四集置空是 **"For Wazuh 5.1.0-alpha0" 的当前版本证据结论**，**绝不是** "Wazuh 永久没有 outcome vocabulary" 的永久真理。换一个 Wazuh 版本 / build（`5.1.0` GA、4.x、其它 5.x）时，正确动作是**针对该版本重做 Evidence Audit**，**而不是反向解冻本设计**。B0.1 已证实此边界是现实约束而非理论假设：工作区内 source=`5.1.0-alpha0` 与 docker 部署镜像 tag=`5.1.0`（GA）本身就分属不同 build（§1）。因此本裁定、§6 Selected Strategy、§18.1 汇总表中的"四集全空"一律读作**版本限定于 5.1.0-alpha0**。
 
 ### 18.3 实施边界（本轮零代码 → 独立后续 Gate）
 
