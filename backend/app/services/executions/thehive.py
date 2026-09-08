@@ -25,16 +25,23 @@ Frozen facts (distinct from 3.2.3/3.2.4 by design — not copied):
   description, sentinelflow_execution_id, source, severity and
   approval_id. The execution id is the idempotency / audit / external
   tracking key.
-- Result mapping: 200/201 + case_id -> succeeded
-  (detail {"provider": "thehive", "case_id": ...}); 202 or a 2xx body
-  without a case_id NEVER succeeds (case creation without a case id is
-  a lie); 409 duplicate -> succeeded idempotent_duplicate; 409 with a
-  foreign execution id or a different event -> failed fail-closed;
-  401/403/404/500 -> adapter_error; 502/503/504 -> adapter_unavailable;
-  timeout -> timeout; connection/OS errors -> adapter_unavailable.
-- Ambiguous answers ({} / {"success": true} without case_id / non-dict
-  bodies) raise ExecutorOutcomeViolation: the adapter never self-judges
-  — platform parse produces protocol_violation (D9).
+- Result mapping (TheHive 4.1.24-1 v0 certified contract — G3/G5 doc
+  §3/§4): 201 + OutputCase{_id, id, caseId, ...} -> succeeded. ``_id`` ==
+  ``id`` == EntityId.toString is the STRING resource reference (the handle
+  GET /api/case/{id} re-fetches); ``caseId`` == number is the Int human
+  case number, kept for audit ONLY and NEVER used as the reference. The
+  response has NO ``case_id`` key: detail carries SentinelFlow's frozen
+  reconcile key ``case_id`` = the ``_id`` string (+ ``case_number`` audit).
+  202 or a 2xx body without a valid string _id/id NEVER succeeds (a case
+  creation without a resource reference is a lie); 409 -> failed
+  fail-closed (case creation has NO certified idempotency/duplicate
+  contract — CaseSrv.create auto-assigns the next number); 401/403/404/
+  500 -> adapter_error; 502/503/504 -> adapter_unavailable; timeout ->
+  timeout; connection/OS errors -> adapter_unavailable.
+- Ambiguous answers ({} / {"success": true} / only a numeric caseId / an
+  empty or non-string _id/id / non-dict bodies) raise
+  ExecutorOutcomeViolation: the adapter never self-judges — platform parse
+  produces protocol_violation (D9).
 - Zero retry, zero polling, zero async callbacks (user directive): one
   request, one response, one decision, one execution_log row.
 
@@ -68,19 +75,11 @@ from app.services.executions.secrets import (
 #: escalating a SentinelFlow incident into a TheHive case.
 THEHIVE_ACTIONS = frozenset({"escalate_to_incident"})
 
-#: Marker words a TheHive 409 body uses for a genuine duplicate-case answer.
-_DUPLICATE_MARKERS = ("already exists", "duplicate")
-
-#: Marker words betraying a 409 that is NOT a same-action duplicate —
-#: an attacker/collision attempting to bind THIS execution_id to a
-#: DIFFERENT event/incident must fail closed, never masquerade as an
-#: idempotent hit.
-_MISMATCH_MARKERS = ("different incident", "different event", "different action")
-
-#: Body keys that may expose an EXTERNAL execution id in a 409 body —
-#: its presence means the case belongs to another SentinelFlow
-#: execution (or an attacker guessing ids): refuse, never impersonate.
-_EXECUTION_ID_KEYS = ("sentinelflow_execution_id", "execution_id")
+#: TheHive 4.1.24-1 v0 case creation has NO certified idempotency /
+#: duplicate-recovery contract (CaseSrv.create auto-assigns the next case
+#: number and never detects duplicates — G3/G5 doc §5), so a 409 carries no
+#: authoritative re-fetchable case reference and is NEVER auto-success:
+#: every 409 fails closed (M1 §4). No marker vocabulary is consulted.
 
 
 class TheHiveExecutor(ResponseExecutor):
@@ -188,7 +187,7 @@ class TheHiveExecutor(ResponseExecutor):
                 raw_response=None,
             )
         except urllib.error.HTTPError as exc:
-            return self._on_http_error(exc, dispatch)
+            return self._on_http_error(exc)
         except (urllib.error.URLError, OSError) as exc:
             return ExecutionOutcome(
                 status="failed",
@@ -238,18 +237,44 @@ class TheHiveExecutor(ResponseExecutor):
                 "thehive case creation returned a non-object body on "
                 f"status {status}"
             )
-        case_id = payload.get("case_id")
-        if not case_id:
-            # A case creation without a case id is a protocol lie — the
-            # adapter never self-completes it; the platform parser owns
-            # the protocol_violation verdict (D9).
+        # TheHive 4.1.24-1 v0 emits an OutputCase (dto/v0/Case.scala):
+        # "_id" and "id" are BOTH the string EntityId (Conversion.scala
+        # caseOutput: id = _id.toString, _id = _id.toString) and the
+        # reconcilable resource reference — the handle GET /api/case/{id}
+        # re-fetches (CaseCtrlTest: EntityIdOrName(outputCase._id)). The
+        # response NEVER carries "case_id". "caseId" is the Int human case
+        # NUMBER, a distinct semantic that is NEVER the string resource id
+        # (M1 §4).
+        resource_id = payload.get("_id")
+        if not isinstance(resource_id, str) or not resource_id:
+            # The renderer guarantees _id == id, so fall back to "id" only
+            # as a defensive read of the SAME string resource reference.
+            resource_id = payload.get("id")
+        if not isinstance(resource_id, str) or not resource_id:
+            # A case creation without a string resource reference is a
+            # protocol lie — a lone numeric caseId is NOT a substitute. The
+            # adapter never self-completes it; the platform parser owns the
+            # protocol_violation verdict (D9).
             raise ExecutorOutcomeViolation(
-                "thehive case creation succeeded without a case_id "
-                "(ambiguous case response)"
+                "thehive case creation succeeded without a string resource "
+                "reference (_id/id absent, empty or non-string; the numeric "
+                "caseId is never a substitute)"
             )
+        # SentinelFlow's frozen reconcile key (_EXTERNAL_REFERENCE_KEYS
+        # ["thehive"]) carries the STRING resource reference so the Manual
+        # Reconcile read path re-fetches the exact case; caseId (number)
+        # rides along for human audit ONLY, and only when TheHive supplied a
+        # genuine int (never a bool, never invented).
+        detail: dict[str, object] = {
+            "provider": "thehive",
+            "case_id": resource_id,
+        }
+        case_number = payload.get("caseId")
+        if isinstance(case_number, int) and not isinstance(case_number, bool):
+            detail["case_number"] = case_number
         return ExecutionOutcome(
             status="succeeded",
-            detail={"provider": "thehive", "case_id": str(case_id)},
+            detail=detail,
             raw_response=payload,
         )
 
@@ -268,14 +293,32 @@ class TheHiveExecutor(ResponseExecutor):
 
     # -- internals ----------------------------------------------------------
 
-    def _on_http_error(
-        self, exc: urllib.error.HTTPError, dispatch: ExecutionDispatch
-    ) -> ExecutionOutcome:
-        """Map HTTP errors. Only the 409 body is parsed (idempotency);
-        every other body is NEVER carried into the detail."""
+    def _on_http_error(self, exc: urllib.error.HTTPError) -> ExecutionOutcome:
+        """Map HTTP errors. NO error body is parsed or carried into the
+        detail — the 409 body is no longer inspected because every 409
+        fails closed (see below)."""
         status = exc.code
         if status == 409:
-            return self._conflict_outcome(exc, dispatch)
+            # TheHive 4.1.24-1 v0 case creation has NO certified idempotency
+            # / duplicate-recovery contract (CaseSrv.create auto-assigns the
+            # next case number, never detects duplicates — G3/G5 doc §5), so
+            # a 409 carries no authoritative re-fetchable case reference.
+            # Per M1 §4 a 409 is NEVER auto-success: without a certified way
+            # to recover, correlate and verify an EXISTING case reference it
+            # fails closed. The body is NOT parsed (no marker vocabulary) and
+            # is NEVER carried into the detail.
+            return ExecutionOutcome(
+                status="failed",
+                detail={
+                    "classification": "adapter_error",
+                    "error": (
+                        "thehive returned HTTP 409 conflict; case creation "
+                        "has no certified idempotent-recovery contract, so a "
+                        "conflict is never claimed as success (fail-closed)"
+                    ),
+                },
+                raw_response=None,
+            )
         if status in (502, 503, 504):
             return ExecutionOutcome(
                 status="failed",
@@ -290,65 +333,6 @@ class TheHiveExecutor(ResponseExecutor):
             detail={
                 "classification": "adapter_error",
                 "error": f"thehive returned HTTP {status}",
-            },
-            raw_response=None,
-        )
-
-    def _conflict_outcome(
-        self, exc: urllib.error.HTTPError, dispatch: ExecutionDispatch
-    ) -> ExecutionOutcome:
-        """409 handling: same-action duplicate -> succeeded
-        idempotent_duplicate; everything else (foreign execution id,
-        different event, unparseable body) -> failed adapter_error."""
-        body_text = exc.read().decode("utf-8", errors="replace")
-        lowered = body_text.lower()
-        if any(marker in lowered for marker in _MISMATCH_MARKERS):
-            return ExecutionOutcome(
-                status="failed",
-                detail={
-                    "classification": "adapter_error",
-                    "error": (
-                        "thehive 409 conflict: this execution_id is bound "
-                        "to a different event; one execution_id must never "
-                        "create more than one case"
-                    ),
-                },
-                raw_response=None,
-            )
-        if any(marker in lowered for marker in _DUPLICATE_MARKERS):
-            try:
-                payload = json.loads(body_text)
-            except ValueError:
-                payload = {}
-            if isinstance(payload, dict):
-                for key in _EXECUTION_ID_KEYS:
-                    external_id = payload.get(key)
-                    if external_id and str(external_id) != str(
-                        dispatch.execution_id
-                    ):
-                        return ExecutionOutcome(
-                            status="failed",
-                            detail={
-                                "classification": "adapter_error",
-                                "error": (
-                                    "thehive 409 conflict references a "
-                                    "different execution_id; refusing to "
-                                    "claim another execution's case"
-                                ),
-                            },
-                            raw_response=None,
-                        )
-            return ExecutionOutcome(
-                status="succeeded",
-                detail={"provider": "thehive", "idempotent_duplicate": True},
-                raw_response=payload if isinstance(payload, dict) else None,
-            )
-        return ExecutionOutcome(
-            status="failed",
-            detail={
-                "classification": "adapter_error",
-                "error": "thehive returned HTTP 409 without an idempotency "
-                "marker",
             },
             raw_response=None,
         )

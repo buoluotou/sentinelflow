@@ -388,8 +388,11 @@ class TestMultiAdapterBuckets:
             action="isolate_host", target="agent001",
         )
 
-        # thehive.
-        thehive_stub = StubTransport(payload={"case_id": "case-1"})
+        # thehive. OutputCase shape ("_id"/"id" string reference + "caseId"
+        # number) — TheHive v0 never emits "case_id" (G3/G5 doc §3/§4).
+        thehive_stub = StubTransport(
+            payload={"_id": "case-1", "id": "case-1", "caseId": 1}
+        )
         app.dependency_overrides[get_response_executor] = lambda: TheHiveExecutor(
             AdapterCredentials(
                 adapter="thehive", base_url="http://stub", api_key="th-secret"

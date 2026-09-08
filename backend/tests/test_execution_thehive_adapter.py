@@ -23,12 +23,17 @@ callback, no task queue, no retry — the suite is deliberately NOT a
 copy of 3.2.3/3.2.4: case creation semantics replace command semantics.
 
 Discipline battery:
-- succeeded requires 200/201 + case_id (a case creation without a case
-  id is a protocol lie -> ExecutorOutcomeViolation -> D9);
+- succeeded requires 200/201 + a STRING resource reference (_id/id — the
+  TheHive 4.1.24-1 v0 OutputCase; caseId is the Int human case NUMBER,
+  kept for audit only and NEVER the reference). A creation without a valid
+  string _id/id is a protocol lie -> ExecutorOutcomeViolation -> D9;
 - 202 -> failed adapter_error (no waiting state — 3.1 froze "no
   asynchronous execution facts");
-- 409 duplicate -> succeeded idempotent_duplicate; 409 with a foreign
-  execution_id or a different event -> failed fail-closed;
+- 409 -> failed fail-closed ALWAYS: TheHive v0 case creation has no
+  certified idempotency / duplicate-recovery contract (CaseSrv.create
+  auto-assigns the next case number), so a conflict — duplicate marker,
+  foreign execution_id, different event or none — is never claimed as
+  success (M1 §4);
 - classification table: 401/403/404/500 adapter_error, 502/503/504
   adapter_unavailable, timeout timeout, connection errors
   adapter_unavailable;
@@ -158,8 +163,13 @@ def _thehive_settings(**overrides) -> Settings:
     return Settings(**base)
 
 
-def _success_payload(case_id="case-1") -> dict:
-    return {"case_id": case_id}
+def _success_payload(case_id="case-1", *, case_number=1) -> dict:
+    """A TheHive 4.1.24-1 v0 OutputCase success body (dto/v0/Case.scala).
+    The real response emits "_id"/"id" — BOTH the STRING EntityId and the
+    reconcilable resource reference — and "caseId", the Int human case
+    NUMBER. It NEVER emits "case_id": that is SentinelFlow's internal
+    reconcile key, which the adapter populates FROM "_id"."""
+    return {"_id": case_id, "id": case_id, "caseId": case_number}
 
 
 # --------------------------------------------------------------------------
@@ -343,11 +353,23 @@ class TestHttpContract:
 class TestOutcomeMatrix:
     @pytest.mark.parametrize("status", [200, 201])
     def test_created_case_is_succeeded(self, status):
-        stub = StubTransport(status=status, payload=_success_payload("case-9"))
+        stub = StubTransport(
+            status=status, payload=_success_payload("case-9", case_number=42)
+        )
         outcome = _executor(stub).execute(_dispatch())
         assert outcome.status == "succeeded"
-        assert outcome.detail == {"provider": "thehive", "case_id": "case-9"}
-        assert outcome.raw_response == {"case_id": "case-9"}
+        # detail["case_id"] carries the STRING resource reference (_id) under
+        # the frozen reconcile key; caseId (number) rides along for audit only.
+        assert outcome.detail == {
+            "provider": "thehive",
+            "case_id": "case-9",
+            "case_number": 42,
+        }
+        assert outcome.raw_response == {
+            "_id": "case-9",
+            "id": "case-9",
+            "caseId": 42,
+        }
 
     def test_202_is_failed_adapter_error_no_waiting_state(self):
         stub = StubTransport(status=202, payload={"accepted": True})
@@ -405,14 +427,22 @@ class TestProtocolViolation:
         "payload",
         [
             {},  # empty answer
-            {"success": True},  # success flag without a case id
-            {"case_id": ""},  # empty case id
-            {"case_id": None},  # null case id
+            {"success": True},  # success flag without a resource reference
+            # ONLY the numeric case number — M1 §4: a lone caseId is NEVER a
+            # string resource id and must NOT be accepted as the reference.
+            {"caseId": 12},
+            {"_id": "", "id": ""},  # empty string reference
+            {"_id": None, "id": None},  # null reference
+            {"_id": 123, "id": 123},  # illegal (non-string) reference
         ],
     )
-    def test_success_without_case_id_is_a_violation(self, payload):
+    def test_success_without_string_resource_reference_is_a_violation(
+        self, payload
+    ):
         stub = StubTransport(payload=payload)
-        with pytest.raises(ExecutorOutcomeViolation, match="case_id"):
+        with pytest.raises(
+            ExecutorOutcomeViolation, match="resource reference"
+        ):
             _executor(stub).execute(_dispatch())
 
     def test_non_object_body_is_a_violation(self):
@@ -472,16 +502,26 @@ class TestIdempotency:
             b'{"error": "duplicate case for execution"}',
         ],
     )
-    def test_same_execution_duplicate_is_succeeded_idempotent(self, body):
+    def test_409_duplicate_marker_fails_closed_no_certified_idempotency(
+        self, body
+    ):
+        # TheHive 4.1.24-1 v0 case creation has NO certified idempotency /
+        # duplicate-recovery contract (CaseSrv.create auto-assigns the next
+        # case number, never detects duplicates), so a 409 carries no
+        # authoritative re-fetchable case reference. M1 §4: a 409 is NEVER
+        # auto-success — a duplicate marker does not make it one.
         stub = StubTransport(status=409, body=body)
         outcome = _executor(stub).execute(_dispatch())
-        assert outcome.status == "succeeded"
-        assert outcome.detail == {
-            "provider": "thehive",
-            "idempotent_duplicate": True,
-        }
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "adapter_error"
+        assert "idempotent_duplicate" not in outcome.detail
 
-    def test_duplicate_with_same_execution_id_echo_is_still_idempotent(self):
+    def test_409_with_same_execution_id_echo_still_fails_closed(self):
+        # An echoed sentinelflow_execution_id in a 409 body is NOT a
+        # certified TheHive case reference — no authoritative contract
+        # recovers the EXISTING case's _id from a conflict, so this still
+        # fails closed (M1 §4: no reliable recovery -> explicit error,
+        # never auto-success).
         dispatch = _dispatch()
         body = json.dumps(
             {
@@ -491,8 +531,9 @@ class TestIdempotency:
         ).encode()
         stub = StubTransport(status=409, body=body)
         outcome = _executor(stub).execute(dispatch)
-        assert outcome.status == "succeeded"
-        assert outcome.detail["idempotent_duplicate"] is True
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "adapter_error"
+        assert "idempotent_duplicate" not in outcome.detail
 
     def test_duplicate_referencing_another_execution_id_fails(self):
         body = json.dumps(
@@ -709,13 +750,13 @@ class TestEndToEnd:
         assert result.final_decision == "failed"
         assert result.rows[-1].detail["classification"] == "timeout"
 
-    def test_duplicate_chain_writes_succeeded_idempotent(self, db_session):
+    def test_409_chain_writes_failed_no_certified_idempotency(self, db_session):
         result = self._run(
             db_session,
             StubTransport(status=409, body=b'{"error": "case already exists"}'),
         )
-        assert result.final_decision == "succeeded"
-        assert result.rows[-1].detail["idempotent_duplicate"] is True
+        assert result.final_decision == "failed"
+        assert result.rows[-1].detail["classification"] == "adapter_error"
 
     def test_foreign_execution_id_chain_writes_failed(self, db_session):
         body = json.dumps(

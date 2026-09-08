@@ -607,7 +607,12 @@ class TestRealAdapterChains:
                 transport=stub,
             )
 
-        allow_stub = StubTransport(payload={"case_id": "case-1"})
+        # TheHive 4.1.24-1 v0 OutputCase shape: "_id"/"id" (the string
+        # resource reference) + "caseId" (Int number). It never emits
+        # "case_id" (G3/G5 doc §3/§4).
+        allow_stub = StubTransport(
+            payload={"_id": "case-1", "id": "case-1", "caseId": 1}
+        )
         app.dependency_overrides[get_response_executor] = lambda: make_executor(
             allow_stub
         )
@@ -622,7 +627,9 @@ class TestRealAdapterChains:
         assert len(allow_stub.calls) == 1
 
         close_window(monkeypatch)
-        deny_stub = StubTransport(payload={"case_id": "case-2"})
+        deny_stub = StubTransport(
+            payload={"_id": "case-2", "id": "case-2", "caseId": 2}
+        )
         app.dependency_overrides[get_response_executor] = lambda: make_executor(
             deny_stub
         )
