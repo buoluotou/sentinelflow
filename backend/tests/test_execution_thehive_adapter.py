@@ -274,39 +274,68 @@ class TestHttpContract:
         assert stub.last["method"] == "POST"
 
     def test_body_matches_frozen_contract_exactly(self):
+        # M2 §4: the body carries ONLY v0 InputCase-declared fields
+        # (dto/v0/Case.scala:8). The correlation moved INTO tags (a declared
+        # Set[String], persisted by CaseSrv.create + echoed in OutputCase);
+        # severity is the Int 3 (High), never the string "high" (severity is
+        # Option[Int] -> a string is a 400). Undeclared top-level keys are
+        # silently dropped by FieldsParser, so none may be sent.
         stub = StubTransport(payload=_success_payload())
         dispatch = _dispatch()
         _executor(stub).execute(dispatch)
         body = stub.last["body"]
-        assert set(body.keys()) == {
-            "title",
-            "description",
-            "sentinelflow_execution_id",
-            "source",
-            "severity",
-            "approval_id",
-        }
+        assert set(body.keys()) == {"title", "description", "severity", "tags"}
         assert body["title"] == f"SentinelFlow escalation: {TARGET}"
-        assert body["sentinelflow_execution_id"] == str(dispatch.execution_id)
-        assert body["source"] == "sentinelflow"
-        assert body["severity"] == "high"
-        assert body["approval_id"] == str(dispatch.approval_id)
+        assert body["severity"] == 3
+        assert isinstance(body["severity"], int) and not isinstance(
+            body["severity"], bool
+        )
+        assert set(body["tags"]) == {
+            "sentinelflow",
+            f"sentinelflow:execution:{dispatch.execution_id}",
+            f"sentinelflow:approval:{dispatch.approval_id}",
+        }
         assert isinstance(body["description"], str) and body["description"]
 
     def test_body_field_mapping_rules(self):
-        # SentinelFlow execution facts -> TheHive case fields:
-        # target -> title, execution_id + approval_id -> case body
-        # (idempotency / audit / external tracking), source literal.
+        # SentinelFlow execution facts -> TheHive case fields (M2 §4):
+        # target -> title; severity -> Int 3 (High); execution_id +
+        # approval_id + provenance -> tags (the ONLY authenticated,
+        # persisted, read-back channel — undeclared top-level keys are
+        # silently dropped by FieldsParser and must never be relied on).
         stub = StubTransport(payload=_success_payload())
         dispatch = _dispatch(target="INC-77")
         _executor(stub).execute(dispatch)
         body = stub.last["body"]
         assert body["title"].startswith("SentinelFlow escalation: INC-77")
-        assert body["sentinelflow_execution_id"] == str(dispatch.execution_id)
-        assert body["approval_id"] == str(dispatch.approval_id)
-        assert body["source"] == "sentinelflow"
-        assert body["severity"] == "high"
+        assert body["severity"] == 3
+        assert f"sentinelflow:execution:{dispatch.execution_id}" in body["tags"]
+        assert f"sentinelflow:approval:{dispatch.approval_id}" in body["tags"]
+        assert "sentinelflow" in body["tags"]
         assert body["description"]
+        # The M1 undeclared top-level keys are GONE — FieldsParser dropped
+        # them silently, so they were never persisted; sending them was a
+        # silent-correlation-loss bug (M2 §4).
+        assert "sentinelflow_execution_id" not in body
+        assert "source" not in body
+        assert "approval_id" not in body
+
+    def test_correlation_tags_use_the_canonical_write_side_helpers(self):
+        # The tags are produced by the SAME helpers the G5 read adapter
+        # imports (single source of truth). A drift between the written and
+        # re-verified correlation string would break independent read-back
+        # verification, so lock the exact contract at the write side.
+        from app.services.executions.thehive import (
+            sentinelflow_approval_tag,
+            sentinelflow_execution_tag,
+        )
+
+        stub = StubTransport(payload=_success_payload())
+        dispatch = _dispatch()
+        _executor(stub).execute(dispatch)
+        tags = set(stub.last["body"]["tags"])
+        assert sentinelflow_execution_tag(dispatch.execution_id) in tags
+        assert sentinelflow_approval_tag(dispatch.approval_id) in tags
 
     def test_bearer_header_is_the_only_auth_surface(self):
         stub = StubTransport(payload=_success_payload())

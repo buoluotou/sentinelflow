@@ -21,10 +21,17 @@ Frozen facts (distinct from 3.2.3/3.2.4 by design — not copied):
 - Compensation: supports_compensation() is False for EVERY action. Case
   lifecycle belongs to the investigation; SentinelFlow never auto-closes
   a case (no create_case -> close_case reversal exists).
-- HTTP contract: POST {base_url}/api/case with a body carrying title,
-  description, sentinelflow_execution_id, source, severity and
-  approval_id. The execution id is the idempotency / audit / external
-  tracking key.
+- HTTP contract: POST {base_url}/api/case with a body carrying ONLY
+  fields the v0 InputCase DTO declares (dto/v0/Case.scala:8): title,
+  description, severity (Int — 3 == High on the certified 1-4 scale) and
+  tags. SentinelFlow's execution / approval correlation + provenance ride
+  in ``tags`` (a declared Set[String], persisted by CaseSrv.create and
+  echoed back in OutputCase.tags), NOT as undeclared top-level keys —
+  FieldsParser silently drops undeclared fields, so the M1 body's
+  ``sentinelflow_execution_id`` / ``source`` / ``approval_id`` never
+  reached the case (M2 §4 fix). The execution tag is the correlation +
+  independent read-back verification handle (G5), never an idempotency key
+  (409 has no certified duplicate contract).
 - Result mapping (TheHive 4.1.24-1 v0 certified contract — G3/G5 doc
   §3/§4): 201 + OutputCase{_id, id, caseId, ...} -> succeeded. ``_id`` ==
   ``id`` == EntityId.toString is the STRING resource reference (the handle
@@ -80,6 +87,37 @@ THEHIVE_ACTIONS = frozenset({"escalate_to_incident"})
 #: number and never detects duplicates — G3/G5 doc §5), so a 409 carries no
 #: authoritative re-fetchable case reference and is NEVER auto-success:
 #: every 409 fails closed (M1 §4). No marker vocabulary is consulted.
+
+#: TheHive v0 case severity is an Int on the certified 1-4 scale
+#: (frontend Constants.js Severity.keys: Low=1, Medium=2, High=3,
+#: Critical=4; CaseUpdateCtrl default = 2/Medium). The frozen escalation
+#: intent is "high" -> 3. InputCase.severity is Option[Int]
+#: (v0/Case.scala:11), so a STRING "high" is a 400 AttributeCheckingError
+#: (M2 §4 fix).
+THEHIVE_SEVERITY_HIGH = 3
+
+#: Provenance + correlation tag vocabulary for SentinelFlow-created cases.
+#: These ride in InputCase.tags (a DECLARED Set[String], v0/Case.scala:14,
+#: persisted by CaseSrv.create:99 and echoed back in OutputCase.tags), NOT
+#: as undeclared top-level body keys that FieldsParser silently drops. The
+#: write adapter owns this contract; the G5 read adapter imports the SAME
+#: helpers so the correlation written at create time is the exact string
+#: re-verified at read time (single source of truth, never drifted).
+SENTINELFLOW_TAG = "sentinelflow"
+SENTINELFLOW_EXECUTION_TAG_PREFIX = "sentinelflow:execution:"
+SENTINELFLOW_APPROVAL_TAG_PREFIX = "sentinelflow:approval:"
+
+
+def sentinelflow_execution_tag(execution_id: object) -> str:
+    """Canonical correlation tag binding a created TheHive case to the
+    SentinelFlow execution that created it. Single source of truth shared
+    by the write (execute) and read (G5 reconcile) sides."""
+    return f"{SENTINELFLOW_EXECUTION_TAG_PREFIX}{execution_id}"
+
+
+def sentinelflow_approval_tag(approval_id: object) -> str:
+    """Canonical correlation tag binding a created case to its approval."""
+    return f"{SENTINELFLOW_APPROVAL_TAG_PREFIX}{approval_id}"
 
 
 class TheHiveExecutor(ResponseExecutor):
@@ -139,12 +177,14 @@ class TheHiveExecutor(ResponseExecutor):
     def execute(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
         """Create a TheHive case for the approved escalation.
 
-        Case mapping (frozen): execution target -> title, approval +
-        provenance facts -> description, execution_id + approval_id ride
-        in the body as the idempotency/audit keys, source is the fixed
-        literal "sentinelflow", severity is the fixed escalation default
-        "high" (the dispatch DTO carries no richer incident facts — the
-        adapter never invents them).
+        Case mapping (frozen): execution target -> title; a fixed
+        provenance description; severity -> the Int 3 (High) escalation
+        default (InputCase.severity is Option[Int]); execution_id +
+        approval_id + the "sentinelflow" provenance marker -> tags (the
+        ONLY authenticated, persisted, read-back channel — the dispatch
+        DTO carries no richer incident facts, so the adapter never
+        invents them). The execution tag is the G5 correlation /
+        independent verification handle, never an idempotency key.
         """
         if not self.supports(dispatch.action):
             raise ValueError(
@@ -157,10 +197,15 @@ class TheHiveExecutor(ResponseExecutor):
                 "response execution chain. Case creation is the complete "
                 "machine scope; investigation stays human-led."
             ),
-            "sentinelflow_execution_id": str(dispatch.execution_id),
-            "source": "sentinelflow",
-            "severity": "high",
-            "approval_id": str(dispatch.approval_id),
+            # v0 InputCase.severity is Option[Int] (3 == High); a string
+            # "high" is a 400. Correlation rides in tags (declared,
+            # persisted, echoed) — never as undeclared top-level keys.
+            "severity": THEHIVE_SEVERITY_HIGH,
+            "tags": [
+                SENTINELFLOW_TAG,
+                sentinelflow_execution_tag(dispatch.execution_id),
+                sentinelflow_approval_tag(dispatch.approval_id),
+            ],
         }
         url = f"{self._credentials.base_url}/api/case"
         request = urllib.request.Request(
