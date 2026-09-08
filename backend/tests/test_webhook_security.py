@@ -83,6 +83,13 @@ from app.services.outcomes.webhook import (
 NOW = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 WEBHOOK = "/api/v1/webhooks"
 
+#: G1-C / B0 §15.4 — the TEST-ONLY fake adapter is the platform success-pipeline
+#: vehicle (the real Wazuh vocabulary is now EMPTY / fail-closed, so NO production
+#: adapter can carry a success fact). Its webhook channel reuses the declared
+#: WAZUH_CALLBACK_TOKEN (conftest.fake_adapter_channel), so WAZUH_TOKEN still
+#: authenticates it and the operator identity becomes ``adapter:fakesuccess``.
+FAKE = "fakesuccess"
+
 # Distinct, fixture-only callback secrets (section 25: NEVER a dev-machine token).
 SHUFFLE_TOKEN = "shuffle-callback-secret-F"
 WAZUH_TOKEN = "wazuh-callback-secret-F"
@@ -311,13 +318,18 @@ def _chain_calls():
 # section 4. Credential secrecy across EVERY sink
 # ==========================================================================
 class TestCredentialSecrecyFullChain:
+    #: G1-C / B0 §15.4 — the "valid callback" leg of each secrecy proof runs on the
+    #: TEST-ONLY fake adapter (the real Wazuh vocabulary is now refused); the
+    #: invalid/rejected legs stay on the real Wazuh route (production refusal).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_token_never_reaches_application_log(self, client, db_session, all_tokens, caplog):
         # The chain imports no logger at all; prove it empirically across a full
         # valid + invalid + rejected cycle.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         with caplog.at_level(logging.DEBUG):
-            client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+            client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
             client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer("wrong-token"))
             client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state=SECRET_STATE),
                         headers=_bearer(WAZUH_TOKEN))
@@ -329,7 +341,7 @@ class TestCredentialSecrecyFullChain:
     def test_token_absent_from_db_detail_and_execution_log(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        client.post(f"{WEBHOOK}/wazuh",
+        client.post(f"{WEBHOOK}/{FAKE}",
                     json=_body(eid, external_reference=SECRET_REF),
                     headers=_bearer(WAZUH_TOKEN))
         # every persisted outcome detail + every execution_log row, JSON-dumped
@@ -348,7 +360,7 @@ class TestCredentialSecrecyFullChain:
     def test_token_absent_from_response_and_exception_and_repr(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        resp = client.post(f"{WEBHOOK}/wazuh",
+        resp = client.post(f"{WEBHOOK}/{FAKE}",
                            json=_body(eid, external_reference=SECRET_REF),
                            headers=_bearer(WAZUH_TOKEN))
         assert WAZUH_TOKEN not in resp.text
@@ -406,6 +418,10 @@ class TestCrossAdapterTokenIsolation:
 # sections 6/7/8. Identity smuggling (adapter / operator / source) is refused
 # ==========================================================================
 class TestIdentitySmugglingRefused:
+    #: G1-C / B0 §15.4 — the "valid fact" identity proofs run on the fake adapter;
+    #: the smuggling-refusal proofs stay on the real Wazuh route (schema 422).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     @pytest.mark.parametrize(
         "smuggled",
         [
@@ -429,10 +445,10 @@ class TestIdentitySmugglingRefused:
     def test_valid_fact_identity_is_server_side_only(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        resp = client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+        resp = client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         assert resp.status_code == 200
         fact = _all_outcomes(db_session)[0]
-        assert fact.operator == "adapter:wazuh"      # never a client string
+        assert fact.operator == f"adapter:{FAKE}"    # never a client string
         assert fact.source == "webhook"              # never manual_reconcile
         assert fact.source in OUTCOME_SOURCES
         assert fact.operator != "admin"
@@ -444,7 +460,7 @@ class TestIdentitySmugglingRefused:
         client.post(f"{WEBHOOK}/wazuh", json=_body(eid, source="manual_reconcile"),
                     headers=_bearer(WAZUH_TOKEN))
         assert _outcome_count(db_session) == 0       # refused, not written
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         sources = {o.source for o in _all_outcomes(db_session)}
         assert sources == {"webhook"}
 
@@ -484,18 +500,21 @@ class TestExecutionIsolationStructural:
 # section 10. Replay — three facts, all preserved, final = latest observed_at
 # ==========================================================================
 class TestReplay:
+    #: G1-C / B0 §15.4 — replay/append-only proven on the fake adapter.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_t1_t2_t1replay_leaves_three_facts_and_derives_latest(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         t1, t2 = NOW, NOW + timedelta(seconds=10)
         # T1 pending
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="running", observed_at=t1),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=t1),
                     headers=_bearer(WAZUH_TOKEN))
         # T2 confirmed_success
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="success", observed_at=t2),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="success", observed_at=t2),
                     headers=_bearer(WAZUH_TOKEN))
         # T1 replay (pending again)
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="running", observed_at=t1),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=t1),
                     headers=_bearer(WAZUH_TOKEN))
         facts = _all_outcomes(db_session)
         assert len(facts) == 3                       # NO dedup, NO overwrite
@@ -506,9 +525,9 @@ class TestReplay:
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         body = _body(eid, external_state="success", observed_at=NOW)
-        client.post(f"{WEBHOOK}/wazuh", json=body, headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=body, headers=_bearer(WAZUH_TOKEN))
         first = set(_outcome_snapshot(db_session))
-        client.post(f"{WEBHOOK}/wazuh", json=body, headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=body, headers=_bearer(WAZUH_TOKEN))
         second = set(_outcome_snapshot(db_session))
         assert len(second) == 2
         assert first <= second                       # the prior row is byte-identical
@@ -518,6 +537,9 @@ class TestReplay:
 # section 11. Replay ordering — arrival order never decides the derived state
 # ==========================================================================
 class TestReplayOrdering:
+    #: G1-C / B0 §15.4 — arrival-order independence proven on the fake adapter.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     @pytest.mark.parametrize("reverse", [False, True])
     def test_later_observed_at_wins_regardless_of_arrival(self, client, db_session, all_tokens, reverse):
         eid = uuid.uuid4()
@@ -526,7 +548,7 @@ class TestReplayOrdering:
         late = _body(eid, external_state="success", observed_at=NOW + timedelta(seconds=10))  # cs @ T2
         order = [late, early] if reverse else [early, late]
         for body in order:
-            assert client.post(f"{WEBHOOK}/wazuh", json=body, headers=_bearer(WAZUH_TOKEN)).status_code == 200
+            assert client.post(f"{WEBHOOK}/{FAKE}", json=body, headers=_bearer(WAZUH_TOKEN)).status_code == 200
         facts = _all_outcomes(db_session)
         assert len(facts) == 2
         assert derive_outcome_state(facts) == "confirmed_success"   # T2 wins both ways
@@ -558,12 +580,16 @@ class TestReplayOrdering:
 # section 12. Same timestamp — higher id wins, never DB natural order
 # ==========================================================================
 class TestSameTimestamp:
+    #: G1-C / B0 §15.4 — same-timestamp tie-break proven on the TEST-ONLY fake
+    #: adapter (the real Wazuh vocabulary is empty/refused, so no success fact).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_equal_observed_at_tie_breaks_by_id_desc_not_list_order(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="running", observed_at=NOW),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=NOW),
                     headers=_bearer(WAZUH_TOKEN))
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="success", observed_at=NOW),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="success", observed_at=NOW),
                     headers=_bearer(WAZUH_TOKEN))
         facts = _all_outcomes(db_session)
         assert facts[0].observed_at == facts[1].observed_at          # a genuine tie
@@ -578,15 +604,19 @@ class TestSameTimestamp:
 # section 13. Historical immutability across the full callback flow
 # ==========================================================================
 class TestHistoricalImmutability:
+    #: G1-C / B0 §15.4 — historical immutability across a NEW callback is proven on
+    #: the TEST-ONLY fake adapter (a real Wazuh word is refused, never INSERTs).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_prior_facts_and_execution_log_immutable_across_a_new_callback(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="running", observed_at=NOW),
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=NOW),
                     headers=_bearer(WAZUH_TOKEN))
         log_before = _log_snapshot(db_session)
         facts_before = set(_outcome_snapshot(db_session))
         # a NEW callback (different state, later time) only INSERTs
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="success",
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="success",
                                                    observed_at=NOW + timedelta(seconds=5)),
                     headers=_bearer(WAZUH_TOKEN))
         assert _log_snapshot(db_session) == log_before               # dispatch log untouched
@@ -598,11 +628,15 @@ class TestHistoricalImmutability:
 # section 14. Rollback — flush/commit failure, never accepted=true
 # ==========================================================================
 class TestRollbackFinalGate:
+    #: G1-C / B0 §15.4 — rollback-on-DB-failure must reach flush/commit, which a
+    #: real Wazuh word no longer does (refused at Gate 4); proven on the fake adapter.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_flush_failure_http_500_zero_fact_not_accepted(self, client, db_session, all_tokens, monkeypatch):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         monkeypatch.setattr(db_session, "flush", _raiser(SQLAlchemyError("simulated flush failure")))
-        resp = client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+        resp = client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         assert resp.status_code == 500
         assert resp.json() == {"detail": CALLBACK_PERSISTENCE_FAILURE_DETAIL}
         assert resp.json().get("accepted") is not True               # NEVER accepted=true
@@ -622,7 +656,7 @@ class TestRollbackFinalGate:
         monkeypatch.setattr(db_session, "commit", _raiser(SQLAlchemyError("simulated commit failure")))
         monkeypatch.setattr(db_session, "rollback", spy_rb)
         with pytest.raises(OutcomePersistenceError):
-            persist_callback_outcome(db_session, _observation(eid))
+            persist_callback_outcome(db_session, _observation(eid, adapter=FAKE))
         assert calls["rollback"] == 1
         assert _outcome_count(db_session) == 0                       # no half fact
         assert [o.outcome_status for o in _all_outcomes(db_session)] == []
@@ -632,6 +666,10 @@ class TestRollbackFinalGate:
 # section 15. Concurrency — interleaved legal callbacks are order-independent
 # ==========================================================================
 class TestConcurrency:
+    #: G1-C / B0 §15.4 — interleaved LEGAL callbacks are proven on the TEST-ONLY
+    #: fake adapter (the real Wazuh vocabulary is empty/refused).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     @pytest.mark.parametrize("reverse", [False, True])
     def test_two_concurrent_legal_callbacks_both_persist_deterministically(self, client, db_session, all_tokens, reverse):
         # The append-only design has NO unique index and NEVER UPDATEs, so two
@@ -645,7 +683,7 @@ class TestConcurrency:
         a = _body(eid, external_state="running", observed_at=NOW)                       # pending
         b = _body(eid, external_state="success", observed_at=NOW + timedelta(seconds=5))  # cs
         for body in ([b, a] if reverse else [a, b]):
-            r = client.post(f"{WEBHOOK}/wazuh", json=body, headers=_bearer(WAZUH_TOKEN))
+            r = client.post(f"{WEBHOOK}/{FAKE}", json=body, headers=_bearer(WAZUH_TOKEN))
             assert r.status_code == 200
         facts = _all_outcomes(db_session)
         assert len(facts) == 2                        # both saved
@@ -668,6 +706,13 @@ class TestConcurrency:
 # section 16. The explicit zero-fact matrix
 # ==========================================================================
 class TestZeroFactMatrix:
+    #: G1-C / B0 §15.4 — the auth/schema/correlation/mapping rows stay on the REAL
+    #: Wazuh route (each refuses BEFORE or AT mapping, so they are genuine production
+    #: refusal proofs). The rollback/valid/duplicate rows need a fact to reach
+    #: flush/commit, which a refused Wazuh word no longer does, so they run on the
+    #: TEST-ONLY fake adapter. The channel fixture is additive (wazuh stays refused).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def _run(self, client, db_session, monkeypatch, kind):
         eid = uuid.uuid4()
         if kind != "correlation":
@@ -683,13 +728,13 @@ class TestZeroFactMatrix:
             r = client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="banana"), headers=_bearer(WAZUH_TOKEN))
         elif kind == "rollback":
             monkeypatch.setattr(db_session, "flush", _raiser(SQLAlchemyError("x")))
-            r = client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+            r = client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         elif kind == "valid":
-            r = client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+            r = client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         else:  # duplicate — delta of the SECOND identical callback
-            client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+            client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
             before = _outcome_count(db_session)
-            r = client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
+            r = client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
         return r, _outcome_count(db_session) - before
 
     @pytest.mark.parametrize("kind,status,delta", [
@@ -707,10 +752,15 @@ class TestZeroFactMatrix:
 # section 17. HTTP security semantics
 # ==========================================================================
 class TestHttpSecurity:
+    #: G1-C / B0 §15.4 — the frozen 200 semantics + the 500 persistence path need a
+    #: fact to persist, so they run on the TEST-ONLY fake adapter; the 401/404/422
+    #: refusals stay on the REAL Wazuh route (genuine production refusal proofs).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_all_status_codes_carry_the_frozen_semantics(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        assert client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN)).status_code == 200
+        assert client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN)).status_code == 200
         assert client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer("x")).status_code == 401
         assert client.post(f"{WEBHOOK}/mock", json=_body(eid), headers=_bearer(SHUFFLE_TOKEN)).status_code == 404
         assert client.post(f"{WEBHOOK}/wazuh", json=_body(uuid.uuid4()), headers=_bearer(WAZUH_TOKEN)).status_code == 404
@@ -726,9 +776,10 @@ class TestHttpSecurity:
             client.post(f"{WEBHOOK}/wazuh", json=_body(uuid.uuid4()), headers=_bearer(WAZUH_TOKEN)),
             client.post(f"{WEBHOOK}/wazuh", json=_body(eid, operator="admin"), headers=_bearer(WAZUH_TOKEN)),
         ]
-        # the 500 persistence path too
+        # the 500 persistence path too (G1-C: fake adapter, so the request is
+        # mapping-valid and actually reaches the monkeypatched flush -> 500).
         monkeypatch.setattr(db_session, "flush", _raiser(SQLAlchemyError("x")))
-        errors.append(client.post(f"{WEBHOOK}/wazuh", json=_body(eid), headers=_bearer(WAZUH_TOKEN)))
+        errors.append(client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN)))
         for r in errors:
             assert r.status_code != 200
             assert r.json().get("accepted") is not True
@@ -764,13 +815,17 @@ class TestErrorLeakage:
 # section 19. Detail security — defense in depth
 # ==========================================================================
 class TestDetailSecurity:
+    #: G1-C / B0 §15.4 — the detail-allow-list proof persists a real fact, so it runs
+    #: on the TEST-ONLY fake adapter (a refused Wazuh word never reaches detail).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_vocab")
+
     def test_detail_is_credential_free_even_if_redact_detail_is_a_noop(self, db_session, all_tokens, monkeypatch):
         # Even with redact_detail neutralized, NO credential can appear: the body
         # structurally carries none and the detail keys are a fixed allow-list.
         monkeypatch.setattr(webhook_service, "redact_detail", lambda d: d)
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        fact = persist_callback_outcome(db_session, _observation(eid, external_reference=SECRET_REF))
+        fact = persist_callback_outcome(db_session, _observation(eid, adapter=FAKE, external_reference=SECRET_REF))
         blob = json.dumps(fact.detail, default=str).lower()
         assert WAZUH_TOKEN.lower() not in blob
         assert "authorization" not in blob
@@ -785,6 +840,11 @@ class TestDetailSecurity:
 # section 20. Outcome-vocabulary boundary
 # ==========================================================================
 class TestOutcomeVocabularyBoundary:
+    #: G1-C / B0 §15.4 — the "valid webhook emits only outcome words" proof needs a
+    #: fact-producing adapter, so it runs on the TEST-ONLY fake (whose vocab is exactly
+    #: these seven words); the pure model/CHECK assertions are fixture-independent.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_outcome_statuses_are_exactly_the_five(self):
         assert OUTCOME_STATUSES == OUTCOME_FIVE
 
@@ -805,7 +865,7 @@ class TestOutcomeVocabularyBoundary:
         for state in ("success", "completed", "confirmed", "done", "ok", "running", "unknown"):
             eid = uuid.uuid4()
             _seed_chain(db_session, eid)
-            client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state=state), headers=_bearer(WAZUH_TOKEN))
+            client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state=state), headers=_bearer(WAZUH_TOKEN))
         outcomes = _all_outcomes(db_session)
         assert len(outcomes) == 7
         for o in outcomes:
@@ -829,11 +889,16 @@ class TestOutcomeVocabularyBoundary:
 # section 21. O5 — dispatch and outcome are independent layers
 # ==========================================================================
 class TestO5CrossLayer:
+    #: G1-C / B0 §15.4 — the O5 independence proof (dispatch=succeeded beside a real
+    #: confirmed_success) runs on the TEST-ONLY fake adapter; the banana-refusal and
+    #: direct-ORM confirmed_failure proofs below are fixture-independent / stay wazuh.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def test_dispatch_succeeded_and_external_outcome_are_independent(self, client, db_session, all_tokens):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, decisions=("succeeded",))
         log_before = _log_snapshot(db_session)
-        client.post(f"{WEBHOOK}/wazuh", json=_body(eid, external_state="success"), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="success"), headers=_bearer(WAZUH_TOKEN))
         assert _log_snapshot(db_session) == log_before            # dispatch stays succeeded
         assert _all_log_rows(db_session)[0].decision == "succeeded"
         assert _all_outcomes(db_session)[0].outcome_status == "confirmed_success"
@@ -984,6 +1049,13 @@ class TestTestIndependence:
 # section 26. The end-to-end cross-layer security matrix (20 scenarios)
 # ==========================================================================
 class TestCrossLayerSecurityMatrix:
+    #: G1-C / B0 §15.4 — the three valid_* rows and persistence_rollback need a fact
+    #: to persist/rollback, so their route is the TEST-ONLY fake adapter; EVERY
+    #: rejection row (auth/schema/correlation/mapping/shuffle/thehive/unrecognized)
+    #: stays on its REAL route as a genuine production refusal proof. The channel
+    #: fixture is additive (the real Wazuh route stays refused).
+    pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
+
     def _build(self, mode, eid):
         if mode == "valid_success":
             return _body(eid, external_state="success")
@@ -1016,9 +1088,9 @@ class TestCrossLayerSecurityMatrix:
         raise AssertionError(mode)
 
     @pytest.mark.parametrize("mode,route,token,status,delta,needs_chain,patch_flush", [
-        ("valid_success", "wazuh", WAZUH_TOKEN, 200, 1, True, False),
-        ("valid_pending", "wazuh", WAZUH_TOKEN, 200, 1, True, False),
-        ("valid_unknown", "wazuh", WAZUH_TOKEN, 200, 1, True, False),
+        ("valid_success", FAKE, WAZUH_TOKEN, 200, 1, True, False),
+        ("valid_pending", FAKE, WAZUH_TOKEN, 200, 1, True, False),
+        ("valid_unknown", FAKE, WAZUH_TOKEN, 200, 1, True, False),
         ("shuffle_rejected", "shuffle", SHUFFLE_TOKEN, 422, 0, True, False),
         ("thehive_rejected", "thehive", THEHIVE_TOKEN, 422, 0, True, False),
         ("invalid_token", "wazuh", "wrong-token", 401, 0, True, False),
@@ -1031,7 +1103,7 @@ class TestCrossLayerSecurityMatrix:
         ("malformed_timestamp", "wazuh", WAZUH_TOKEN, 422, 0, True, False),
         ("future_timestamp", "wazuh", WAZUH_TOKEN, 422, 0, True, False),
         ("unrecognized_state", "wazuh", WAZUH_TOKEN, 422, 0, True, False),
-        ("persistence_rollback", "wazuh", WAZUH_TOKEN, 500, 0, True, True),
+        ("persistence_rollback", FAKE, WAZUH_TOKEN, 500, 0, True, True),
     ])
     def test_single_request_matrix(self, client, db_session, all_tokens, monkeypatch,
                                    mode, route, token, status, delta, needs_chain, patch_flush):
@@ -1054,23 +1126,23 @@ class TestCrossLayerSecurityMatrix:
 
         e17 = uuid.uuid4(); _seed_chain(db_session, e17)          # 17 duplicate
         dup = _body(e17, external_state="success")
-        client.post(f"{WEBHOOK}/wazuh", json=dup, headers=_bearer(WAZUH_TOKEN))
-        client.post(f"{WEBHOOK}/wazuh", json=dup, headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=dup, headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=dup, headers=_bearer(WAZUH_TOKEN))
         assert len(facts_for(e17)) == 2 and derive_outcome_state(facts_for(e17)) == "confirmed_success"
 
         e18 = uuid.uuid4(); _seed_chain(db_session, e18)          # 18 out-of-order replay
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e18, external_state="success", observed_at=NOW + timedelta(seconds=10)), headers=_bearer(WAZUH_TOKEN))
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e18, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e18, external_state="success", observed_at=NOW + timedelta(seconds=10)), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e18, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
         assert len(facts_for(e18)) == 2 and derive_outcome_state(facts_for(e18)) == "confirmed_success"
 
         e19 = uuid.uuid4(); _seed_chain(db_session, e19)          # 19 same-timestamp ordering
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e19, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e19, external_state="success", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e19, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e19, external_state="success", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
         f19 = facts_for(e19)
         assert derive_outcome_state(f19) == max(f19, key=lambda o: (o.observed_at, o.id)).outcome_status
 
         e20 = uuid.uuid4(); _seed_chain(db_session, e20)          # 20 concurrent (interleaved)
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e20, external_state="success", observed_at=NOW + timedelta(seconds=5)), headers=_bearer(WAZUH_TOKEN))
-        client.post(f"{WEBHOOK}/wazuh", json=_body(e20, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e20, external_state="success", observed_at=NOW + timedelta(seconds=5)), headers=_bearer(WAZUH_TOKEN))
+        client.post(f"{WEBHOOK}/{FAKE}", json=_body(e20, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
         assert len(facts_for(e20)) == 2 and derive_outcome_state(facts_for(e20)) == "confirmed_success"
         _assert_session_clean(db_session)

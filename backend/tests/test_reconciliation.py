@@ -56,13 +56,17 @@ field.
 
 The soul of 3.4.3-B (design §6, user §十六): DO NOT FABRICATE. A state word is
 frozen into an adapter's vocabulary ONLY when existing adapter code (or the
-frozen design) evidences it — Wazuh is the SOLE adapter that does
-(``_CONFIRMED_AGENT_STATUSES``). Where there is no evidence (Shuffle / TheHive /
-Mock, and Wazuh's failure side) the vocabulary stays EMPTY and the state is
-REFUSED as ``UnrecognizedExternalState`` — NEVER guessed to ``unknown``, NEVER
-``reconciliation_failed`` (``StateMapping.__post_init__`` enforces the latter).
-A dispatch word is in NO vocabulary: Wazuh confirms on "success", NOT the
-dispatch word "succeeded". Several tests below nail exactly that.
+frozen design) evidences it. G1-C EMPTIED the last such vocabulary: the former
+Wazuh ``agent_status`` set was fabricated (B0 §4 — agent_status is NOT a
+command-level effect) and G1-A proved it LIVE-reachable (CONFIRMED UNSAFE), so NO
+production adapter now has an evidenced external-state vocabulary. Every adapter
+(Wazuh / Shuffle / TheHive / Mock) keeps its vocabulary EMPTY and every
+external_state is REFUSED as ``UnrecognizedExternalState`` — NEVER guessed to
+``unknown``, NEVER ``reconciliation_failed`` (``StateMapping.__post_init__``
+enforces the latter). The PLATFORM success-pipeline proofs that once borrowed the
+Wazuh ``success`` word now run on a TEST-ONLY fake adapter (``fake_adapter_vocab``
+/ ``fake_adapter_channel`` fixtures, B0 §15.4) — never on reopening a real
+vocabulary. A dispatch word is in NO vocabulary: several tests below nail that.
 """
 import ast
 import inspect
@@ -78,7 +82,6 @@ from app.services.executions.models import (
     OUTCOME_STATUSES as DISPATCH_TERMINAL_STATUSES,
 )
 from app.services.executions.registry import ADAPTER_NAMES
-from app.services.executions.wazuh import _CONFIRMED_AGENT_STATUSES
 from app.services.outcomes.reconciliation import (
     ADAPTER_STATE_VOCABULARIES,
     CONTRACT_FIELDS,
@@ -711,13 +714,13 @@ class TestRejectionProducesNoFact:
 # ===========================================================================
 #
 # THE GOVERNING RULE (user §十六, design §6): DO NOT FABRICATE adapter states.
-# Only Wazuh has a code-frozen external-state vocabulary
-# (_CONFIRMED_AGENT_STATUSES, wazuh.py:97-99). Shuffle / TheHive / Mock have NO
-# verifiable external terminal-state vocabulary in current code, and Wazuh has NO
-# evidenced failure state — so those are DELIBERATE, DOCUMENTED GAPS: every such
-# state is REFUSED as UnrecognizedExternalState, never guessed. The tests below
-# assert the GAP HONESTLY rather than inventing states to make a "terminal
-# success" case pass; the concrete vocabularies land with the 3.4.5 read path.
+# G1-C EMPTIED the last evidenced vocabulary: NO adapter (Wazuh / Shuffle /
+# TheHive / Mock) now has a verifiable external terminal-state vocabulary, so
+# EVERY external_state is REFUSED as UnrecognizedExternalState, never guessed.
+# The tests below assert the GAP HONESTLY rather than inventing states to make a
+# "terminal success" case pass; a concrete vocabulary lands only with real
+# command-effect read evidence + an independent Design Freeze (B0 §18). The
+# PLATFORM success-pipeline proofs run on a TEST-ONLY fake adapter (B0 §15.4).
 
 
 def map_state(adapter, external_state):
@@ -735,80 +738,98 @@ def refused(adapter, external_state):
 
 
 # ---------------------------------------------------------------------------
-# C. Wazuh (requirements 12-16) — the ONLY adapter with an evidenced vocabulary
+# C. Wazuh (requirements 12-16) — G1-C: vocabulary EMPTIED (fail-closed)
 # ---------------------------------------------------------------------------
 
 
 class TestWazuhMapping:
-    @pytest.mark.parametrize("state", sorted(_CONFIRMED_AGENT_STATUSES))
-    def test_12_completed_success_maps_to_confirmed_success(self, state):
-        # requirement 12: Wazuh's OWN confirmed agent_status words (evidence:
-        # _CONFIRMED_AGENT_STATUSES, wazuh.py:97-99) -> confirmed_success. Wazuh
-        # active-response is SYNCHRONOUS, so agent_status IS the effect status
-        # (unlike Shuffle trigger / TheHive case-created). These are Wazuh's words
-        # ("success"), never the dispatch word ("succeeded").
-        mapping = map_state("wazuh", state)
-        assert mapping.outcome_status == "confirmed_success"
-        assert mapping.adapter == "wazuh"
+    """G1-C / B0 §15.3: the former Wazuh external-state vocabulary
+    {completed,confirmed,done,success,ok} / running / unknown was FABRICATED from
+    a fictional "agent_status IS the effect status" reading of a synchronous
+    dispatch response and falsified by B0 §4 (agent_status is NOT a command-level
+    effect; "ok" is a task-acceptance false friend). G1-A proved it LIVE-reachable
+    via BOTH the webhook (webhook.py:149) and manual (manual_persist.py:204)
+    paths — CONFIRMED UNSAFE. G1-C EMPTIED all four sets to fail-closed, so EVERY
+    Wazuh external_state is now REFUSED as UnrecognizedExternalState (never
+    unknown, never reconciliation_failed), mirroring the Shuffle/TheHive/Mock
+    honest-gap shape. The platform success-pipeline proofs that once borrowed the
+    Wazuh ``success`` word now run on the TEST-ONLY fake adapter
+    (fake_adapter_vocab), so this class asserts ONLY the Wazuh refusal +
+    empty-vocabulary pins."""
 
-    def test_12_wazuh_success_vocab_equals_the_code_frozen_set(self):
-        # The evidence link, PINNED: the reconciliation success vocabulary is
-        # EXACTLY wazuh._CONFIRMED_AGENT_STATUSES — it can never silently drift
-        # from the adapter's own frozen set (design §6 single-source discipline).
+    def test_wazuh_vocabulary_is_entirely_empty(self):
+        # G1-C pin (mirror of shuffle/thehive/mock): all four sets empty, no
+        # state_key, no case-folding. An empty vocabulary refuses EVERY word and
+        # can never auto-reopen — a registered Reader or a configured production
+        # version does NOT repopulate it (that needs command-effect evidence + an
+        # independent Design Freeze, B0 §18).
         vocab = ADAPTER_STATE_VOCABULARIES["wazuh"]
-        assert vocab.terminal_success_states == _CONFIRMED_AGENT_STATUSES
+        assert vocab.terminal_success_states == frozenset()
+        assert vocab.terminal_failure_states == frozenset()
+        assert vocab.pending_states == frozenset()
+        assert vocab.ambiguous_states == frozenset()
+        assert vocab.state_key is None
+        assert vocab.case_insensitive is False
+
+    @pytest.mark.parametrize(
+        "state", ["completed", "confirmed", "done", "ok", "success"]
+    )
+    def test_12_former_success_words_are_now_refused(self, state):
+        # requirement 12 REVERSED (G1-C): the former "confirmed_success" words are
+        # NO LONGER evidenced — agent_status is not a command-level effect (B0 §4)
+        # and a synchronous dispatch response cannot prove an external effect. Each
+        # word is REFUSED, never mapped to confirmed_success (anti-fabrication §十六).
+        refused("wazuh", state)
 
     @pytest.mark.parametrize("state", ["failed", "error", "failure", "aborted"])
     def test_13_wazuh_failure_states_are_a_documented_gap(self, state):
-        # requirement 13 (HONEST GAP, user §九/§十六): Wazuh code declares NO
-        # terminal-FAILURE agent_status. Its failure words (adapter_unavailable /
-        # timeout / adapter_error) are TRANSPORT classifications in the DISPATCH
-        # layer, NOT external agent_status values. So confirmed_failure has NO
-        # evidence and is NEVER fabricated — a "failed"-like state is refused.
+        # requirement 13 (UNCHANGED): Wazuh code declares NO terminal-FAILURE
+        # agent_status. Its failure words (adapter_unavailable / timeout /
+        # adapter_error) are TRANSPORT classifications in the DISPATCH layer, NOT
+        # external agent_status values. So confirmed_failure has NO evidence and
+        # is NEVER fabricated — a "failed"-like state is refused.
         assert ADAPTER_STATE_VOCABULARIES["wazuh"].terminal_failure_states == frozenset()
         refused("wazuh", state)
 
     @pytest.mark.parametrize("state", ["running", "RUNNING", "Running"])
-    def test_14_running_maps_to_pending(self, state):
-        # requirement 14: "running" is a real agent_status named in wazuh.py:94-96
-        # ("leaves the fact undecided") -> external effect in progress -> pending
-        # (design §7-C). Case-insensitive because Wazuh lower-cases agent_status
-        # (wazuh.py:246) — an adapter-specific normalization the code evidences.
-        assert map_state("wazuh", state).outcome_status == "pending"
+    def test_14_running_is_now_refused(self, state):
+        # requirement 14 REVERSED (G1-C): "running" no longer maps to pending.
+        # With an empty vocabulary + case_insensitive=False, EVERY case variant is
+        # refused — no fabricated in-progress semantics from agent_status.
+        refused("wazuh", state)
 
     @pytest.mark.parametrize("state", ["unknown", "UNKNOWN", "Unknown"])
-    def test_15_unknown_legitimate_state_maps_to_unknown(self, state):
-        # requirement 15: "unknown" is a RECOGNIZED-but-ambiguous legitimate Wazuh
-        # agent_status (named in wazuh.py:94-96) -> outcome word unknown (design
-        # §7-D). This is NOT the forbidden "unrecognized -> unknown": "unknown"
-        # is an IN-VOCABULARY value whose SEMANTICS are unclear (§0 铁律).
-        assert map_state("wazuh", state).outcome_status == "unknown"
+    def test_15_unknown_is_now_refused(self, state):
+        # requirement 15 REVERSED (G1-C): "unknown" is NO LONGER an in-vocabulary
+        # ambiguous word. Mapping an unrecognized word to the outcome word unknown
+        # is the FORBIDDEN fabrication (§0 铁律: NEVER downgrade to unknown) — it
+        # is refused instead.
+        refused("wazuh", state)
 
     @pytest.mark.parametrize(
         "state", ["succeeded", "queued", "started", "expired", "in_progress", "waiting"]
     )
     def test_16_unrecognized_wazuh_state_is_refused(self, state):
-        # requirement 16: any Wazuh state outside the evidenced vocabulary is
-        # REFUSED, never guessed. "succeeded" is the DISPATCH word (not Wazuh's
-        # "success"); "queued"/"started"/"in_progress" have no code evidence.
+        # requirement 16 (UNCHANGED): any Wazuh state outside the (now empty)
+        # vocabulary is REFUSED, never guessed. "succeeded" is the DISPATCH word.
         refused("wazuh", state)
 
-    def test_wazuh_mapping_form_uses_the_agent_status_key(self):
-        # A Mapping external_state carries the word under "agent_status"
-        # (wazuh.py:243). No evidenced key / non-str value -> refused.
-        assert map_state("wazuh", {"agent_status": "completed"}).outcome_status == "confirmed_success"
-        assert map_state("wazuh", {"agent_status": "running"}).outcome_status == "pending"
-        refused("wazuh", {"status": "completed"})   # wrong key: no evidence
-        refused("wazuh", {"agent_status": 123})      # non-str value
+    def test_wazuh_mapping_form_has_no_evidenced_key(self):
+        # G1-C: state_key is now None (de-anchored from "agent_status"), so a
+        # Mapping external_state yields no extractable word -> refused (mirror of
+        # shuffle/thehive). The former {"agent_status": "completed"} -> success is
+        # gone: no evidenced key, no fabricated effect.
+        refused("wazuh", {"agent_status": "completed"})
+        refused("wazuh", {"status": "completed"})
+        refused("wazuh", {"agent_status": 123})
 
-    def test_wazuh_case_insensitive_preserves_the_raw_word(self):
-        # §十三: case-folding is permitted ONLY where the adapter's OWN code
-        # evidences it (wazuh.py:246 lower-cases agent_status). The RAW word is
-        # preserved in observed_state; only normalized_state is folded.
-        mapping = map_state("wazuh", "COMPLETED")
-        assert mapping.outcome_status == "confirmed_success"
-        assert mapping.observed_state == "COMPLETED"    # raw preserved (§十三)
-        assert mapping.normalized_state == "completed"  # the matched form
+    def test_wazuh_is_now_case_sensitive_and_refuses_every_case(self):
+        # G1-C: case_insensitive is now False (de-anchored from wazuh.py:246). A
+        # former success word in ANY case is refused — no case-folding can
+        # resurrect an unevidenced vocabulary.
+        refused("wazuh", "COMPLETED")
+        refused("wazuh", "Completed")
+        refused("wazuh", "completed")
 
     def test_wazuh_does_not_trim(self):
         # wazuh.py does NOT trim agent_status, so the mapping must not either: a
@@ -1014,21 +1035,21 @@ class TestMappingDispatchIsolation:
         for adapter in sorted(ADAPTER_NAMES):
             refused(adapter, word)
 
-    def test_20_wazuh_vocabulary_does_not_leak_to_other_adapters(self):
-        # requirement 20 (§六): mappings are adapter-specific — no shared/generic
-        # table. Wazuh's evidenced words map ONLY for Wazuh; the same word fed to
-        # another adapter is refused.
-        for word in sorted(_CONFIRMED_AGENT_STATUSES) + ["running", "unknown"]:
-            assert map_state("wazuh", word).outcome_status in MAPPABLE_OUTCOME_STATUSES
-            for other in ("shuffle", "thehive", "mock"):
-                refused(other, word)
+    def test_20_no_adapter_vocabulary_leaks_the_former_wazuh_words(self):
+        # requirement 20 REVERSED (G1-C): mappings are adapter-specific — no
+        # shared/generic table. Since G1-C EMPTIED the Wazuh vocabulary, NO
+        # adapter maps the former Wazuh words: each is refused by wazuh AND every
+        # other adapter (total isolation — there is no evidenced word to leak).
+        for word in ["completed", "confirmed", "done", "ok", "success", "running", "unknown"]:
+            for adapter in sorted(ADAPTER_NAMES):
+                refused(adapter, word)
 
-    def test_20_wazuh_agent_status_key_does_not_leak(self):
-        # The Wazuh Mapping state_key ("agent_status") is Wazuh-specific: another
-        # adapter has no state_key, so the identical payload is refused.
-        assert map_state("wazuh", {"agent_status": "completed"}).outcome_status == "confirmed_success"
-        refused("shuffle", {"agent_status": "completed"})
-        refused("thehive", {"agent_status": "completed"})
+    def test_20_no_adapter_extracts_the_agent_status_key(self):
+        # G1-C: the Wazuh Mapping state_key is now None (de-anchored from
+        # "agent_status"), so NO adapter extracts a word from that payload — the
+        # identical {"agent_status": ...} Mapping is refused everywhere.
+        for adapter in sorted(ADAPTER_NAMES):
+            refused(adapter, {"agent_status": "completed"})
 
 
 # ---------------------------------------------------------------------------
@@ -1037,11 +1058,14 @@ class TestMappingDispatchIsolation:
 
 
 class TestMappingPurity:
-    def test_21_repeated_calls_are_deterministic(self):
+    def test_21_repeated_calls_are_deterministic(self, fake_adapter_vocab):
         # requirement 21: same (adapter, state) -> EQUAL StateMapping, every time.
-        first = map_state("wazuh", "completed")
-        second = map_state("wazuh", "completed")
-        third = map_state("wazuh", "completed")
+        # G1-C / B0 §15.4: the platform determinism proof runs on the TEST-ONLY
+        # fake adapter (no production adapter has an evidenced word to map).
+        fake = fake_adapter_vocab
+        first = map_state(fake, "completed")
+        second = map_state(fake, "completed")
+        third = map_state(fake, "completed")
         assert first == second == third
         assert first.outcome_status == second.outcome_status == "confirmed_success"
 
@@ -1088,19 +1112,24 @@ class TestMappingPurity:
             assert vocab.state_key is None or isinstance(vocab.state_key, str)
             assert isinstance(vocab.case_insensitive, bool)
 
-    def test_25_input_mapping_is_not_mutated(self):
+    def test_25_input_mapping_is_not_mutated(self, fake_adapter_vocab):
         # requirement 25 (§十三): a Mapping external_state is never altered.
+        # G1-C / B0 §15.4: runs on the TEST-ONLY fake adapter (case-insensitive +
+        # agent_status state_key), proving the platform non-mutation contract.
+        fake = fake_adapter_vocab
         payload = {"agent_status": "COMPLETED", "extra": "keep"}
         snapshot = dict(payload)
-        mapping = map_state("wazuh", payload)
+        mapping = map_state(fake, payload)
         assert payload == snapshot                     # input untouched
         assert mapping.observed_state == "COMPLETED"   # raw word preserved
         assert mapping.normalized_state == "completed"
 
-    def test_25_result_is_frozen_and_input_str_untouched(self):
+    def test_25_result_is_frozen_and_input_str_untouched(self, fake_adapter_vocab):
         # requirement 25: the result StateMapping is immutable (frozen); a str
         # input is inherently unchanged, and no attribute can be reassigned.
-        mapping = map_state("wazuh", "completed")
+        # G1-C / B0 §15.4: runs on the TEST-ONLY fake adapter.
+        fake = fake_adapter_vocab
+        mapping = map_state(fake, "completed")
         with pytest.raises(FrozenInstanceError):
             mapping.outcome_status = "reconciliation_failed"
         with pytest.raises(FrozenInstanceError):
@@ -1123,18 +1152,18 @@ class TestAntiFabricationPins:
         # a non-adapter (registry.ADAPTER_NAMES is the adapter identity source).
         assert set(ADAPTER_STATE_VOCABULARIES) == set(ADAPTER_NAMES)
 
-    def test_only_wazuh_has_an_evidenced_vocabulary(self):
-        # The evidence adjudication, PINNED: Wazuh is the SOLE adapter with a
-        # code-frozen external-state vocabulary; the other three are EMPTY.
+    def test_no_adapter_has_an_evidenced_vocabulary(self):
+        # G1-C REVERSAL of the former "only Wazuh" pin: after emptying the Wazuh
+        # vocabulary, NO production adapter has an evidenced external-state
+        # vocabulary — all four are EMPTY. Repopulating ANY of them requires real
+        # command-effect read evidence + an independent Design Freeze (B0 §18);
+        # this pin fails loudly if a vocabulary is silently reopened.
         for adapter, vocab in ADAPTER_STATE_VOCABULARIES.items():
             evidenced = (
                 vocab.terminal_success_states | vocab.terminal_failure_states
                 | vocab.pending_states | vocab.ambiguous_states
             )
-            if adapter == "wazuh":
-                assert evidenced  # non-empty
-            else:
-                assert evidenced == frozenset(), adapter
+            assert evidenced == frozenset(), adapter
 
     def test_no_adapter_evidences_a_failure_state(self):
         # The strongest anti-fabrication pin: NO adapter — not even Wazuh — has an
@@ -1153,13 +1182,12 @@ class TestAntiFabricationPins:
             ):
                 assert map_state(adapter, word).outcome_status != "confirmed_failure"
 
-    def test_case_normalization_is_evidenced_per_adapter_only(self):
-        # §十三: case-folding / a state_key are code-evidenced for Wazuh ONLY
-        # (wazuh.py:246 / :243); every other adapter keeps case_insensitive False
-        # and state_key None — no adapter-specific normalization is invented.
-        assert ADAPTER_STATE_VOCABULARIES["wazuh"].case_insensitive is True
-        assert ADAPTER_STATE_VOCABULARIES["wazuh"].state_key == "agent_status"
-        for adapter in ("shuffle", "thehive", "mock"):
+    def test_no_adapter_normalizes_case_or_extracts_a_state_key(self):
+        # G1-C REVERSAL (§十三): case-folding / a state_key were code-evidenced for
+        # Wazuh ONLY; after emptying its vocabulary, EVERY adapter (including
+        # Wazuh) keeps case_insensitive False and state_key None — no
+        # adapter-specific normalization survives without evidence.
+        for adapter in ("wazuh", "shuffle", "thehive", "mock"):
             assert ADAPTER_STATE_VOCABULARIES[adapter].case_insensitive is False
             assert ADAPTER_STATE_VOCABULARIES[adapter].state_key is None
 
@@ -1211,18 +1239,22 @@ class TestMappableVocabularyBoundary:
         for word in sorted(MAPPABLE_OUTCOME_STATUSES):
             assert StateMapping("wazuh", word, "obs", "norm", "reason").outcome_status == word
 
-    def test_state_mapping_fields_are_the_audit_triple(self):
+    def test_state_mapping_fields_are_the_audit_triple(self, fake_adapter_vocab):
         # §十四: the PURE domain result carries the audit triple, no DB write.
+        # G1-C / B0 §15.4: the positive mapping example runs on the TEST-ONLY fake
+        # adapter (no production adapter maps a word); the field-shape assertion
+        # is adapter-independent.
+        fake = fake_adapter_vocab
         assert tuple(f.name for f in fields(StateMapping)) == (
             "adapter", "outcome_status", "observed_state", "normalized_state",
             "mapping_reason",
         )
-        mapping = map_state("wazuh", "completed")
-        assert mapping.adapter == "wazuh"
+        mapping = map_state(fake, "completed")
+        assert mapping.adapter == fake
         assert mapping.outcome_status == "confirmed_success"
         assert mapping.observed_state == "completed"
         assert mapping.normalized_state == "completed"
-        assert "wazuh" in mapping.mapping_reason
+        assert fake in mapping.mapping_reason
 
     def test_unrecognized_external_state_is_a_contract_validation_failure(self):
         # §十: the mapping rejection shares the A refusal base -> ONE semantic: NO

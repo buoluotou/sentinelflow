@@ -486,43 +486,35 @@ class AdapterStateVocabulary:
 ADAPTER_STATE_VOCABULARIES: dict[str, AdapterStateVocabulary] = {
     "wazuh": AdapterStateVocabulary(
         adapter="wazuh",
-        # EVIDENCE — the ONLY adapter with a code-frozen external-state vocab:
-        # wazuh.py:97-99 ``_CONFIRMED_AGENT_STATUSES``, "agent_status values that
-        # still count as an unambiguous synchronous confirmation". Wazuh active
-        # -response is SYNCHRONOUS (202/accepted is fail-closed, never a waiting
-        # state), so agent_status IS the effect status — UNLIKE Shuffle (trigger
-        # ≠ completion, E4) and TheHive (created ≠ resolved). Note the words are
-        # Wazuh's OWN ("success", never the dispatch word "succeeded").
-        terminal_success_states=frozenset(
-            {"completed", "confirmed", "done", "success", "ok"}
-        ),
-        # GAP (design §6, user §九, deferred to 3.4.5): Wazuh code declares NO
-        # terminal-FAILURE agent_status. Its failure words (adapter_unavailable /
-        # timeout / adapter_error) are TRANSPORT classifications in the DISPATCH
-        # layer, NOT external agent_status values — so confirmed_failure has no
-        # evidence here and is NEVER fabricated. A Wazuh "failed"-like state is
-        # unrecognized -> refused (tested + pinned below).
+        # G1-B/G1-C SECURITY REMEDIATION (new forward commit; 8b89fe7 / B0 / B0.1
+        # untouched — history is read-only). The former external-state vocabulary
+        # {completed,confirmed,done,success,ok} / running / unknown was fabricated
+        # from a FICTIONAL "agent_status IS the effect status" reading of a
+        # synchronous dispatch response, and is falsified by B0 §4 (agent_status is
+        # NOT a command-level effect; "ok" is a task-acceptance false friend). G1-A
+        # proved it LIVE-reachable via BOTH the webhook path (webhook.py:149) AND
+        # the manual path (manual_persist.py:204, injected-reader), producing
+        # untrusted Outcome facts (CONFIRMED UNSAFE — an unsafe code path proven
+        # reachable, NOT a claimed production incident). All four sets are EMPTIED
+        # to fail-closed (refuse -> UnrecognizedExternalState -> 422 / zero fact)
+        # INDEPENDENT of production-version confirmation (decoupled from G2). This
+        # de-anchors the INBOUND effect mapping only: the OUTBOUND dispatch constant
+        # wazuh.py:97-99 ``_CONFIRMED_AGENT_STATUSES`` is a separate concern and is
+        # NOT modified here. Any future re-population requires version-qualified
+        # command-level effect evidence + an independent Design Freeze (B0 §18);
+        # there is NO auto-reopen mechanism — an empty vocab refuses regardless of
+        # whether a Reader is registered or a production version is configured.
+        terminal_success_states=frozenset(),
         terminal_failure_states=frozenset(),
-        # EVIDENCE: wazuh.py:94-96 comment names "running" as a real agent_status
-        # that is not-yet-confirmed -> external effect in progress -> pending
-        # (design §7-C, user §九 "处理中").
-        pending_states=frozenset({"running"}),
-        # EVIDENCE: the same comment names "unknown" as a real agent_status. It is
-        # a RECOGNIZED-but-ambiguous legitimate state -> unknown (design §7-D).
-        # This is NOT the forbidden "unrecognized -> unknown": "unknown" here is
-        # an in-vocabulary Wazuh value whose SEMANTICS are unclear, exactly what
-        # the outcome word ``unknown`` is reserved for (§0 铁律).
-        ambiguous_states=frozenset({"unknown"}),
-        # EVIDENCE: wazuh.py:246 lower-cases agent_status before matching, so
-        # case-folding IS code-specified for Wazuh (§十三 permits adapter-specific
-        # normalization). No trim — wazuh.py does not trim, so neither do we.
-        case_insensitive=True,
-        # EVIDENCE: wazuh.py:243 reads the state from body["agent_status"], so a
-        # Mapping external_state carries the word under this key.
-        state_key="agent_status",
+        pending_states=frozenset(),
+        ambiguous_states=frozenset(),
+        case_insensitive=False,
+        state_key=None,
         evidence=(
-            "wazuh.py _CONFIRMED_AGENT_STATUSES (L97-99) + agent_status "
-            "comment (L94-96)"
+            "G1-B/G1-C: no trusted command-level effect vocabulary for ANY "
+            "verified Wazuh version; fail-closed (refuse) until real "
+            "command-effect read evidence exists (G1-A CONFIRMED UNSAFE; "
+            "decoupled from G2 version)"
         ),
     ),
     "shuffle": AdapterStateVocabulary(

@@ -114,6 +114,17 @@ EXEC_TOKEN = "tok-exec"
 VIEWER_TOKEN = "tok-viewer"
 ADMIN_TOKEN = "tok-admin"
 
+#: G1-C / B0 §15.4 — the TEST-ONLY fake adapter is the platform success-pipeline
+#: vehicle for the Manual Reconcile CROSS-LAYER stack too. The real Wazuh vocabulary
+#: is now EMPTY / fail-closed, so NO production adapter can carry a success fact over
+#: HTTP; the ``fake_read_adapter`` conftest fixture injects this identity's vocabulary
+#: AND its ``_EXTERNAL_REFERENCE_KEYS`` handle, so a migrated success test is a PURE
+#: identity swap (chain executor + reader name), NEVER a reopening of the real Wazuh
+#: vocabulary. The rejection / read-failure / 404 / 401 / 403 proofs below stay on the
+#: real production adapters (wazuh / shuffle) — those paths never reach the emptied
+#: vocabulary (a transport failure or a capability gate is decided before mapping).
+FAKE = "fakesuccess"
+
 #: A message LOADED with things that must NEVER reach a fact, a response, a log or an
 #: exception string (spec §十 / §二十二). If any path did ``str(exc)`` / echoed
 #: ``raw_evidence``, these substrings would surface — the hygiene tests assert they
@@ -315,6 +326,22 @@ def _wazuh_rows_no_reference():
     ]
 
 
+def _fake_rows(reference="fake-cmd-abc123", *, terminal_decision="succeeded"):
+    """G1-C / B0 §15.4 — a TEST-ONLY fake-adapter execute chain mirroring
+    ``_wazuh_rows`` but keyed on the fake identity: the requested/dispatched rows
+    carry ``executor=fakesuccess`` (so ``_extract_adapter`` -> ``registry.get`` ->
+    ``map_external_state`` all see the fake over the REAL HTTP stack) and the terminal
+    row carries the ``command_id`` handle the ``fake_read_adapter`` fixture registers
+    in ``_EXTERNAL_REFERENCE_KEYS``. This is the platform success-pipeline vehicle now
+    that the real Wazuh vocabulary is empty/refused. ``terminal_decision`` stays
+    parametrizable for the O5 dispatch-independence proof."""
+    return [
+        ("requested", {"executor": FAKE}),
+        ("dispatched", {"executor": FAKE}),
+        (terminal_decision, {"command_id": reference}),
+    ]
+
+
 def _seed_historical_outcome(
     db_session,
     execution_id,
@@ -446,20 +473,27 @@ def operators(monkeypatch):
 # spec §二十七 / §二十八 — THE CROSS-LAYER HTTP -> DB SUCCESS PATH
 # ===========================================================================
 class TestHttpToDbSuccess:
-    """The flagship A2-F proof (spec §二十七): a Wazuh read SUCCESS driven through the
-    REAL HTTP -> FastAPI -> Operator Auth -> Correlation -> Reference Extraction ->
+    """The flagship A2-F proof (spec §二十七): a read SUCCESS driven through the REAL
+    HTTP -> FastAPI -> Operator Auth -> Correlation -> Reference Extraction ->
     Registry -> FakeReadAdapter -> validate_observation -> map_external_state ->
     ExecutionOutcome INSERT -> DB pipeline, read back with a FRESH SELECT. This is
-    what A2-E could NOT do at the HTTP layer (its registry was empty)."""
+    what A2-E could NOT do at the HTTP layer (its registry was empty).
 
-    def test_http_wazuh_success_to_confirmed_success_in_db(
+    G1-C / B0 §15.4: the SUCCESS vehicle is the TEST-ONLY fake adapter — the real
+    Wazuh vocabulary is now EMPTY/refused (see TestRejectedMatrix's reversal), so the
+    platform success pipeline is proven on the fake identity, NEVER by reopening Wazuh.
+    """
+
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
+
+    def test_http_fake_success_to_confirmed_success_in_db(
         self, client, operators, db_session, monkeypatch
     ):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         log_before = _log_snapshot(db_session)
         assert _outcome_count(db_session) == 0
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         _inject_registry(monkeypatch, fake)
 
         r = _post(client, eid)
@@ -470,7 +504,7 @@ class TestHttpToDbSuccess:
         assert body["accepted"] is True
         assert body["outcome_status"] == "confirmed_success"
         assert body["source"] == MANUAL_RECONCILE_SOURCE
-        assert body["adapter"] == "wazuh"
+        assert body["adapter"] == FAKE
         assert body["execution_id"] == str(eid)
         assert fake.call_count == 1  # ONE read over the full stack (spec §十一)
         # The fact is REALLY in the DB — a fresh SELECT round-trip, NOT the response
@@ -484,13 +518,13 @@ class TestHttpToDbSuccess:
         # The dispatch log is byte-identical (spec §十四).
         assert _log_snapshot(db_session) == log_before
 
-    def test_http_wazuh_running_to_pending_in_db(
+    def test_http_fake_running_to_pending_in_db(
         self, client, operators, db_session, monkeypatch
     ):
         # spec §四: an in-progress external effect -> pending over the real stack.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running")))
 
         r = _post(client, eid)
 
@@ -498,14 +532,15 @@ class TestHttpToDbSuccess:
         assert r.json()["outcome_status"] == "pending"
         assert _only_fact(db_session, eid).outcome_status == "pending"
 
-    def test_http_wazuh_unknown_to_unknown_in_db(
+    def test_http_fake_unknown_to_unknown_in_db(
         self, client, operators, db_session, monkeypatch
     ):
-        # spec §四: a RECOGNIZED-but-ambiguous Wazuh state -> unknown (the legitimate
-        # unknown, NOT the forbidden "unrecognized -> unknown" downgrade).
+        # spec §四: a RECOGNIZED-but-ambiguous state -> unknown (the legitimate unknown,
+        # NOT the forbidden "unrecognized -> unknown" downgrade). G1-C: the real Wazuh
+        # vocabulary is empty, so this legitimate-unknown proof rides the fake adapter.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("unknown")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("unknown")))
 
         r = _post(client, eid)
 
@@ -520,15 +555,15 @@ class TestHttpToDbSuccess:
         # field — the response is a faithful view of the persisted fact, never a
         # separately fabricated verdict.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
 
         body = _post(client, eid).json()
         fact = _only_fact(db_session, eid)
 
         assert body["outcome_status"] == fact.outcome_status == "confirmed_success"
         assert body["source"] == fact.source == MANUAL_RECONCILE_SOURCE
-        assert body["adapter"] == fact.detail["adapter"] == "wazuh"
+        assert body["adapter"] == fact.detail["adapter"] == FAKE
         assert body["execution_id"] == str(fact.execution_id)
         # derived_outcome_status is COMPUTED on read (never stored) — with one fact it
         # equals that fact's own status.
@@ -541,11 +576,11 @@ class TestHttpToDbSuccess:
         # spec §七: with a historical confirmed_success (2h ago) and a fresh pending
         # read (now), the response's derived_outcome_status is the LATEST observation.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         _seed_historical_outcome(
             db_session, eid, status="confirmed_success", hours_ago=2
         )
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running")))
 
         body = _post(client, eid).json()
 
@@ -723,11 +758,15 @@ class TestRejectedMatrix:
         assert fake.call_count == 0  # RBAC short-circuits before the read
         assert _outcome_count(db_session) == 0
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_admin_may_reconcile_200(self, client, operators, db_session, monkeypatch):
         # can_execute covers admin too -> a successful reconcile (RBAC completeness).
+        # G1-C / B0 §15.4: the SUCCESS rides the TEST-ONLY fake adapter (real Wazuh is
+        # empty/refused); METHOD-scoped so the sibling 401/403/404/422 refusal proofs
+        # stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         r = _post(client, eid, token=ADMIN_TOKEN)
         assert r.status_code == 200
         assert r.json()["accepted"] is True
@@ -776,6 +815,31 @@ class TestRejectedMatrix:
         assert fake.call_count == 1  # the read DID succeed
         assert _outcome_count(db_session) == 0  # mapping refused it
 
+    @pytest.mark.parametrize(
+        "state", ["success", "completed", "confirmed", "done", "ok", "running", "unknown"]
+    )
+    def test_wazuh_former_evidenced_words_now_refused_422_0fact(
+        self, client, operators, db_session, monkeypatch, state
+    ):
+        # G1-C / B0 §15.4 REVERSAL (cross-layer HTTP mirror of the A2-E mapping-file
+        # reversal): the real Wazuh vocabulary is now EMPTY, so EVERY former evidenced
+        # word — read successfully over the REAL HTTP -> auth -> correlation ->
+        # extraction -> registry -> read stack — is refused at the 3.4.3-B mapping with
+        # UnrecognizedExternalState -> 422, ZERO Outcome Facts. The read DID succeed
+        # (call_count == 1): the refusal is at MAPPING, not transport, so it is NEVER
+        # reconciliation_failed and NEVER downgraded to unknown. NO fake fixture — this
+        # is the PURE production Wazuh refusal; it is exactly what the old
+        # success/running/unknown 200 anchors are reversed into.
+        eid = uuid.uuid4()
+        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        fake = FakeReadAdapter("wazuh", result=_result(state))
+        _inject_registry(monkeypatch, fake)
+        r = _post(client, eid)
+        assert r.status_code == 422
+        assert r.json()["detail"] == "reconcile validation failed"
+        assert fake.call_count == 1  # the read succeeded; the MAPPING refused
+        assert _outcome_count(db_session) == 0
+
     def test_read_transport_failure_is_the_only_appending_row(
         self, client, operators, db_session, monkeypatch
     ):
@@ -802,23 +866,29 @@ class TestRejectedMatrix:
 class TestAppendOnlyReplay:
     """spec §六: repeated reconciles INSERT a new row each time (never UPDATE / UPSERT /
     MERGE / DELETE); every historical row stays byte-identical. Driven over HTTP by
-    re-injecting a fresh reader per arrival (each POST is a full HTTP -> DB cycle)."""
+    re-injecting a fresh reader per arrival (each POST is a full HTTP -> DB cycle).
+
+    G1-C / B0 §15.4: the arrivals ride the TEST-ONLY fake adapter (the real Wazuh
+    vocabulary is empty/refused) so each append is a genuine SUCCESS/pending
+    observation, not a refusal — the append-only invariant needs real appended rows."""
+
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
 
     def test_three_arrivals_three_rows_history_immutable(
         self, client, operators, db_session, monkeypatch
     ):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         t1 = datetime.now(timezone.utc) - timedelta(hours=3)
         t2 = datetime.now(timezone.utc) - timedelta(hours=2)
         t3 = datetime.now(timezone.utc) - timedelta(hours=1)
 
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t1)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t1)))
         r1 = _post(client, eid)  # pending @ t1
         snap1 = {_fact_snapshot(f) for f in _facts(db_session, eid)}
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success", observed_at=t2)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success", observed_at=t2)))
         r2 = _post(client, eid)  # confirmed_success @ t2
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t3)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t3)))
         r3 = _post(client, eid)  # pending @ t3
 
         assert (r1.status_code, r2.status_code, r3.status_code) == (200, 200, 200)
@@ -838,15 +908,15 @@ class TestAppendOnlyReplay:
         # observed_at -> the derived state stays confirmed_success (derivation is by
         # observed_at, NOT by arrival order).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         t1 = datetime.now(timezone.utc) - timedelta(hours=3)
         t2 = datetime.now(timezone.utc) - timedelta(hours=1)
 
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t1)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t1)))
         _post(client, eid)  # T1 pending
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success", observed_at=t2)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success", observed_at=t2)))
         _post(client, eid)  # T2 confirmed_success
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t1)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t1)))
         r3 = _post(client, eid)  # T1 replay (old timestamp)
 
         rows = _facts(db_session, eid)
@@ -860,13 +930,13 @@ class TestAppendOnlyReplay:
         # spec §七: a newer-timestamped fact arriving FIRST is NOT overridden by an
         # older-timestamped fact arriving SECOND — derivation is observed_at DESC.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         newer = datetime.now(timezone.utc) - timedelta(hours=1)
         older = datetime.now(timezone.utc) - timedelta(hours=5)
 
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success", observed_at=newer)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success", observed_at=newer)))
         _post(client, eid)  # confirmed_success @ newer, arrives FIRST
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=older)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=older)))
         r2 = _post(client, eid)  # pending @ older, arrives SECOND
 
         rows = _facts(db_session, eid)
@@ -882,11 +952,15 @@ class TestDerivationCrossLayer:
     """The derived current state is ``derive_outcome_state()`` over ``observed_at DESC,
     id DESC`` — proven over the real HTTP response AND recomputed from the DB facts."""
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_latest_observed_at_wins(self, client, operators, db_session, monkeypatch):
+        # G1-C / B0 §15.4: the fresh pending read rides the TEST-ONLY fake adapter (real
+        # Wazuh is empty/refused); METHOD-scoped so the sibling wazuh read-failure /
+        # ORM-tiebreak derivation proofs stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         _seed_historical_outcome(db_session, eid, status="confirmed_success", hours_ago=2)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running")))
         body = _post(client, eid).json()
         assert body["derived_outcome_status"] == "pending"  # fresh (now) beats 2h-ago
         assert derive_outcome_state(_facts(db_session, eid)) == "pending"
@@ -960,13 +1034,17 @@ class TestO5CrossLayer:
         assert _only_fact(db_session, eid).outcome_status == "reconciliation_failed"
         assert _log_snapshot(db_session) == log_before  # dispatch log UNCHANGED
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_dispatch_failed_plus_read_success(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: the SUCCESS read rides the TEST-ONLY fake adapter (real Wazuh
+        # is empty/refused); METHOD-scoped so the sibling wazuh read-failure + dispatch-
+        # word-refusal proofs stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows(terminal_decision="failed"))
+        _seed_chain(db_session, eid, rows=_fake_rows(terminal_decision="failed"))
         log_before = _log_snapshot(db_session)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         body = _post(client, eid).json()
         assert body["outcome_status"] == "confirmed_success"  # LEGAL combo (spec §八)
         assert _only_fact(db_session, eid).outcome_status == "confirmed_success"
@@ -1024,21 +1102,26 @@ class TestIdentityIsolation:
         assert _log_snapshot(db_session) == log_before  # historical adapter/ref/operator intact
         assert _outcome_count(db_session) == 0  # no fact carries the attacker's values
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_operator_and_source_come_from_server_not_body(
         self, client, operators, db_session, monkeypatch
     ):
         # With the legal EMPTY body, operator is the authenticated human and source is
         # manual_reconcile — both server-fixed; adapter/reference come from history.
+        # G1-C / B0 §15.4: the SUCCESS rides the TEST-ONLY fake adapter, so the
+        # from-history adapter/reference are the fake identity's (still server-side,
+        # still NEVER client-supplied); METHOD-scoped so the smuggling-refusal proofs
+        # stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows(), operator="ops-1")
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows(), operator="ops-1")
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         _post(client, eid, body={})
         fact = _only_fact(db_session, eid)
         assert fact.operator == OPERATOR == "exec-op"  # from the token, not the body
         assert fact.operator != "ops-1"  # not the dispatch operator
         assert fact.source == MANUAL_RECONCILE_SOURCE  # server-fixed
-        assert fact.detail["adapter"] == "wazuh"  # from history, not the body
-        assert fact.detail["external_reference"] == "wazuh-cmd-abc123"  # from history
+        assert fact.detail["adapter"] == FAKE  # from history, not the body
+        assert fact.detail["external_reference"] == "fake-cmd-abc123"  # from history
 
     def test_single_smuggled_field_also_rejected(self, client, operators, db_session):
         # Even ONE extra field is a 422 (extra="forbid" is all-or-nothing).
@@ -1091,15 +1174,19 @@ class TestCredentialIsolation:
             assert secret not in fact_blob  # never in the DB
             assert secret not in r.text  # never in the HTTP body
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_secret_laden_raw_evidence_never_reaches_db_or_body(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: the SUCCESS read (whose raw_evidence must be redacted) rides
+        # the TEST-ONLY fake adapter — a redaction proof needs a PERSISTED success fact,
+        # which the empty/refused real Wazuh vocabulary can no longer produce.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         _inject_registry(
             monkeypatch,
             FakeReadAdapter(
-                "wazuh",
+                FAKE,
                 result=_result(
                     "success",
                     raw_evidence={
@@ -1119,12 +1206,16 @@ class TestCredentialIsolation:
             assert secret not in fact_blob
             assert secret not in r.text
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_operator_token_never_persisted_anywhere(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: rides the TEST-ONLY fake adapter — this proof reads back a
+        # PERSISTED success fact (``_only_fact``), which the empty/refused real Wazuh
+        # vocabulary can no longer produce.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         r = _post(client, eid)
         assert EXEC_TOKEN not in r.text
         assert EXEC_TOKEN not in json.dumps(_only_fact(db_session, eid).detail)
@@ -1179,16 +1270,20 @@ class TestNoRetryNoExecution:
         recon_modules, _ = _import_surface(reconcile_module)
         assert not any(m.startswith("app.services.executions") for m in recon_modules)
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_runtime_spy_no_dispatch_rows(
         self, client, operators, db_session, monkeypatch
     ):
         # Runtime half: the full HTTP flow adds NO execution_log row and invokes NO
         # executor — the Outcome layer records facts, it never re-enters Dispatch.
+        # G1-C / B0 §15.4: rides the TEST-ONLY fake adapter so the flow is a genuine
+        # SUCCESS appending exactly ONE Outcome fact (``_outcome_count == 1``) — the
+        # empty/refused real Wazuh vocabulary would append zero and mask the spy proof.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         log_before = _log_snapshot(db_session)
         rows_before = len(_all_log_rows(db_session))
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         _post(client, eid)
         assert len(_all_log_rows(db_session)) == rows_before  # no new dispatch row
         assert _log_snapshot(db_session) == log_before
@@ -1216,12 +1311,16 @@ class TestNoWebhookCoupling:
         # the shared PERSISTENCE vocabulary IS allowed (it is not the ingress).
         assert "app.services.outcomes.webhook" in modules
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_reconcile_source_is_never_webhook(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: rides the TEST-ONLY fake adapter — this proof reads back a
+        # PERSISTED success fact to check its source/operator, which the empty/refused
+        # real Wazuh vocabulary can no longer produce.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         _post(client, eid)
         fact = _only_fact(db_session, eid)
         assert fact.source == MANUAL_RECONCILE_SOURCE  # never "webhook"
@@ -1248,13 +1347,18 @@ class TestExecutionLogReadonly:
     """The FULL F flow leaves execution_log byte-identical — EVERY column §十四 names.
     SELECT only, never UPDATE / DELETE."""
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_log_unchanged_over_success_http(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: this is the SUCCESS-flow log-immutability proof, so it rides
+        # the TEST-ONLY fake adapter — the real Wazuh vocabulary is empty/refused and
+        # would turn this into a 422 rejection (the log is unchanged either way, so a
+        # wazuh vehicle would be a FALSE GREEN that no longer exercises a success).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         before = _log_snapshot(db_session)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         _post(client, eid)
         assert _log_snapshot(db_session) == before
 
@@ -1284,11 +1388,15 @@ class TestOutcomeHistoricalImmutability:
     """Existing Outcome Facts are byte-identical after the full flow; only a new INSERT
     is allowed (spec §十五)."""
 
+    # G1-C / B0 §15.4: the new INSERT rides the TEST-ONLY fake adapter (real Wazuh is
+    # empty/refused) — the immutability proof needs a genuine appended success fact.
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
+
     def test_two_historical_facts_unchanged_after_reconcile(
         self, client, operators, db_session, monkeypatch
     ):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         h1 = _seed_historical_outcome(
             db_session, eid, status="confirmed_success", source="webhook", hours_ago=3
         )
@@ -1297,7 +1405,7 @@ class TestOutcomeHistoricalImmutability:
             operator="exec-op", hours_ago=2,
         )
         before = {_fact_snapshot(h1), _fact_snapshot(h2)}
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         _post(client, eid)
         rows = _facts(db_session, eid)
         assert len(rows) == 3  # 2 historical + 1 new
@@ -1316,13 +1424,17 @@ class TestTransactionCrossLayer:
     fact. A2-E proved the service-level rollback; F proves the router maps it to 500 END
     TO END over HTTP."""
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_success_commit_failure_500_zero_fact(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: the SUCCESS edge (whose persistence is made to fail -> 500)
+        # rides the TEST-ONLY fake adapter; METHOD-scoped so the sibling Shuffle
+        # failure-edge 500 proof stays in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         log_before = _log_snapshot(db_session)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
 
         def _commit_boom():
             raise SQLAlchemyError("simulated commit failure")
@@ -1353,12 +1465,19 @@ class TestTransactionCrossLayer:
         assert _outcome_count(db_session) == 0
         assert _log_snapshot(db_session) == log_before
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_no_partial_fact_lingers_after_rollback_http(
         self, client, operators, db_session, monkeypatch
     ):
+        # G1-C / B0 §15.4: the good (200) reconcile rides the TEST-ONLY fake adapter, so
+        # the commit is restored EXPLICITLY (NOT ``monkeypatch.undo()`` — the
+        # ``monkeypatch`` fixture is SHARED with ``fake_read_adapter``, so ``undo()``
+        # would also revert the fixture's vocabulary + reference-key patches and the
+        # second, good reconcile would be refused instead of appending its one fact).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
+        real_commit = db_session.commit
 
         def _commit_boom():
             raise SQLAlchemyError("simulated commit failure")
@@ -1367,8 +1486,8 @@ class TestTransactionCrossLayer:
         r = _post(client, eid)
         assert r.status_code == 500
         assert _outcome_count(db_session) == 0
-        monkeypatch.undo()  # restore BOTH commit and the registry factory
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        monkeypatch.setattr(db_session, "commit", real_commit)  # restore ONLY the commit
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         r2 = _post(client, eid)
         assert r2.status_code == 200
         assert _outcome_count(db_session) == 1  # no partial fact lingered
@@ -1398,15 +1517,18 @@ class TestProductionRegistryEmpty:
         assert r.json()["detail"] == "adapter read unsupported"
         assert _outcome_count(db_session) == 0
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_injection_does_not_mutate_production_default(
         self, client, operators, db_session, monkeypatch
     ):
         # After injecting a fake for one request, the REAL production factory (this
         # module's own import, never patched) is STILL empty — the monkeypatch rebinds
-        # only the service module's name, never the source function.
+        # only the service module's name, never the source function. G1-C / B0 §15.4:
+        # the injected 200 rides the TEST-ONLY fake adapter (real Wazuh is empty/refused),
+        # and the production factory is then re-proved to reject the REAL wazuh identity.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         r = _post(client, eid)
         assert r.status_code == 200  # succeeds via the injected registry
         real = default_read_adapter_registry()  # the UNPATCHED source factory
@@ -1436,16 +1558,21 @@ class TestConcurrencySimulation:
     historical rows immutable, derived state deterministic (order-independent), no
     session corruption, no retry."""
 
+    # G1-C / B0 §15.4: the successful arrivals ride the TEST-ONLY fake adapter (the real
+    # Wazuh vocabulary is empty/refused); the interleaved Shuffle read-FAILURE stays a
+    # pure production reconciliation_failed.
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
+
     def test_two_arrivals_both_retained_deterministic(
         self, client, operators, db_session, monkeypatch
     ):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         t_pending = datetime.now(timezone.utc) - timedelta(hours=2)
         t_success = datetime.now(timezone.utc) - timedelta(hours=1)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t_pending)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t_pending)))
         r1 = _post(client, eid)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success", observed_at=t_success)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success", observed_at=t_success)))
         r2 = _post(client, eid)
         assert (r1.status_code, r2.status_code) == (200, 200)
         rows = _facts(db_session, eid)
@@ -1459,12 +1586,12 @@ class TestConcurrencySimulation:
     ):
         # The SAME two observations in the OPPOSITE arrival order derive IDENTICALLY.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         t_pending = datetime.now(timezone.utc) - timedelta(hours=2)
         t_success = datetime.now(timezone.utc) - timedelta(hours=1)
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success", observed_at=t_success)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success", observed_at=t_success)))
         _post(client, eid)  # confirmed_success (newer) FIRST
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("running", observed_at=t_pending)))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("running", observed_at=t_pending)))
         r2 = _post(client, eid)  # pending (older) SECOND
         rows = _facts(db_session, eid)
         assert len(rows) == 2
@@ -1477,9 +1604,9 @@ class TestConcurrencySimulation:
         # Two DIFFERENT executions reconciled interleaved never corrupt each other's
         # session state or cross-write facts.
         eid_a, eid_b = uuid.uuid4(), uuid.uuid4()
-        _seed_chain(db_session, eid_a, rows=_wazuh_rows())
+        _seed_chain(db_session, eid_a, rows=_fake_rows())
         _seed_chain(db_session, eid_b, rows=_shuffle_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         ra = _post(client, eid_a)
         _inject_registry(monkeypatch, FakeReadAdapter("shuffle", error=TimeoutError("t")))
         rb = _post(client, eid_b)
@@ -1498,10 +1625,14 @@ class TestHttpSemantics:
     response ever carries accepted=true, the body leaks no secret, and ONE response
     schema is reused (no second envelope)."""
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_success_200_accepted_true(self, client, operators, db_session, monkeypatch):
+        # G1-C / B0 §15.4: the 200 SUCCESS rides the TEST-ONLY fake adapter (real Wazuh
+        # is empty/refused); METHOD-scoped so the read-failure / rejection-matrix /
+        # secret-leak proofs stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
         r = _post(client, eid)
         assert r.status_code == 200 and r.json()["accepted"] is True
 
@@ -1549,11 +1680,14 @@ class TestHttpSemantics:
             assert "wazuh-cmd-abc123" not in r.text  # no external-reference echo
             assert str(eid) not in r.text  # no execution_id echo in a static detail
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_persistence_500_not_accepted(self, client, operators, db_session, monkeypatch):
         # The 500 (persistence failure) body is a static detail, never accepted=true.
+        # G1-C / B0 §15.4: the SUCCESS edge (made to fail persistence -> 500) rides the
+        # TEST-ONLY fake adapter (real Wazuh is empty/refused -> would be 422, not 500).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        _inject_registry(monkeypatch, FakeReadAdapter("wazuh", result=_result("success")))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        _inject_registry(monkeypatch, FakeReadAdapter(FAKE, result=_result("success")))
 
         def _commit_boom():
             raise SQLAlchemyError("boom")

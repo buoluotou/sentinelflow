@@ -115,6 +115,14 @@ RECONCILE = "/api/v1/executions/{eid}/reconcile"
 #: NEVER the dispatch chain's ``operator`` (``ops-1``), NEVER a client-supplied string.
 OPERATOR = "exec-op"
 
+#: G1-C / B0 §15.4 — the TEST-ONLY fake adapter is the platform success-pipeline
+#: vehicle for the Manual Reconcile path too. The real Wazuh vocabulary is now
+#: EMPTY / fail-closed, so NO production adapter can carry a success fact; the
+#: ``fake_read_adapter`` conftest fixture injects this identity's vocabulary AND its
+#: ``_EXTERNAL_REFERENCE_KEYS`` handle so a migrated success test is a pure identity
+#: swap (executor + reader name), NEVER a reopening of the real Wazuh vocabulary.
+FAKE = "fakesuccess"
+
 #: A message LOADED with things that must NEVER reach a fact or a response (spec §八
 #: / §十五 / §二十三). If any path did ``str(exc)`` / echoed ``raw_evidence`` into
 #: ``detail``, these substrings would surface — the hygiene tests assert they do not.
@@ -292,6 +300,21 @@ def _wazuh_rows_no_reference():
     ]
 
 
+def _fake_rows(reference="fake-cmd-abc123", *, terminal_decision="succeeded"):
+    """G1-C / B0 §15.4 — a TEST-ONLY fake-adapter execute chain mirroring
+    ``_wazuh_rows`` but keyed on the fake identity: the requested/dispatched rows
+    carry ``executor=fakesuccess`` (so ``_extract_adapter`` -> ``registry.get`` ->
+    ``map_external_state`` all see the fake) and the terminal row carries the
+    ``command_id`` handle the ``fake_read_adapter`` fixture registers in
+    ``_EXTERNAL_REFERENCE_KEYS``. This is the platform success-pipeline vehicle now
+    that the real Wazuh vocabulary is empty/refused."""
+    return [
+        ("requested", {"executor": FAKE}),
+        ("dispatched", {"executor": FAKE}),
+        (terminal_decision, {"command_id": reference}),
+    ]
+
+
 def _seed_historical_outcome(
     db_session,
     execution_id,
@@ -425,18 +448,28 @@ def operators(monkeypatch):
 class TestSuccessMapping:
     """A reader EXISTS (test-injected) and ``read()`` SUCCEEDS: the raw
     ``external_state`` is validated (3.4.3-A) then mapped (3.4.3-B) onto the outcome
-    vocabulary, and EXACTLY ONE mapped fact is appended. Wazuh is the ONLY adapter
-    with a code-evidenced vocabulary today, so it is the ONLY one that maps; every
-    shuffle / thehive / mock state is refused (§四, ``TestRejectedZeroFact``)."""
+    vocabulary, and EXACTLY ONE mapped fact is appended.
+
+    G1-C / B0 §15.4: the real Wazuh vocabulary is now EMPTY / fail-closed, so NO
+    production adapter maps a success word. The platform success-pipeline proof is
+    carried by the TEST-ONLY fake adapter (``fake_read_adapter`` fixture + ``_fake_rows``
+    + ``FakeReadAdapter(FAKE, ...)``) — a pure identity swap that NEVER reopens the real
+    Wazuh vocabulary. Every shuffle / thehive / mock / blank state is still refused
+    (§四, ``TestRejectedZeroFact``); the blank-state validation proof below stays on the
+    real (refused) Wazuh path, and the Wazuh former-evidenced-word reversal lives in
+    ``TestRejectedZeroFact``."""
+
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
 
     @pytest.mark.parametrize(
         "state", ["success", "completed", "confirmed", "done", "ok"]
     )
     def test_01_wazuh_terminal_success_maps_to_confirmed_success(self, db_session, state):
-        # spec §十八 item 1 + §四: EVERY Wazuh evidenced success word -> confirmed_success.
+        # spec §十八 item 1 + §四 (G1-C: fake adapter): EVERY evidenced success word ->
+        # confirmed_success.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result(state))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result(state))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.accepted is True
         assert response.outcome_status == "confirmed_success"
@@ -444,36 +477,37 @@ class TestSuccessMapping:
         fact = _only_fact(db_session, eid)
         assert fact.outcome_status == "confirmed_success"
         assert fact.detail["observed_state"] == state  # RAW word preserved
-        assert fact.detail["normalized_state"] == state  # wazuh is already lower-case
+        assert fact.detail["normalized_state"] == state  # fake is already lower-case
         assert set(fact.detail) == SUCCESS_DETAIL_KEYS
 
     def test_02_wazuh_running_maps_to_pending(self, db_session):
-        # spec §十八 item 2: an in-progress external effect -> pending (NEVER guessed
-        # to confirmed_success, NEVER unknown).
+        # spec §十八 item 2 (G1-C: fake adapter): an in-progress external effect ->
+        # pending (NEVER guessed to confirmed_success, NEVER unknown).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("running"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("running"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status == "pending"
         assert _only_fact(db_session, eid).outcome_status == "pending"
 
     def test_03_wazuh_unknown_maps_to_unknown(self, db_session):
-        # spec §十八 item 3: a RECOGNIZED-but-ambiguous Wazuh state -> unknown. This is
-        # the legitimate ``unknown``, NOT the forbidden "unrecognized -> unknown"
-        # downgrade (that is refused, item 8).
+        # spec §十八 item 3 (G1-C: fake adapter): a RECOGNIZED-but-ambiguous state ->
+        # unknown. This is the legitimate ``unknown``, NOT the forbidden "unrecognized
+        # -> unknown" downgrade (that is refused, item 8).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("unknown"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("unknown"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status == "unknown"
         assert _only_fact(db_session, eid).outcome_status == "unknown"
 
     def test_wazuh_case_insensitive_success(self, db_session):
-        # §四: Wazuh lower-cases agent_status (its OWN code-evidenced normalization), so
-        # "SUCCESS" maps too — observed_state stays RAW, normalized_state is folded.
+        # §四 (G1-C: fake adapter): the fake vocabulary lower-cases agent_status (its
+        # case_insensitive normalization), so "SUCCESS" maps too — observed_state stays
+        # RAW, normalized_state is folded.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("SUCCESS"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("SUCCESS"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status == "confirmed_success"
         fact = _only_fact(db_session, eid)
@@ -481,11 +515,12 @@ class TestSuccessMapping:
         assert fact.detail["normalized_state"] == "success"
 
     def test_wazuh_mapping_form_agent_status(self, db_session):
-        # §四: a structured external_state yields its word under Wazuh's evidenced
-        # state_key (``agent_status``) — the Mapping branch of _extract_state_word.
+        # §四 (G1-C: fake adapter): a structured external_state yields its word under the
+        # fake's evidenced state_key (``agent_status``) — the Mapping branch of
+        # _extract_state_word.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result({"agent_status": "success"}))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result({"agent_status": "success"}))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status == "confirmed_success"
         assert _only_fact(db_session, eid).detail["normalized_state"] == "success"
@@ -503,13 +538,13 @@ class TestSuccessMapping:
         assert _outcome_count(db_session) == 0  # but validation refused it pre-mapping
 
     def test_same_word_is_adapter_specific_no_copied_vocabulary(self, db_session):
-        # §四 "不要复制词表": the SAME word "success" maps to confirmed_success for
-        # WAZUH (evidenced) but is REFUSED for SHUFFLE (empty vocabulary). Proves the
-        # outcome comes from map_external_state's per-adapter table, NOT a global word
-        # list copied into the reconcile path.
+        # §四 "不要复制词表" (G1-C: fake adapter): the SAME word "success" maps to
+        # confirmed_success for the FAKE adapter (evidenced) but is REFUSED for SHUFFLE
+        # (empty vocabulary). Proves the outcome comes from map_external_state's
+        # per-adapter table, NOT a global word list copied into the reconcile path.
         wid = uuid.uuid4()
-        _seed_chain(db_session, wid, rows=_wazuh_rows())
-        wfake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, wid, rows=_fake_rows())
+        wfake = FakeReadAdapter(FAKE, result=_result("success"))
         wresp = reconcile_execution(db_session, wid, OPERATOR, ReadAdapterRegistry([wfake]))
         assert wresp.outcome_status == "confirmed_success"
 
@@ -524,13 +559,13 @@ class TestSuccessMapping:
         # §四: the service's word is EXACTLY map_external_state(validate_observation(obs))
         # recomputed here independently — one vocabulary source, no divergence.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         obs = ExternalObservation(
             execution_id=eid,
-            adapter="wazuh",
-            external_reference="wazuh-cmd-abc123",
+            adapter=FAKE,
+            external_reference="fake-cmd-abc123",
             external_state="success",
             observed_at=datetime.now(timezone.utc),
             source=MANUAL_RECONCILE_SOURCE,
@@ -543,8 +578,8 @@ class TestSuccessMapping:
         # cannot be reconciliation_failed (StateMapping.__post_init__ refuses it). The
         # read-failure verdict is impossible on the success edge.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status != "reconciliation_failed"
         fact = _only_fact(db_session, eid)
@@ -555,9 +590,9 @@ class TestSuccessMapping:
         # spec §七: a reliable EXTERNAL timestamp is used as the fact time and declared
         # observed_at_kind="external".
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         when = datetime.now(timezone.utc) - timedelta(minutes=5)
-        fake = FakeReadAdapter("wazuh", result=_result("success", observed_at=when))
+        fake = FakeReadAdapter(FAKE, result=_result("success", observed_at=when))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.observed_at_kind == "external"
         assert response.observed_at.tzinfo is not None  # AWARE
@@ -566,8 +601,8 @@ class TestSuccessMapping:
         # spec §七 / §八: an ABSENT external timestamp (A1 contract's None) is supplied
         # by the platform as the SERVER OBSERVATION time, declared "server-observation".
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("success"))  # observed_at=None
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("success"))  # observed_at=None
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.observed_at_kind == "server-observation"
         assert response.observed_at.tzinfo is not None
@@ -665,6 +700,25 @@ class TestRejectedZeroFact:
         assert _outcome_count(db_session) == 0
         assert issubclass(UnrecognizedExternalState, ContractValidationFailure)
 
+    @pytest.mark.parametrize(
+        "state", ["success", "completed", "confirmed", "done", "ok", "running", "unknown"]
+    )
+    def test_wazuh_former_evidenced_words_are_now_refused_zero_fact(self, db_session, state):
+        # G1-C / B0 §15.4 REVERSAL (the manual-path mirror of the webhook/mapping
+        # reversals): the real Wazuh vocabulary is now EMPTY, so EVERY former
+        # code-evidenced word — a SUCCESSFUL read of "success"/"running"/"unknown"/...
+        # — is REFUSED at the 3.4.3-B mapping with UnrecognizedExternalState and writes
+        # ZERO facts. The read DID succeed (call_count==1); the refusal is at MAPPING,
+        # not transport, so it is NEVER reconciliation_failed. Runs in the PRODUCTION
+        # state (no fake fixture on this class) — the real Wazuh vocabulary is empty.
+        eid = uuid.uuid4()
+        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        fake = FakeReadAdapter("wazuh", result=_result(state))
+        with pytest.raises(UnrecognizedExternalState):
+            reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
+        assert fake.call_count == 1  # the read DID succeed
+        assert _outcome_count(db_session) == 0
+
     def test_09_missing_reference_http_422_zero_fact(self, client, operators, db_session):
         # spec §十八 item 9 + §十四: a wazuh chain with NO command_id -> the reference
         # gate (which runs BEFORE the registry) raises MissingExternalReference -> 422,
@@ -699,13 +753,19 @@ class TestRejectedZeroFact:
 # spec §十八 items 11-15 + §九 / §十 — APPEND-ONLY persistence
 # ===========================================================================
 class TestPersistence:
-    """Both edges INSERT exactly one row and never mutate history (spec §九 / §十)."""
+    """Both edges INSERT exactly one row and never mutate history (spec §九 / §十).
+
+    G1-C / B0 §15.4: the SUCCESS edge runs on the TEST-ONLY fake adapter (the real
+    Wazuh vocabulary is empty/refused); the FAILURE edge (shuffle read error ->
+    reconciliation_failed) is unchanged — it never enters the mapper."""
+
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
 
     def test_11_success_appends_exactly_one(self, db_session):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         assert _outcome_count(db_session) == 0
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert _outcome_count(db_session) == 1
 
@@ -720,9 +780,9 @@ class TestPersistence:
     def test_13_repeated_success_appends_one_each(self, db_session):
         # spec §九: a repeat reconcile is a NEW observation, never an UPDATE / dedup.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         for expected in (1, 2, 3):
-            fake = FakeReadAdapter("wazuh", result=_result("success"))
+            fake = FakeReadAdapter(FAKE, result=_result("success"))
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
             assert len(_facts(db_session, eid)) == expected
         ids = [f.id for f in _facts(db_session, eid)]
@@ -749,12 +809,12 @@ class TestPersistence:
     def test_15_execution_log_unchanged_on_both_edges(self, db_session):
         # spec §十二 / §十五: NEITHER edge mutates the dispatch log (O5 — the Outcome
         # layer records facts, it never rewrites Dispatch history).
-        for rows, kind in ((_wazuh_rows(), "success"), (_shuffle_rows(), "failure")):
+        for rows, kind in ((_fake_rows(), "success"), (_shuffle_rows(), "failure")):
             eid = uuid.uuid4()
             _seed_chain(db_session, eid, rows=rows)
             before = _log_snapshot(db_session)
             if kind == "success":
-                fake = FakeReadAdapter("wazuh", result=_result("success"))
+                fake = FakeReadAdapter(FAKE, result=_result("success"))
             else:
                 fake = FakeReadAdapter("shuffle", error=TimeoutError("t"))
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
@@ -765,15 +825,21 @@ class TestPersistence:
 # spec §十八 items 16-20 + §七 / §八 / §十五 / §二十三 — SECURITY
 # ===========================================================================
 class TestSecurity:
-    """The fact's provenance is server-fixed and its evidence is secret-free."""
+    """The fact's provenance is server-fixed and its evidence is secret-free.
+
+    G1-C / B0 §15.4: the SUCCESS-edge security proofs (operator/source/response/detail)
+    run on the TEST-ONLY fake adapter; the FAILURE-edge credential proof (test_18,
+    shuffle read error) is unchanged — it never enters the mapper."""
+
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
 
     def test_16_operator_is_the_authenticated_human(self, db_session):
         # spec §七 / item 16: the fact operator is the reconcile HUMAN (OPERATOR), set
         # server-side — NEVER the dispatch chain's operator ("ops-1") and NEVER the
         # webhook machine domain ("adapter:...").
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows(), operator="ops-1")
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, eid, rows=_fake_rows(), operator="ops-1")
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         fact = _only_fact(db_session, eid)
         assert fact.operator == OPERATOR == "exec-op"
@@ -784,7 +850,7 @@ class TestSecurity:
         # spec §七 / §八 / item 17: BOTH edges stamp source=manual_reconcile (never
         # "webhook"), fixed server-side.
         for rows, adapter, kw in (
-            (_wazuh_rows(), "wazuh", {"result": _result("success")}),
+            (_fake_rows(), FAKE, {"result": _result("success")}),
             (_shuffle_rows(), "shuffle", {"error": TimeoutError("t")}),
         ):
             eid = uuid.uuid4()
@@ -812,9 +878,9 @@ class TestSecurity:
         # spec §二十三 / item 19: even when the read carries secrets, the RESPONSE
         # envelope echoes none of them.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         fake = FakeReadAdapter(
-            "wazuh",
+            FAKE,
             result=_result(
                 "success",
                 raw_evidence={
@@ -833,9 +899,9 @@ class TestSecurity:
         # is NOT persisted — only the mapped evidence is — so a secret in raw_evidence
         # never reaches the fact, and redact_detail() is the final gate.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         fake = FakeReadAdapter(
-            "wazuh",
+            FAKE,
             result=_result(
                 "success",
                 raw_evidence={
@@ -946,17 +1012,19 @@ class TestIsolation:
             ):
                 assert forbidden not in names
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_26_no_retry_sleep_backoff(self, db_session):
         # item 26 + spec §十七: no retry / sleep / backoff library is imported, and ONE
         # read() runs per reconcile (the success path re-extracts context read-only but
-        # NEVER re-invokes read()).
+        # NEVER re-invokes read()). G1-C: the runtime read runs on the TEST-ONLY fake
+        # adapter (the real Wazuh vocabulary is empty/refused).
         for modules, names in (_reconcile_import_surface(), _persist_import_surface()):
             for token in ("retry", "tenacity", "backoff", "sleep"):
                 assert not any(token in m for m in modules)
                 assert not any(token in n for n in names)
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert fake.call_count == 1
         assert len(fake.requests) == 1
@@ -997,16 +1065,21 @@ class TestRollback:
     """A persistence failure on EITHER edge rolls back -> OutcomePersistenceError ->
     ZERO partial facts, never ``accepted=true`` (spec §十六)."""
 
+    # G1-C / B0 §15.4: the SUCCESS-edge rollback proofs ride the TEST-ONLY fake adapter
+    # (the real Wazuh vocabulary is empty/refused); the fixture is ADDITIVE, so test_31's
+    # Shuffle failure-edge rollback below stays a pure production proof.
+    pytestmark = pytest.mark.usefixtures("fake_read_adapter")
+
     def test_30_success_persistence_rollback_zero_fact(self, db_session, monkeypatch):
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
         log_before = _log_snapshot(db_session)
 
         def _commit_boom():
             raise SQLAlchemyError("simulated commit failure")
 
         monkeypatch.setattr(db_session, "commit", _commit_boom)
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         with pytest.raises(OutcomePersistenceError):
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert _outcome_count(db_session) == 0  # the flushed INSERT was rolled back
@@ -1029,20 +1102,25 @@ class TestRollback:
 
     def test_32_no_partial_fact_lingers_after_rollback(self, db_session, monkeypatch):
         # item 32: a rolled-back attempt leaves NO partial row — a later good reconcile
-        # produces EXACTLY one fact.
+        # produces EXACTLY one fact. G1-C / B0 §15.4: the good reconcile rides the
+        # TEST-ONLY fake adapter, so the commit is restored EXPLICITLY (NOT
+        # ``monkeypatch.undo()``, which — the ``monkeypatch`` fixture being SHARED with
+        # ``fake_read_adapter`` — would also revert the fixture's vocabulary +
+        # reference-key patches and break the second, good reconcile).
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        real_commit = db_session.commit
 
         def _commit_boom():
             raise SQLAlchemyError("simulated commit failure")
 
         monkeypatch.setattr(db_session, "commit", _commit_boom)
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         with pytest.raises(OutcomePersistenceError):
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert _outcome_count(db_session) == 0
-        monkeypatch.undo()  # restore the real commit
-        fake2 = FakeReadAdapter("wazuh", result=_result("success"))
+        monkeypatch.setattr(db_session, "commit", real_commit)  # restore ONLY the commit
+        fake2 = FakeReadAdapter(FAKE, result=_result("success"))
         reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake2]))
         assert _outcome_count(db_session) == 1
 
@@ -1067,13 +1145,17 @@ class TestO5DispatchIndependence:
         assert _only_fact(db_session, eid).outcome_status == "reconciliation_failed"
         assert _log_snapshot(db_session) == log_before
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_o5_dispatch_failed_plus_read_success(self, db_session):
-        # dispatch says "failed", but a Wazuh read SUCCEEDS and maps -> confirmed_success
+        # dispatch says "failed", but the read SUCCEEDS and maps -> confirmed_success
         # is LEGAL (spec §十二). The outcome comes from the mapping, NOT the dispatch word.
+        # G1-C / B0 §15.4: the SUCCESS read rides the TEST-ONLY fake adapter (the real
+        # Wazuh vocabulary is empty/refused); METHOD-scoped so the two sibling wazuh
+        # refusal / read-failure proofs stay in PURE production state.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows(terminal_decision="failed"))
+        _seed_chain(db_session, eid, rows=_fake_rows(terminal_decision="failed"))
         log_before = _log_snapshot(db_session)
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert response.outcome_status == "confirmed_success"
         assert _only_fact(db_session, eid).outcome_status == "confirmed_success"
@@ -1101,11 +1183,17 @@ class TestManualPersistUnit:
     It does NOT re-run correlation (``execution_id`` is a plain non-FK column), so a
     bare UUID suffices; these pin validate -> map -> redact -> append in isolation."""
 
+    # G1-C / B0 §15.4: ``persist_reconcile_outcome`` takes ``adapter`` + ``external_reference``
+    # DIRECTLY (no registry, no ``_extract_reference``), so the UNIT-layer ``fake_adapter_vocab``
+    # fixture is the minimal sufficient injection: the SUCCESS words ride the TEST-ONLY fake
+    # adapter while the refusal unit tests below stay pure-production wazuh / shuffle / mock.
+    pytestmark = pytest.mark.usefixtures("fake_adapter_vocab")
+
     def test_unit_success_appends_mapped_fact(self, db_session):
         eid = uuid.uuid4()
         out = persist_reconcile_outcome(
-            db_session, execution_id=eid, adapter="wazuh",
-            external_reference="wazuh-cmd-abc123", external_state="success",
+            db_session, execution_id=eid, adapter=FAKE,
+            external_reference="fake-cmd-abc123", external_state="success",
             observed_at=None, operator=OPERATOR,
         )
         assert isinstance(out, ReconciledOutcome)
@@ -1122,7 +1210,7 @@ class TestManualPersistUnit:
         eid = uuid.uuid4()
         when = datetime.now(timezone.utc) - timedelta(minutes=5)
         out = persist_reconcile_outcome(
-            db_session, execution_id=eid, adapter="wazuh", external_reference="ref",
+            db_session, execution_id=eid, adapter=FAKE, external_reference="ref",
             external_state="ok", observed_at=when, operator=OPERATOR,
         )
         assert out.observed_at_kind == "external"
@@ -1175,7 +1263,7 @@ class TestManualPersistUnit:
         monkeypatch.setattr(db_session, "commit", _commit_boom)
         with pytest.raises(OutcomePersistenceError):
             persist_reconcile_outcome(
-                db_session, execution_id=eid, adapter="wazuh", external_reference="ref",
+                db_session, execution_id=eid, adapter=FAKE, external_reference="ref",
                 external_state="success", observed_at=None, operator=OPERATOR,
             )
         assert _outcome_count(db_session) == 0
@@ -1184,7 +1272,7 @@ class TestManualPersistUnit:
         # spec §十一: no derived_state is ever written (computed on read only).
         eid = uuid.uuid4()
         persist_reconcile_outcome(
-            db_session, execution_id=eid, adapter="wazuh", external_reference="ref",
+            db_session, execution_id=eid, adapter=FAKE, external_reference="ref",
             external_state="success", observed_at=None, operator=OPERATOR,
         )
         fact = _only_fact(db_session, eid)
@@ -1200,16 +1288,20 @@ class TestHttpEnvelope:
     """BOTH real exits return the SAME frozen ``ManualReconcileResponse`` with
     ``accepted=True``; A2-E adds NO field and creates NO second schema."""
 
+    @pytest.mark.usefixtures("fake_read_adapter")
     def test_success_service_returns_200_envelope(self, db_session):
+        # G1-C / B0 §15.4: the 200 SUCCESS envelope rides the TEST-ONLY fake adapter
+        # (the real Wazuh vocabulary is empty/refused); METHOD-scoped so the sibling
+        # Shuffle failure-envelope + structural-schema proofs stay pure-production.
         eid = uuid.uuid4()
-        _seed_chain(db_session, eid, rows=_wazuh_rows())
-        fake = FakeReadAdapter("wazuh", result=_result("success"))
+        _seed_chain(db_session, eid, rows=_fake_rows())
+        fake = FakeReadAdapter(FAKE, result=_result("success"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert isinstance(response, ManualReconcileResponse)
         assert response.accepted is True
         assert response.outcome_status == "confirmed_success"
         assert response.source == MANUAL_RECONCILE_SOURCE
-        assert response.adapter == "wazuh"
+        assert response.adapter == FAKE
         assert response.execution_id == eid
 
     def test_failure_service_returns_same_envelope(self, db_session):
