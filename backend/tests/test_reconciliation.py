@@ -40,7 +40,7 @@ Requirement map (user section 十一, 1-20):
 
 3.4.3-B requirement map (user section 十五, 1-25):
   A. Shuffle (1-6) .................... TestShuffleMapping   [GAP -> refused]
-  B. TheHive (7-11) ................... TestTheHiveMapping   [GAP -> refused]
+  B. TheHive (7-11) ................... TestTheHiveMapping   [case_created only]
   C. Wazuh (12-16) .................... TestWazuhMapping     [evidenced vocab]
   D. Isolation (17-20) ................ TestMappingDispatchIsolation
   E. Purity (21-25) ................... TestMappingPurity
@@ -56,17 +56,21 @@ field.
 
 The soul of 3.4.3-B (design §6, user §十六): DO NOT FABRICATE. A state word is
 frozen into an adapter's vocabulary ONLY when existing adapter code (or the
-frozen design) evidences it. G1-C EMPTIED the last such vocabulary: the former
-Wazuh ``agent_status`` set was fabricated (B0 §4 — agent_status is NOT a
-command-level effect) and G1-A proved it LIVE-reachable (CONFIRMED UNSAFE), so NO
-production adapter now has an evidenced external-state vocabulary. Every adapter
-(Wazuh / Shuffle / TheHive / Mock) keeps its vocabulary EMPTY and every
-external_state is REFUSED as ``UnrecognizedExternalState`` — NEVER guessed to
-``unknown``, NEVER ``reconciliation_failed`` (``StateMapping.__post_init__``
+frozen design) evidences it. G1-C EMPTIED the fabricated Wazuh ``agent_status``
+set (B0 §4 — agent_status is NOT a command-level effect; G1-A proved it
+LIVE-reachable, CONFIRMED UNSAFE). M2 §5 then adds EXACTLY ONE evidenced word
+platform-wide: TheHive's ``case_created`` — a SentinelFlow-SYNTHESIZED
+creation-effect signal (NOT a native lifecycle state) produced only by
+``TheHiveReadAdapter``'s verified ``GET /api/case/{_id}`` and source-certified
+against TheHive 4.1.24-1=b6649bb / ScalliGraph 2c2a7a4. Every OTHER adapter
+(Wazuh / Shuffle / Mock) keeps its vocabulary EMPTY, and every TheHive state
+OTHER than ``case_created`` (resolved/closed/… and the reader's own
+``case_unverified``) is REFUSED as ``UnrecognizedExternalState`` — NEVER guessed
+to ``unknown``, NEVER ``reconciliation_failed`` (``StateMapping.__post_init__``
 enforces the latter). The PLATFORM success-pipeline proofs that once borrowed the
-Wazuh ``success`` word now run on a TEST-ONLY fake adapter (``fake_adapter_vocab``
-/ ``fake_adapter_channel`` fixtures, B0 §15.4) — never on reopening a real
-vocabulary. A dispatch word is in NO vocabulary: several tests below nail that.
+Wazuh ``success`` word still run on a TEST-ONLY fake adapter (``fake_adapter_vocab``
+/ ``fake_adapter_channel`` fixtures, B0 §15.4) — never on the real TheHive word. A
+dispatch word is in NO vocabulary: several tests below nail that.
 """
 import ast
 import inspect
@@ -914,21 +918,52 @@ class TestShuffleMapping:
 
 
 class TestTheHiveMapping:
-    """TheHive creates a case (``case_id``, thehive.py:241-252) and NEVER
-    auto-closes it — "case created != case resolved"; investigation is human-led.
-    ``case_id`` is a REFERENCE, not a lifecycle STATE, and the adapter has no read
-    path and no case-status vocabulary. Per user §十六, NO TheHive state word is
-    fabricated: the vocabulary is EMPTY and every state is REFUSED until 3.4.5.
-    Requirements 7-10 assert the HONEST GAP, not an invented mapping."""
+    """TheHive creates a case and NEVER auto-closes it — "case created != case
+    resolved"; investigation is human-led, so NO native lifecycle STATE word is
+    fabricated (requirements 7-10 assert that HONEST GAP: resolved/closed/open/
+    unknown are all REFUSED). M2 §5 adds EXACTLY ONE evidenced word —
+    ``case_created``, the SentinelFlow-SYNTHESIZED creation-effect signal emitted
+    only by ``TheHiveReadAdapter`` when a real ``GET /api/case/{_id}`` satisfies
+    the identity + correlation + creation conjunction (source-certified TheHive
+    4.1.24-1=b6649bb / ScalliGraph 2c2a7a4). It maps to ``confirmed_success``; the
+    reader's own ``case_unverified`` (a 200 that FAILS the conjunction) is NOT in
+    the vocabulary and is REFUSED, so a bare 200 is never laundered into success.
+    """
 
-    def test_thehive_vocabulary_is_entirely_empty(self):
+    def test_thehive_vocabulary_evidences_only_case_created(self):
+        # M2 §5: the ONE evidenced TheHive word is the synthesized creation-effect
+        # signal ``case_created`` (-> confirmed_success). NO native lifecycle state
+        # (resolved/closed/…), NO failure, NO pending, NO ambiguous word is
+        # evidenced — "case created != case resolved", and a failed READ is
+        # reconciliation_failed via the read-failure path, NEVER confirmed_failure.
         vocab = ADAPTER_STATE_VOCABULARIES["thehive"]
-        assert vocab.terminal_success_states == frozenset()
+        assert vocab.terminal_success_states == frozenset({"case_created"})
         assert vocab.terminal_failure_states == frozenset()
         assert vocab.pending_states == frozenset()
         assert vocab.ambiguous_states == frozenset()
         assert vocab.state_key is None
         assert vocab.case_insensitive is False
+
+    def test_thehive_case_created_maps_to_confirmed_success(self):
+        # M2 §5 POSITIVE: the ONE evidenced word maps to confirmed_success. This is
+        # the MAPPING half of the closure; the READER half (which produces the word
+        # only on a verified GET) is proven in test_read_adapter_thehive.py.
+        mapped = map_state("thehive", "case_created")
+        assert mapped.outcome_status == "confirmed_success"
+        assert mapped.observed_state == "case_created"
+        assert mapped.normalized_state == "case_created"
+
+    def test_thehive_case_unverified_is_refused(self):
+        # M2 §5 NEGATIVE: the reader's unverified signal (a 200 that FAILED the
+        # identity/correlation conjunction) is NOT in the vocabulary -> REFUSED ->
+        # 422 / ZERO facts. A bare HTTP 200 / mere existence is NEVER success.
+        refused("thehive", "case_unverified")
+
+    def test_thehive_case_created_is_case_sensitive(self):
+        # case_insensitive is False, so ONLY the exact word maps; a case variant is
+        # REFUSED (no TheHive-specific normalization is evidenced, §十三).
+        refused("thehive", "CASE_CREATED")
+        refused("thehive", "Case_Created")
 
     @pytest.mark.parametrize(
         "state", ["resolved", "closed", "solved", "completed", "success"]
@@ -1152,18 +1187,22 @@ class TestAntiFabricationPins:
         # a non-adapter (registry.ADAPTER_NAMES is the adapter identity source).
         assert set(ADAPTER_STATE_VOCABULARIES) == set(ADAPTER_NAMES)
 
-    def test_no_adapter_has_an_evidenced_vocabulary(self):
-        # G1-C REVERSAL of the former "only Wazuh" pin: after emptying the Wazuh
-        # vocabulary, NO production adapter has an evidenced external-state
-        # vocabulary — all four are EMPTY. Repopulating ANY of them requires real
-        # command-effect read evidence + an independent Design Freeze (B0 §18);
-        # this pin fails loudly if a vocabulary is silently reopened.
+    def test_only_thehive_evidences_a_vocabulary_and_only_case_created(self):
+        # G1-C emptied the fabricated Wazuh vocabulary; M2 §5 adds EXACTLY ONE word
+        # back platform-wide — TheHive's synthesized creation-effect signal
+        # ``case_created`` (source-certified TheHive 4.1.24-1=b6649bb / ScalliGraph
+        # 2c2a7a4, produced only by TheHiveReadAdapter's verified read). EVERY other
+        # adapter (wazuh / shuffle / mock) stays EMPTY, and TheHive evidences NOTHING
+        # beyond that one word. Repopulating anything else requires real read
+        # evidence + an independent Design Freeze (B0 §18); this pin fails loudly if
+        # a vocabulary is silently reopened OR the TheHive word set grows.
+        expected_evidenced = {"thehive": frozenset({"case_created"})}
         for adapter, vocab in ADAPTER_STATE_VOCABULARIES.items():
             evidenced = (
                 vocab.terminal_success_states | vocab.terminal_failure_states
                 | vocab.pending_states | vocab.ambiguous_states
             )
-            assert evidenced == frozenset(), adapter
+            assert evidenced == expected_evidenced.get(adapter, frozenset()), adapter
 
     def test_no_adapter_evidences_a_failure_state(self):
         # The strongest anti-fabrication pin: NO adapter — not even Wazuh — has an

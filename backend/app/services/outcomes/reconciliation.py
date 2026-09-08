@@ -541,21 +541,39 @@ ADAPTER_STATE_VOCABULARIES: dict[str, AdapterStateVocabulary] = {
     ),
     "thehive": AdapterStateVocabulary(
         adapter="thehive",
-        # GAP (design §6/§8, user §八): TheHive creates a case (``case_id``,
-        # thehive.py:241-252) and NEVER auto-closes it — "case created ≠ case
-        # resolved"; investigation is human-led. ``case_id`` is a REFERENCE, not a
-        # lifecycle STATE, and the adapter has no read path and no case-status
-        # vocabulary. The concrete enumeration lands with the 3.4.5 read path.
-        # Every TheHive external_state is therefore unrecognized.
-        terminal_success_states=frozenset(),
+        # M2 §5 (version-qualified, case-CREATION effect ONLY). TheHive creates a
+        # case and NEVER auto-closes it — "case created ≠ case resolved";
+        # investigation is human-led, so NO native TheHive lifecycle STATE
+        # (resolved/closed/solved/…) is evidenced and every such word stays
+        # REFUSED. The ONE word frozen here, ``case_created``, is NOT a native
+        # lifecycle state: it is the SentinelFlow-SYNTHESIZED creation-effect
+        # signal emitted ONLY by ``read_adapters.thehive.TheHiveReadAdapter`` when
+        # the full identity + correlation + creation conjunction holds on a real
+        # ``GET /api/case/{_id}`` (a bare 200 / mere existence yields
+        # ``case_unverified``, which is NOT in this vocabulary and is REFUSED — a
+        # 200 is NEVER laundered into confirmed_success). Source-certified against
+        # TheHive 4.1.24-1 (git ``b6649bb``) / ScalliGraph ``2c2a7a4``: OutputCase
+        # ``_id`` == ``id`` (String), ``createdAt`` (epoch millis -> observed_at),
+        # ``tags`` (Set[String], persisted by CaseSrv.create -> the correlation
+        # channel). NO terminal_failure / pending / ambiguous word is evidenced: a
+        # failed READ (401/403/404/timeout/5xx) is ``reconciliation_failed`` via
+        # the read-failure path, NEVER ``confirmed_failure``. ``case_insensitive``
+        # / ``state_key`` stay at their strict defaults (no TheHive code evidences
+        # a case-fold or a nested state key). Lab runtime evidence GAPPED (LAB
+        # BLOCKED) — the reader is delivered + isolation-tested, NOT yet wired.
+        terminal_success_states=frozenset({"case_created"}),
         terminal_failure_states=frozenset(),
         pending_states=frozenset(),
         ambiguous_states=frozenset(),
         case_insensitive=False,
         state_key=None,
         evidence=(
-            "GAP: no verifiable case-lifecycle state vocabulary "
-            "(3.4.5 read path)"
+            "M2 §5: case-CREATION effect ONLY. 'case_created' is a SentinelFlow-"
+            "synthesized signal from TheHiveReadAdapter's verified GET /api/case/"
+            "{_id} (identity+correlation+creation conjunction), source-certified "
+            "TheHive 4.1.24-1=b6649bb / ScalliGraph 2c2a7a4; NOT a native "
+            "lifecycle state (resolved/closed/… stay REFUSED); no failure/pending/"
+            "ambiguous word evidenced; Lab runtime evidence GAPPED (LAB BLOCKED)"
         ),
     ),
     "mock": AdapterStateVocabulary(
@@ -660,11 +678,16 @@ def normalize_external_state(
     always yields the same result or the same exception type.
 
     THE ANTI-FABRICATION RULE (user §十六): only code/design-evidenced states are
-    frozen. Wazuh maps ``_CONFIRMED_AGENT_STATUSES`` -> confirmed_success,
-    ``running`` -> pending, ``unknown`` -> unknown, and has NO evidenced failure
-    state. Shuffle / TheHive / Mock have NO evidenced external-state vocabulary
-    at all, so EVERY state they report is unrecognized until the 3.4.5 read path
-    supplies real evidence.
+    frozen. G1-C EMPTIED the fabricated Wazuh ``agent_status`` set (see the inline
+    Wazuh note), so Wazuh / Shuffle / Mock have NO evidenced external-state
+    vocabulary and EVERY state they report is unrecognized. M2 §5 adds EXACTLY ONE
+    evidenced word platform-wide: TheHive's synthesized creation-effect signal
+    ``case_created`` (-> confirmed_success), produced only by
+    ``TheHiveReadAdapter``'s verified read and never a native TheHive lifecycle
+    state; every OTHER TheHive state (resolved/closed/… and the reader's own
+    ``case_unverified``) stays unrecognized. An unrecognized state is REFUSED
+    (``UnrecognizedExternalState``) — NEVER guessed to ``unknown`` and NEVER
+    ``reconciliation_failed``.
     """
     vocab = ADAPTER_STATE_VOCABULARIES[adapter]
     word = _extract_state_word(vocab, external_state)

@@ -583,7 +583,12 @@ class TestZeroFactOnFailure:
         assert _outcome_count(db_session) == 0
 
     def test_thehive_fail_closed_writes_no_fact(self, client, db_session, all_tokens):
-        # §30: EVERY TheHive state is refused — case created != resolved.
+        # §30 / M2 §5: the native-lifecycle words a TheHive webhook could plausibly
+        # carry (resolved/closed/success/completed/ok) are ALL still refused — case
+        # created != resolved. NONE is ``case_created``, the ONLY mapped TheHive
+        # word: it is a reader-synthesized creation-effect signal produced solely by
+        # TheHiveReadAdapter's verified GET on the authenticated reconcile path, and
+        # TheHive emits no such webhook body natively. Zero facts.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         for state in ("resolved", "closed", "success", "completed", "ok"):
