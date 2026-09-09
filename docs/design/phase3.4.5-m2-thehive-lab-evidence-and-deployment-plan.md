@@ -73,13 +73,15 @@ M1 G3/G5 文档 §7 记录的核心缺口：「TheHive-main 非 git 仓库 → �
 
 | 项 | 只读证据 | 状态 |
 | --- | --- | --- |
-| 镜像仓库 | `TheHive\docker.sbt` L14 `dockerRepository := Some("thehiveproject")` | 候选镜像引用 `thehiveproject/thehive:4.1.24-1` |
+| 镜像仓库 | `TheHive\docker.sbt` L14 `dockerRepository := Some("thehiveproject")`（in-tree 命名空间）| **M2-R §6 更正：官方发布镜像 = `thehiveproject/thehive4:4.1.24-1`**（**非** M2 报告旧引用的 `thehiveproject/thehive:4.1.24-1`）。docker.sbt 的 in-tree 命名空间不等于发布 registry 的镜像名；以**官方注册表实际发布名**为准 |
 | 暴露端口 | `docker.sbt` L16 `dockerExposedPorts := Seq(9000)`；L51 `EXPOSE 9000` | **9000** |
 | 基础镜像 | `docker.sbt` L27 `Cmd("FROM", "openjdk:8")` | `openjdk:8`（JVM 运行时）|
-| **镜像 digest** | 未查询任何 registry（§3 本轮禁止拉取；LAB BLOCKED）| **NOT OBTAINED** — 部署时**必须**对权威 registry 校验 `sha256:` digest（§6.2）|
+| **镜像 digest** | **M2-R §6 更正：官方注册表列出 `4.1.24-1` 的 manifest digest = `sha256:c8b6c7eaa0cd21853cbf88eae836c57de2aec29e6edb8a9d49b491dbc09c6811`**（审查者从官方 registry 独立核验；本机 LAB BLOCKED 未拉取）| **OBTAINED（registry 元数据）** — 部署主机仍**必须**校验拉取到的镜像 digest 与此一致 + 平台架构匹配（§6.3）；**禁止** `latest` |
 | 依赖服务 | `conf\application.sample.conf`：`db.janusgraph`、`storage.backend: berkeleyje`、Elasticsearch/OpenSearch 索引后端、附件存储 | 各依赖精确镜像 tag + digest **NOT OBTAINED**（部署时校验）|
 
 > **纪律：禁止使用未固定的 `latest` 作为最终运行证据。** 部署方案（§6）要求逐镜像固定 tag + 校验 digest 后方可作为 Lab Runtime 证据。
+>
+> **TheHive 4 EOL 事实（M2-R §6 更正）：** TheHive 4 的公开版本**已停止维护**，官方仓库**已归档（archived）**。据此 `thehiveproject/thehive4` 仅适合**隔离兼容性实验**（本里程碑的源码契约取证 + 隔离 Lab），**不应作为新的生产部署推荐**。生产部署认证（§3.1 Production Runtime = UNKNOWN）必须另行针对**受支持的**版本/实例取证；本 Lab 即便通过也**不得**升级为生产级认证（§11 纪律）。
 
 ---
 
@@ -275,14 +277,16 @@ case class OutputCase(
 
 > **纪律（§5）：** 401/403/404/timeout **不自动等于** `confirmed_failure`；HTTP 200 / 资源存在**不无条件**映射 `confirmed_success`；无法建立可信关联时保持 REFUSED（零 fact），**不猜测**。错误 message 经 `redact_text` 脱敏，**never** 含响应 body。
 
-### 5.4 版本限定 mapping 词表（单一路径无关 mapping，仅 TheHive case-creation 范围）
+### 5.4 版本限定 mapping 词表（M2-R §2 更正：fail-closed 空词表）
 
-`reconciliation.py` 的 thehive `AdapterStateVocabulary` 本轮**仅新增一个**权威证据词：
+> **本节已被 M2-R §2 前向修复更正。** M2 §5 曾把 `case_created` 作为「全平台唯一新增 evidenced 词」加入 thehive 词表；M2 Final Review 裁定这是 **P1-1 安全缺陷**——该词表是 **path-agnostic** 的，被 webhook PUSH 与 manual_reconcile PULL 两路共享，而冻结的 2 参数 `normalize_external_state` 无法区分来源，故启用有效 callback token 后裸串 `case_created` 可被 webhook 请求体伪造为 `confirmed_success`（G1-A 缺陷类）。
 
-- `terminal_success_states = frozenset({"case_created"})`（其余 failure/pending/ambiguous 全空，`case_insensitive=False`，`state_key=None`）
-- evidence 明载：case-CREATION effect ONLY；`case_created` 是 reader 三重合取合成信号；源码认证 `b6649bb`/`2c2a7a4`；**非**原生生命周期状态（resolved/closed 保持 REFUSED）；Lab runtime 证据 GAPPED（LAB BLOCKED）。
+`reconciliation.py` 的 thehive `AdapterStateVocabulary` **现状（M2-R §2 前向提交，`117ab6b` 只读历史未 amend）**：
 
-> **不开放其他 Adapter 词表**：wazuh（G1-C 空词表，保持不变）、shuffle、mock 词表**均未改**。全平台**恰好新增一个** evidenced 词（thehive `case_created`），由 `test_reconciliation.py::test_only_thehive_evidences_a_vocabulary_and_only_case_created` pin 死。
+- `terminal_success_states = frozenset()`（**四集全空，fail-closed**；`case_insensitive=False`，`state_key=None`）
+- evidence 明载：M2-R §2 FAIL-CLOSED；冻结 2 参数映射契约无法表达来源隔离，故 `case_created` 在**任何路径**都被拒绝（`UnrecognizedExternalState` → 422 / 零 fact）；Reader 仍在 READER 层发出 `case_created`（三重合取，隔离测试覆盖），但映射层不接受来自任何来源的该词，直到可信 Reader 来源隔离通道获批。
+
+> **不开放任何 Adapter 词表**：wazuh（G1-C 空词表 `0c372aa`，保持不变）、shuffle、mock 词表**均未改**。全平台**无任何** adapter 拥有 evidenced 外部状态词表（四集皆空），由 `test_reconciliation.py` pin 死。来源隔离通道与严格创建关联的设计见 **`phase3.4.5-m2-r-thehive-source-isolation-amendment.md`（DESIGN ONLY）**。
 
 ---
 
@@ -314,17 +318,19 @@ case class OutputCase(
    - `wsl --install <Distro>` = 网络下载 + 首个分发版通常需管理员 + 重启。
    - **二者均被 §1 / §3 明确禁止**：「如需管理员权限、系统范围安装、重启宿主机…必须停止该操作并报告」「不得擅自安装需要管理员权限的系统组件或修改宿主机安全配置」。
 4. **空闲内存仅 3.35 GB**：TheHive 4.1.24 栈 = JVM（openjdk:8）+ JanusGraph + Elasticsearch/OpenSearch，各组件典型需 ~1 GB+ 堆，整栈现实需 6–8 GB 空闲。3.35 GB 空闲**不足以安全启动**，强行启动有宿主机不稳定风险。
-5. **无更轻量替代**：TheHive 4.x 架构上强依赖 JVM + JanusGraph + 索引后端，不存在「跳过容器运行时 + 跳过管理员安装 + 在 3.35 GB 空闲内运行」的轻量精确版本；本机亦无现成可用 VM。
+5. **无更轻量替代（本主机范围内）**：TheHive 4.x 架构上强依赖 JVM + JanusGraph + 索引后端，不存在「跳过容器运行时 + 跳过管理员安装 + 在 3.35 GB 空闲内运行」的轻量精确版本。**LAB BLOCKED 的判定范围仅限本 Windows 主机**（容器运行时缺失 + 零 WSL 分发版 + 空闲内存不足）：本轮只读探测**未**穷尽枚举所有可能的 VM / 远程 / 云实验环境，故**不**据此推断「任何可用实验环境均不存在」。若存在资源充足（≥8 GB 空闲 + 容器运行时 + 管理员授权）的 VM / 远程主机，§6.3 部署方案可在其上复现真实 Lab——**需用户确认实验主机并另行授权**（本轮不自动进入）。
 
 > **§3 纪律遵守：** 「若真实环境确实无法启动，必须如实标记 LAB BLOCKED」「不得把 Mock 服务冒充真实 TheHive」。本轮**不**做管理员安装、**不**重启宿主机、**不**拉取镜像、**不**伪造 Lab 结果。§6 的真实本地联调因此 **LAB BLOCKED**，改以**注入式隔离平台链测试**（真实写适配器 + 真实读适配器 + stub transport + 真实 reconcile 管线 + 内存 DB）作为**已授权的隔离替代**，并**分开报告**（见 `tests/test_thehive_write_read_closure.py` 与 M2 Final Report §6）。
 
 ### 6.3 部署方案（PLAN ONLY — 供未来获授权、资源充足的主机复现）
 
-> 以下为**方案**，本轮**不执行**。在满足「管理员授权 + 容器运行时 + ≥8 GB 空闲内存 + 可校验镜像 digest」的主机上按此复现真实 Lab。
+> 以下为**方案**，本轮**不执行**。在满足「管理员授权 + 容器运行时 + ≥8 GB 空闲内存 + 可校验镜像 digest」的主机（含经用户确认的 VM / 远程实验主机）上按此复现真实 Lab。
+>
+> **TheHive 4 已停止维护、官方仓库已归档**（§2.3 EOL 事实）：本 Lab **仅用于隔离兼容性实验**（验证 4.1.24-1 源码契约的运行时行为），**不作为新的生产部署推荐**。
 
 | 项 | 方案 | 强制校验 |
 | --- | --- | --- |
-| **镜像固定** | `thehiveproject/thehive:4.1.24-1`（对应 commit `b6649bb`）| **拉取后必须校验 `sha256:` digest 与权威 registry 一致**；**禁止** `latest`；记录 digest 作为 Lab Runtime 证据 |
+| **镜像固定** | **`thehiveproject/thehive4:4.1.24-1`**（官方发布名，对应 commit `b6649bb`；**非** M2 报告旧引用的 `thehiveproject/thehive:4.1.24-1`）| **拉取后必须校验 `sha256:` digest == `c8b6c7eaa0cd21853cbf88eae836c57de2aec29e6edb8a9d49b491dbc09c6811`（官方注册表值）+ 平台架构匹配**；**禁止** `latest`；记录拉取到的 digest 作为 Lab Runtime 证据 |
 | **依赖服务** | JanusGraph（BerkeleyJE 本地后端）+ Elasticsearch/OpenSearch（索引）+ 附件存储 | 各镜像**逐一固定 tag + 校验 digest**；版本与 `application.sample.conf` 一致 |
 | **网络** | 仅本机 / 隔离虚拟网络；TheHive `9000` **绑定 loopback（127.0.0.1）**；依赖服务端口仅隔离网内 | **不暴露公网**；不改宿主机现有虚拟化网络 |
 | **持久化** | 独立项目卷：JanusGraph `/opt/thp/thehive/database`、ES 数据、附件目录 | **不复用**其他业务数据；卷名带 `sentinelflow-m2-lab-` 前缀以便识别/清理 |
