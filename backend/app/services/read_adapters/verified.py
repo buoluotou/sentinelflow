@@ -374,6 +374,18 @@ class ReadCorrelationContext:
 #: CONTROLLED CALL CHAIN, proven by AST in the isolation suite: ``VerifiedCreationEffect`` has
 #: EXACTLY ONE construction site (``verify_creation_effect``) and the private persist has
 #: EXACTLY ONE caller (``reconcile_verified_execution``).
+#:
+#: ANTI-MISUSE, NOT AUTHORIZATION (M4-F §4, reviewer finding ③). The seal + the private
+#: persist are INTERNAL misuse-guards ONLY: they stop an ACCIDENTAL plain-object persist, they
+#: are NOT an authentication / authorization mechanism and NEVER replace one. There is NO
+#: production router on this channel today (the sealed registry stays empty — proven in the
+#: isolation suite), so there is no external entry to guard yet. WHEN a trusted proof entry is
+#: ever wired it MUST reuse the EXISTING operator identity + RBAC + the Manual Reconcile
+#: permission, and its Reader MUST come from the TRUSTED REGISTRY FACTORY — NEVER injected by
+#: a request body or an arbitrary caller. A Python type, a boolean flag or this seal is NEVER
+#: an external identity credential; authorization stays a SERVICE-LAYER responsibility,
+#: UPSTREAM of ``is_sealed()`` — the seal is the last structural check, never the first line
+#: of trust.
 _VERIFIER_SEAL = object()
 
 

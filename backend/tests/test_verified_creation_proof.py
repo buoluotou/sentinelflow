@@ -618,6 +618,44 @@ class TestVerifierGate6ApprovedAction:
         assert APPROVED_CREATION_ACTION in THEHIVE_ACTIONS
 
 
+class TestVerifierGate6AbsentEvidenceFailsClosed:
+    """M4-F §4: gate 6 must FAIL CLOSED on ABSENT immutable evidence — a missing
+    dispatch-time approval snapshot / execution snapshot is NEVER treated as
+    ``approved`` and NEVER back-filled from the live approval status or the current
+    config ("若现有不可变历史缺少必要证据，保持拒绝…不得用当前审批状态倒填").
+    These isolate gate 6's own None-handling (the sibling wrong-VALUE refusals are
+    ``TestVerifierGate6ApprovedAction``; the derivation that PRODUCES None for old
+    history is ``TestDeriveReadCorrelationContext``)."""
+
+    def test_absent_approval_snapshot_is_refused_never_treated_as_approved(self):
+        # approval_status_at_dispatch=None (no binding captured it) -> refuse; None is
+        # NEVER implicitly "approved" and NEVER re-read from the live approval.status.
+        verdict = verify_creation_effect(
+            _context(approval_status_at_dispatch=None), _observed()
+        )
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_NOT_APPROVED
+        )
+
+    def test_absent_bound_approval_id_is_refused(self):
+        verdict = verify_creation_effect(_context(bound_approval_id=None), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
+        )
+
+    def test_absent_bound_action_is_refused(self):
+        verdict = verify_creation_effect(_context(bound_action=None), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
+        )
+
+    def test_absent_bound_target_is_refused(self):
+        verdict = verify_creation_effect(_context(bound_target=None), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
+        )
+
+
 # ===========================================================================
 # 3. read_creation — the internal trusted read verb (StubTransport, NO network)
 # ===========================================================================
