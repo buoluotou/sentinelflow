@@ -100,6 +100,17 @@ class Settings(BaseSettings):
     WAZUH_API_PASSWORD: str = ""
     THEHIVE_BASE_URL: str = ""
     THEHIVE_API_KEY: str = ""
+    # Phase 3.4.5-M2-R §4: TheHive READ-adapter authorization gate. A reader is
+    # NOT authorized by mere URL + write-key presence — it needs BOTH (a) an
+    # INDEPENDENT read-only key (never the create-capable THEHIVE_API_KEY) and
+    # (b) an EXACT certified-version match (THEHIVE_EXPECTED_VERSION must equal
+    # the reader's CERTIFIED_THEHIVE_VERSION). Either empty / mismatched -> the
+    # factory fails CLOSED (no reader), so a one-line wiring can never apply
+    # 4.1.24-1 read semantics to a different version or silently reuse the write
+    # credential. THEHIVE_READ_API_KEY ends in API_KEY -> auto-masked in repr;
+    # never enters logs / responses / exceptions / audit / DB.
+    THEHIVE_READ_API_KEY: str = ""
+    THEHIVE_EXPECTED_VERSION: str = ""
 
     # Phase 3.2.3: Shuffle action -> workflow mapping (frozen §4 column).
     # Each executable action triggers EXACTLY ONE pre-configured workflow;

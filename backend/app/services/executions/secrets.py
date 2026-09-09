@@ -200,6 +200,9 @@ def current_secret_values(settings_obj=None) -> tuple[str, ...]:
         source.SHUFFLE_API_KEY,
         source.WAZUH_API_PASSWORD,
         source.THEHIVE_API_KEY,
+        # M2-R §4: the INDEPENDENT TheHive read-only key is a secret too — it
+        # rides the same Authorization header, so it joins the redaction set.
+        source.THEHIVE_READ_API_KEY,
         source.EXECUTION_TOKEN,
     )
     return tuple(value.strip() for value in candidates if value and value.strip())

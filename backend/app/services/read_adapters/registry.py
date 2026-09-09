@@ -3,9 +3,12 @@
 This is the PRODUCTION-WIRING mechanism for concrete read adapters — the
 READ-side mirror of ``app.services.executions.registry.create_executor``. It
 builds a ``ReadAdapterRegistry`` from ``Settings``, registering a concrete reader
-ONLY for an adapter whose credentials are actually configured, and failing CLOSED
-(an EMPTY registry -> every reconcile rejects 404 ``UnsupportedAdapterRead``) when
-they are not.
+ONLY for an adapter that is FULLY authorized, and failing CLOSED (an EMPTY
+registry -> every reconcile rejects 404 ``UnsupportedAdapterRead``) when it is
+not. M2-R §4 raised the TheHive authorization bar from "credentials present" to
+THREE fail-closed gates — a well-formed base URL, an INDEPENDENT read-only key
+(never the create-capable write key) and an EXACT certified-version match — so
+mere URL + key presence never auto-authorizes a reader (see ``_thehive_readers``).
 
 RELATIONSHIP TO THE SEALED ``default_read_adapter_registry()`` (read this — it is
 the crux of the M2 §5 placement). ``app.services.manual_reconcile.read.registry
@@ -60,29 +63,61 @@ from __future__ import annotations
 
 from app.core.config import Settings, settings
 from app.services.executions.exceptions import ExecutorConfigError
-from app.services.executions.secrets import credentials_from_settings
+from app.services.executions.secrets import (
+    AdapterCredentials,
+    validate_api_key,
+    validate_base_url,
+)
 from app.services.manual_reconcile.read.base import ReadAdapter
 from app.services.manual_reconcile.read.registry import ReadAdapterRegistry
-from app.services.read_adapters.thehive import TheHiveReadAdapter
+from app.services.read_adapters.thehive import (
+    CERTIFIED_THEHIVE_VERSION,
+    TheHiveReadAdapter,
+)
 
 
 def _thehive_readers(
     source: Settings, *, transport: object | None = None
 ) -> list[ReadAdapter]:
-    """The TheHive reader iff THEHIVE_BASE_URL + THEHIVE_API_KEY are configured.
+    """The TheHive reader iff it is FULLY authorized (M2-R §4) — NOT on mere
+    URL + key presence.
 
-    Empty config -> ``[]`` (no reader -> reconcile rejects 404, fail-closed).
-    Malformed config (a bad URL shape) -> ``[]`` too (caught
+    THREE fail-closed gates, ALL required:
+      1. ``THEHIVE_BASE_URL`` present and well-formed;
+      2. ``THEHIVE_READ_API_KEY`` present — an INDEPENDENT read-only credential.
+         It NEVER falls back to ``THEHIVE_API_KEY`` (the create-capable WRITE
+         key): a reader must not carry create privilege it never needs (least
+         privilege, reviewer §4);
+      3. ``THEHIVE_EXPECTED_VERSION`` EXACTLY equals ``CERTIFIED_THEHIVE_VERSION``
+         (``4.1.24-1``) — an unset or mismatched expectation refuses, so 4.1.24-1
+         read semantics can never be applied to a different server version by a
+         one-line wiring.
+
+    Any gate unmet -> ``[]`` (no reader -> reconcile rejects 404, fail-closed).
+    Malformed config (a bad URL / key shape) -> ``[]`` too (caught
     ``ExecutorConfigError``): NEVER raise, so one adapter's misconfiguration can
     never 500 the reconcile route. ``transport`` is the test/deployment seam
-    forwarded to the reader (production ``None`` -> the default urllib opener).
+    forwarded to the reader (production ``None`` -> the reader's NO-REDIRECT
+    urllib opener, M2-R §4 — a 3xx never carries Authorization cross-host).
     """
     base_url = str(getattr(source, "THEHIVE_BASE_URL", "") or "").strip()
-    api_key = str(getattr(source, "THEHIVE_API_KEY", "") or "").strip()
-    if not base_url or not api_key:
+    # Gate 2: an INDEPENDENT read-only key. The WRITE key is deliberately NOT
+    # consulted here — no fallback, least privilege.
+    read_api_key = str(getattr(source, "THEHIVE_READ_API_KEY", "") or "").strip()
+    # Gate 3: the operator-asserted target version.
+    expected_version = str(
+        getattr(source, "THEHIVE_EXPECTED_VERSION", "") or ""
+    ).strip()
+    if not base_url or not read_api_key:
+        return []
+    if expected_version != CERTIFIED_THEHIVE_VERSION:
         return []
     try:
-        credentials = credentials_from_settings("thehive", source)
+        credentials = AdapterCredentials(
+            adapter="thehive",
+            base_url=validate_base_url("thehive", base_url),
+            api_key=validate_api_key("thehive", read_api_key),
+        )
     except ExecutorConfigError:
         return []
     timeout = getattr(source, "THEHIVE_TIMEOUT_SECONDS", 30.0)

@@ -14,8 +14,10 @@ contract shapes (``ReadAdapter`` / ``AdapterReadRequest`` / ``AdapterReadResult`
 
 M2 §5 delivers ONE concrete reader — ``TheHiveReadAdapter`` (the case-CREATION
 effect verifier) — and ``create_read_adapter_registry``, a settings-driven factory
-that registers it ONLY when THEHIVE credentials are configured (fail-closed
-otherwise). It is NOT wired into the reconcile router in M2 (LAB BLOCKED — no real
+that registers it ONLY when the M2-R §4 THREE-gate authorization passes (a
+well-formed base URL + an INDEPENDENT read-only key, never the create-capable
+write key + an EXACT certified-version match; fail-closed otherwise). It is NOT
+wired into the reconcile router in M2 (LAB BLOCKED — no real
 TheHive runtime evidence; see the registry module docstring), so production
 behavior is UNCHANGED: the router still resolves the SEALED EMPTY
 ``default_read_adapter_registry()``. The reader + factory are isolation-tested

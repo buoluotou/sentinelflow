@@ -60,11 +60,15 @@ creation-effect word ``case_created`` ONLY when ALL THREE hold at once:
      drift). Without it the case is not provably THIS execution's creation — it
      could be a same-id case from another tenant / history, or a case whose tag
      was stripped after create.
-  3. CREATION EFFECT — ``createdAt`` supplies the authoritative creation
-     timestamp (-> ``observed_at``). An absent/invalid ``createdAt`` does NOT
-     defeat the verification (identity + correlation already prove the creation);
-     it only means ``observed_at=None`` so the platform supplies a
-     SERVER-OBSERVATION time (the A1 contract's ``None`` branch).
+  3. CREATION EFFECT (design §5.2 gate 3 — MANDATORY; M2-R §3 unifies the code to
+     the frozen design, which already listed a missing ``createdAt`` as
+     ``case_unverified``) — ``createdAt`` supplies the authoritative creation
+     timestamp (-> ``observed_at``, the EXTERNAL creation time, never a server
+     observation time). An absent / invalid / absurd ``createdAt`` now FAILS the
+     gate -> ``case_unverified`` (reason ``missing_created_at``): without an
+     authenticated creation time the read cannot independently prove THIS execution
+     created THIS case (identity + a re-attachable tag are not enough — a historical
+     or cross-instance same-id case must not verify).
 
 Any 200 that FAILS the conjunction yields ``case_unverified`` — a word that is
 NOT in the 3.4.3-B thehive vocabulary, so the mapping REFUSES it
@@ -128,11 +132,16 @@ from app.services.manual_reconcile.read.base import (
 )
 
 #: The synthesized case-CREATION effect word — the ONLY external_state this
-#: adapter emits for a VERIFIED creation. It is the single M2 §5 word added to
-#: the 3.4.3-B thehive vocabulary (-> ``confirmed_success``); it is a
-#: SentinelFlow-synthesized creation-effect signal, NOT a native TheHive
-#: lifecycle state, and it is produced ONLY on the full identity + correlation +
-#: creation conjunction (never on a bare 200).
+#: adapter emits for a VERIFIED creation, produced ONLY on the full identity +
+#: correlation + creation conjunction (never on a bare 200). It is a
+#: SentinelFlow-synthesized creation-effect signal, NOT a native TheHive lifecycle
+#: state. M2 §5 added it to the 3.4.3-B thehive vocabulary; M2-R §2 REMOVED it
+#: again (fail-closed) because that vocabulary is PATH-AGNOSTIC and the frozen
+#: 2-param mapping contract cannot express source isolation — so the word is now
+#: REFUSED at the mapping layer on EVERY path (zero fact), including this trusted
+#: reader's, until a source-isolation channel is approved (see the M2-R Amendment).
+#: The reader still EMITS it (isolation-tested); the mapping just does not yet
+#: ACCEPT it from any source.
 CASE_CREATED = "case_created"
 
 #: Emitted when a read SUCCEEDS at transport level (HTTP 200) but the identity /
@@ -142,6 +151,18 @@ CASE_CREATED = "case_created"
 #: (``UnrecognizedExternalState`` -> 422, ZERO facts) — an unverified read is
 #: NEVER laundered into ``confirmed_success`` and NEVER guessed to ``unknown``.
 CASE_UNVERIFIED = "case_unverified"
+
+#: The EXACT TheHive version this reader's read semantics are SOURCE-certified
+#: against (TheHive 4.1.24-1 = git ``b6649bb`` / ScalliGraph ``2c2a7a4``). M2-R §4:
+#: the factory authorizes a reader ONLY when ``THEHIVE_EXPECTED_VERSION`` equals
+#: this string — an unset or mismatched expectation fails CLOSED, so 4.1.24-1
+#: read semantics (``GET /api/case/{id}``, ``EntityIdOrName``, epoch-millis
+#: ``createdAt``, ``OutputCase._id``) can never be silently applied to a different
+#: server version by a one-line wiring. This is a CONFIGURATION assertion gate, not
+#: a live probe: the factory issues NO HTTP at build time (a pinned invariant), so
+#: the operator binds the certified version explicitly and a real Lab re-certifies
+#: it against the running server before the router is ever wired.
+CERTIFIED_THEHIVE_VERSION = "4.1.24-1"
 
 
 def _tags_carry_execution(tags: object, execution_id: object) -> bool:
@@ -193,6 +214,36 @@ def _unverified(reason: str, status: object = None) -> AdapterReadResult:
     )
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """M2-R §4: REFUSE to follow ANY HTTP redirect on the case read.
+
+    ``urllib.request.urlopen`` follows 3xx automatically and — critically —
+    FORWARDS the ``Authorization`` header to the redirect target, INCLUDING a
+    CROSS-HOST one. For a credential-bearing read that is a leak (CWE-522): a
+    compromised or misconfigured proxy could 302 the ``GET`` to an attacker host
+    and harvest the Bearer key. A case ``GET`` must resolve DIRECTLY on the
+    certified instance, so any redirect is treated as a transport anomaly:
+    returning ``None`` makes urllib raise ``HTTPError`` for the 3xx, which
+    ``read()`` already maps to ``ReadTransportError`` (-> ``reconciliation_failed``)
+    — fail-closed, NEVER a cross-host credential leak, NEVER a fabricated verdict.
+
+    This ONLY declines redirects. TLS certificate verification and base-URL
+    validation are UNCHANGED (§4 forbids solving connectivity by disabling TLS or
+    relaxing URL checks); ``build_opener`` still installs the default verifying
+    ``HTTPSHandler``.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    """The production read opener: default handlers (verifying TLS) with the
+    redirect handler REPLACED by ``_NoRedirectHandler``. ``.open(request,
+    timeout=...)`` matches the ``urlopen`` call shape the reader uses."""
+    return urllib.request.build_opener(_NoRedirectHandler)
+
+
 class TheHiveReadAdapter(ReadAdapter):
     """Case-CREATION effect verifier over the TheHive Case API (one ``GET``, no
     retry).
@@ -204,8 +255,10 @@ class TheHiveReadAdapter(ReadAdapter):
       transport -- the deployment/test seam: a callable
           ``transport(request, timeout=...) -> response`` where response has
           ``status`` / ``read()`` — matching ``urllib.request.urlopen``.
-          Production uses the default urllib opener; there is NO retry layer,
-          NO polling and NO callback surface around it.
+          Production uses a NO-REDIRECT urllib opener (M2-R §4: a 3xx is refused,
+          so the ``Authorization`` header is NEVER forwarded to a cross-host
+          redirect target); there is NO retry layer, NO polling and NO callback
+          surface around it.
     """
 
     def __init__(
@@ -230,7 +283,10 @@ class TheHiveReadAdapter(ReadAdapter):
             )
         self._credentials = credentials
         self._timeout = float(timeout)
-        self._transport = transport or urllib.request.urlopen
+        # M2-R §4: the production default is a NO-REDIRECT opener, never bare
+        # ``urlopen`` — a case ``GET`` must resolve directly on the certified
+        # instance, and a 3xx must NOT carry the Bearer key to another host.
+        self._transport = transport or _build_opener().open
 
     # -- contract ----------------------------------------------------------
 
@@ -328,17 +384,31 @@ class TheHiveReadAdapter(ReadAdapter):
         if not _tags_carry_execution(payload.get("tags"), request.execution_id):
             return _unverified("missing_execution_correlation_tag", status)
 
-        # 3. CREATION EFFECT — createdAt is the authoritative creation time
-        #    (epoch millis). Absent/invalid -> observed_at None (the platform
-        #    supplies a server-observation time); the creation is still verified
-        #    by identity + correlation, so the word stays case_created.
+        # 3. CREATION EFFECT (design §5.2 gate 3 — MANDATORY; M2-R §3 unifies the
+        #    code to the frozen design). createdAt is the authoritative creation
+        #    time (epoch millis -> observed_at). A MISSING / INVALID / absurd
+        #    createdAt yields None, which NO LONGER verifies: without an
+        #    authenticated creation time the read cannot independently prove "THIS
+        #    execution created THIS case" (a same-id case from history, or one whose
+        #    correlation tag was re-attached, would otherwise pass on identity +
+        #    correlation alone — the reviewer's ten-year-old-re-tagged-case probe).
+        #    Third AND gate: absent it -> case_unverified (reason=missing_created_at,
+        #    matching design §5.2), REFUSED downstream, ZERO fact. observed_at (the
+        #    EXTERNAL creation time) stays deliberately distinct from a SERVER
+        #    observation time — the reader never substitutes "now" for the historical
+        #    creation time and never lets an absent/early time gain a sorting
+        #    advantage. The stricter createdAt-vs-DISPATCH-time / instance / tenant
+        #    correlation needs the immutable dispatch record carried on the frozen
+        #    AdapterReadRequest DTO -> deferred to the M2-R Amendment (§3 stop).
         observed_at = _created_at_to_datetime(payload.get("createdAt"))
+        if observed_at is None:
+            return _unverified("missing_created_at", status)
         case_number = payload.get("caseId")
         evidence: dict[str, object] = {
             "resource_id": resource_id,
             "status": status,
             "correlation": "execution_tag_present",
-            "created_at_present": observed_at is not None,
+            "created_at_present": True,
         }
         if isinstance(case_number, int) and not isinstance(case_number, bool):
             # audit-only human case number; NEVER the reference, NEVER required.
