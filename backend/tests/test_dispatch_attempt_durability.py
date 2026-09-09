@@ -192,20 +192,19 @@ class TestDurableStoreCommit:
         assert rows[0].attempt_id == uuid.UUID(binding.attempt_id)
 
 
-def _seed_terminal(engine, execution_id, approval_id, decision="succeeded"):
-    """Commit a terminal execution_log row on the SAME execution_id — what the
-    caller's business transaction writes AFTER the external request returns. FK
-    enforcement is OFF on this file-backed engine, so no approval row is needed;
-    the CHECK + partial-unique-index DDL IS enforced, and a legal execute/terminal
-    combo (``direction='execute'``, decision ``succeeded``/``failed``) lands cleanly
-    outside the ``requested``-only partial indexes."""
+def _seed_execution_row(engine, execution_id, approval_id, decision, direction="execute"):
+    """Commit ONE execution_log row on the SAME execution_id — what the caller's
+    business transaction writes. FK enforcement is OFF on this file-backed engine,
+    so no approval row is needed; the CHECK + partial-unique-index DDL IS enforced,
+    and a legal execute decision lands cleanly (a non-``requested`` row falls outside
+    the ``requested``-only partial indexes)."""
     with Session(engine) as session:
         session.add(
             ExecutionLog(
                 execution_id=execution_id,
                 approval_id=approval_id,
                 decision=decision,
-                direction="execute",
+                direction=direction,
                 action="create_case",
                 target="203.0.113.10",
                 operator="ops-1",
@@ -213,6 +212,12 @@ def _seed_terminal(engine, execution_id, approval_id, decision="succeeded"):
             )
         )
         session.commit()
+
+
+def _seed_terminal(engine, execution_id, approval_id, decision="succeeded"):
+    """Commit a TERMINAL (``succeeded``/``failed``) execution_log row — the outcome
+    the caller writes AFTER the external request returns, which SETTLES an attempt."""
+    _seed_execution_row(engine, execution_id, approval_id, decision)
 
 
 class TestUnreconciledRecovery:
@@ -264,3 +269,75 @@ class TestUnreconciledRecovery:
         with _independent_session(durable_engine) as session:
             unreconciled = find_unreconciled_attempts(session)
         assert [a.attempt_id for a in unreconciled] == [uuid.UUID(pending.attempt_id)]
+
+
+class TestEmittedThenAbandoned:
+    """The M4 review's EXACT demanded scenario (constraint 1): "外部副作用发生后，
+    数据库事务回滚仍保留绑定". The external request fires (the caller logs
+    ``dispatched`` and the wire call goes out), THEN the caller's whole business
+    transaction aborts — a process crash, a lost response, a terminal-write failure
+    or an explicit rollback. Because the durable attempt was committed on its OWN
+    transaction BEFORE the request, it SURVIVES the abort and recovery flags it as a
+    MANUAL reconciliation candidate. It is NEVER auto-retried (constraint 5).
+
+    SQLite honesty (constraint 2): the abort is modelled SEQUENTIALLY (the store
+    commits + closes, THEN the caller opens + aborts), which file-backed SQLite
+    proves exactly. TRUE interleaving — the caller holding an OPEN write transaction
+    WHILE the store commits on a second connection, then a crash — is
+    PostgreSQL-MVCC semantics under SQLite's single-writer lock and is covered by an
+    ``external``-marked test that stays DESELECTED, never faked green here.
+    """
+
+    def test_attempt_survives_a_caller_rollback_after_the_external_request(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        # 1. the durable pre-dispatch commit lands BEFORE the external request.
+        store.record(binding)
+        # 2. the external request goes out: the caller appends + flushes ``dispatched``
+        #    inside its business transaction, then the process crashes / the caller
+        #    rolls the WHOLE transaction back before any terminal commits.
+        caller = _independent_session(durable_engine)
+        try:
+            caller.add(
+                ExecutionLog(
+                    execution_id=uuid.UUID(binding.execution_id),
+                    approval_id=uuid.UUID(binding.approval_id),
+                    decision="dispatched",
+                    direction="execute",
+                    action="create_case",
+                    target="203.0.113.10",
+                    operator="ops-1",
+                    detail={},
+                )
+            )
+            caller.flush()
+            caller.rollback()
+        finally:
+            caller.close()
+        # 3. the committed attempt SURVIVES the caller's rollback (independent txn),
+        #    and 4. recovery flags it: no terminal row -> MANUAL reconciliation.
+        with _independent_session(durable_engine) as session:
+            rows = session.scalars(select(DispatchAttempt)).all()
+            assert len(rows) == 1
+            assert rows[0].attempt_id == uuid.UUID(binding.attempt_id)
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+
+    def test_committed_dispatched_row_without_a_terminal_is_still_unreconciled(self, durable_engine):
+        # A committed ``dispatched`` row is NOT a terminal: the request went out and
+        # the log committed, but the terminal (succeeded/failed) never landed (a lost
+        # response). Recovery MUST still flag it — only a terminal settles an attempt,
+        # so this discriminates the ``decision IN (terminals)`` filter from a naive
+        # "any execution_log row reconciles" reading.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_execution_row(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="dispatched",
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
