@@ -193,6 +193,12 @@ _CONFLICT_MARKERS = {
     # commit BEFORE the adapter runs, mapping to the SAME typed 409 (D14).
     "dispatch_attempt.execution_id": ExecutionIdAlreadyBound,
     "ux_dispatch_attempt_execution_id": ExecutionIdAlreadyBound,
+    # M4-G §1: the durable approval-slot reservation — a second execute attempt
+    # for the SAME approval_id (two different execution_ids racing one approval)
+    # is refused at the independent commit BEFORE the adapter runs, mapping to
+    # the SAME typed 409 the G3 pre-check raises (D14 last line, ahead of the wire).
+    "dispatch_attempt.approval_id": ApprovalAlreadyExecuted,
+    "ux_dispatch_attempt_approval_id": ApprovalAlreadyExecuted,
 }
 
 

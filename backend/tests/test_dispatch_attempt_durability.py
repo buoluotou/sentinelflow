@@ -171,6 +171,32 @@ class TestDurableStoreCommit:
         assert len(rows) == 1
         assert rows[0].attempt_id == uuid.UUID(first.attempt_id)
 
+    def test_record_refuses_a_second_attempt_for_the_same_approval(self, durable_engine):
+        """M4-G §1: ONE execute dispatch attempt per approval_id. Two DIFFERENT
+        execution_ids sharing the SAME approval_id is the concurrent same-approval
+        race the M4-F review flagged — the durable reservation must refuse the
+        SECOND at its independent commit (IntegrityError) BEFORE any external
+        request, and the FIRST committed attempt must SURVIVE. Without an approval
+        slot reservation both would commit and both would fire the adapter, the
+        execution_log approval index only biting at caller-commit AFTER the wire
+        call (D14's last line arriving too late)."""
+        store = DurableDispatchAttemptStore(durable_engine)
+        approval_id = uuid.uuid4()
+        first = _binding(approval_id=approval_id)
+        store.record(first)
+
+        second = _binding(approval_id=approval_id)  # a different execution_id/attempt
+        assert second.execution_id != first.execution_id
+        assert second.attempt_id != first.attempt_id
+        with pytest.raises(IntegrityError):
+            store.record(second)
+
+        with _independent_session(durable_engine) as session:
+            rows = session.scalars(select(DispatchAttempt)).all()
+        assert len(rows) == 1
+        assert rows[0].attempt_id == uuid.UUID(first.attempt_id)
+        assert rows[0].approval_id == approval_id
+
     def test_committed_attempt_survives_an_unrelated_rollback(self, durable_engine):
         """The reviewer's exact scenario: the attempt is committed on its OWN
         transaction, so a LATER rollback on a DIFFERENT session (the caller's

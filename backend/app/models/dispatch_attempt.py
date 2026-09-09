@@ -52,6 +52,17 @@ class DispatchAttempt(Base):
         # refuses a second committed attempt for a duplicate/concurrent replay
         # BEFORE any external request (mirrors execution_log's D14 last line).
         Index("ux_dispatch_attempt_execution_id", "execution_id", unique=True),
+        # M4-G §1: ONE execute dispatch attempt per approval_id — the durable
+        # reservation that closes the same-approval concurrent race BEFORE any
+        # external request. Two DIFFERENT execution_ids sharing one approval_id
+        # (the M4-F review finding) both pass the G3 pre-check (each reads an
+        # empty prior_approval_rows) and would both fire the adapter; the
+        # execution_log partial approval index only bites at caller-commit AFTER
+        # the wire call, so the reservation must live HERE, ahead of the dispatch.
+        # Every dispatch_attempt row is execute-direction (compensate_response
+        # never records one), so a plain unique index carries the exact D14 "one
+        # execute per approval" semantics without a direction qualifier.
+        Index("ux_dispatch_attempt_approval_id", "approval_id", unique=True),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -66,8 +77,10 @@ class DispatchAttempt(Base):
     execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
     # The approval this dispatch belongs to (correlation only, no FK — see module
-    # docstring). Indexed for the recovery / manual-reconciliation lookup.
-    approval_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    # docstring). UNIQUE (M4-G §1): the durable approval-slot reservation that
+    # refuses a second execute attempt for the same approval BEFORE the external
+    # request — see ux_dispatch_attempt_approval_id above.
+    approval_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
     # Server-side target identity snapshot (never client-supplied).
     adapter: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -11,6 +11,10 @@ SERVICE wiring around it:
   invoked on an intent that did not durably persist
 - a duplicate ``execution_id`` at the durable commit maps to the SAME typed 409
   (D14) the pre-check raises, caught BEFORE the adapter runs
+- M4-G §1: a duplicate ``approval_id`` at the durable commit (two execution_ids
+  racing ONE approval) maps to ``ApprovalAlreadyExecuted`` — the SAME typed 409
+  the G3 pre-check raises — caught BEFORE the adapter runs, closing the race the
+  pre-check alone cannot (both requests read an empty prior_approval_rows)
 - the terminal row REFERENCES the recorded ``attempt_id`` (never re-writes it)
 - ``store=None`` is byte-identical to the pre-M4-F path (no regression)
 - exactly ONE external call per dispatch — no automatic retry / re-dispatch
@@ -33,6 +37,7 @@ from app.services.executions.base import ResponseExecutor
 from app.services.executions.binding import TERMINAL_REFERENCE_KEY
 from app.services.executions.mock import MockExecutor
 from app.services.executions.service import (
+    ApprovalAlreadyExecuted,
     ExecutionIdAlreadyBound,
     execute_response,
 )
@@ -131,6 +136,37 @@ class TestDurableDispatchWiring:
                 dispatch_attempt_store=store,
             )
         # persistence failed first -> the adapter NEVER ran (D14, ahead of the wire)
+        assert executor.calls == 0
+        assert "execute" not in events
+
+    def test_pre_dispatch_duplicate_approval_refuses_the_external_request(self, db_session):
+        # M4-G §1: TWO different execution_ids racing ONE approval_id. Both pass
+        # the G3 lifecycle pre-check (each reads an empty prior_approval_rows) and
+        # both would fire the adapter; the durable approval-slot reservation is the
+        # line that stops the SECOND, at its own independent commit, translating the
+        # unique-index IntegrityError into the SAME typed 409 the pre-check raises
+        # (ApprovalAlreadyExecuted) BEFORE the wire call. execution_log's partial
+        # approval index bites only at caller-commit, AFTER the external request —
+        # too late — which is exactly the M4-F review finding this closes.
+        approval = seed_approved(db_session)
+        events = _Events()
+        dup = IntegrityError(
+            "INSERT INTO dispatch_attempt ...",
+            {},
+            Exception("UNIQUE constraint failed: dispatch_attempt.approval_id"),
+        )
+        store = FakeStore(events=events, raise_exc=dup)
+        executor = CountingExecutor(events=events)
+        with pytest.raises(ApprovalAlreadyExecuted):
+            execute_response(
+                db_session,
+                approval_id=approval.id,
+                execution_id=uuid.uuid4(),
+                operator="ops-1",
+                executor=executor,
+                dispatch_attempt_store=store,
+            )
+        # the approval-slot reservation refused first -> the adapter NEVER ran.
         assert executor.calls == 0
         assert "execute" not in events
 
