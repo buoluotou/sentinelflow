@@ -23,6 +23,19 @@ behavior is UNCHANGED: the router still resolves the SEALED EMPTY
 ``default_read_adapter_registry()``. The reader + factory are isolation-tested
 (unit + service-level explicit injection) and production-READY for the phase that
 has real runtime evidence.
+
+M3 (Phase 3.4.5-M3 §3/§4) ADDS the SOURCE-ISOLATED trusted-proof kernel
+``verified`` — the TYPED internal proof shapes (``VerifiedReadResult`` /
+``ReadCorrelationContext`` / ``VerifiedCreationEffect`` / ``CreationRefusal``), the
+``TrustedCreationReader`` protocol and the SINGLE pure creation-effect verifier
+``verify_creation_effect`` (the six conjunctive gates of Amendment §4). It is a PURE,
+side-effect-free module (no DB, no HTTP, no ``app.services.outcomes``) re-exported here
+for the PULL-only orchestration (``outcomes/verified_proof``) and the M3 suite. It does
+NOT extend the frozen public ``AdapterReadResult`` / ``AdapterReadRequest``, does NOT add
+a second external-state vocabulary, and is reachable ONLY through the controlled
+reconcile call chain — NEVER from the webhook path (Amendment §5.3 / §11.2 constraint #1).
+``TheHiveReadAdapter.read_creation`` is the concrete reader's internal trusted verb that
+returns a ``VerifiedReadResult``; the frozen public ``read`` is unchanged.
 """
 from app.services.read_adapters.registry import create_read_adapter_registry
 from app.services.read_adapters.thehive import (
@@ -30,10 +43,35 @@ from app.services.read_adapters.thehive import (
     CASE_UNVERIFIED,
     TheHiveReadAdapter,
 )
+from app.services.read_adapters.verified import (
+    APPROVED_APPROVAL_STATUS,
+    APPROVED_CREATION_ACTION,
+    PROOF_SCOPE_VERIFIED_CREATION,
+    CreationRefusal,
+    ReadCorrelationContext,
+    TrustedCreationReader,
+    VerifiedCreationEffect,
+    VerifiedReadResult,
+    created_at_millis,
+    created_at_to_datetime,
+    verify_creation_effect,
+)
 
 __all__ = [
     "CASE_CREATED",
     "CASE_UNVERIFIED",
     "TheHiveReadAdapter",
     "create_read_adapter_registry",
+    # M3 §3/§4 source-isolated trusted-proof kernel (pure types + the single verifier).
+    "VerifiedReadResult",
+    "ReadCorrelationContext",
+    "VerifiedCreationEffect",
+    "CreationRefusal",
+    "TrustedCreationReader",
+    "verify_creation_effect",
+    "created_at_to_datetime",
+    "created_at_millis",
+    "APPROVED_CREATION_ACTION",
+    "APPROVED_APPROVAL_STATUS",
+    "PROOF_SCOPE_VERIFIED_CREATION",
 ]

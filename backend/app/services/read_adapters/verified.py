@@ -1,0 +1,492 @@
+"""Trusted Reader PROOF types + the single creation-effect verifier (Phase 3.4.5-M3 §3/§4).
+
+WHERE THIS LIVES — AND WHY. The M2-R source-isolation Amendment
+(``docs/design/phase3.4.5-m2-r-thehive-source-isolation-amendment.md``) stopped at
+§10.3 DESIGN-ONLY: the frozen 2-parameter ``normalize_external_state`` mapping is
+PATH-AGNOSTIC, so the synthesized ``case_created`` word could be forged from the
+LIVE webhook inbound path (a valid callback token + a schema/correlation-valid body
+carrying the bare string) — the G1-A defect class. M2-R §2 fail-closed that by
+EMPTYING the thehive vocabulary, so ``case_created`` now maps to NOTHING on EVERY
+path (zero fact). That is safe but it also means a genuinely verified creation could
+not be confirmed from ANY source.
+
+M3 (this module + ``outcomes/verified_proof.py`` + ``TheHiveReadAdapter.read_creation``)
+opens the SOURCE-ISOLATED channel the Amendment designed, per the user's formal
+ruling recorded in Amendment §11:
+
+  §5.3 — a TYPED INTERNAL proof (``VerifiedReadResult`` / ``VerifiedCreationEffect``)
+         used ONLY by the internal trusted read service. An arbitrary
+         ``raw_evidence`` Mapping is NOT an authorization credential, and the frozen
+         PUBLIC ``AdapterReadResult`` is NOT extended (its field set is hard-sealed
+         to ``{external_state, observed_at, raw_evidence}`` by
+         ``test_adapter_read_contract.py``).
+  §6.2 — strict correlation lives in the PULL-only read-orchestration / proof-
+         verification layer, using a ``ReadCorrelationContext`` the PLATFORM derives
+         from IMMUTABLE history. The frozen ``AdapterReadRequest`` is NOT extended
+         (its field set is hard-sealed to ``{execution_id, adapter,
+         external_reference}``).
+
+THE THREE BINDING CONSTRAINTS (Amendment §11.2) THIS MODULE HONORS:
+
+  1. AN INTERNAL TYPE IS NOT A MAGIC CREDENTIAL. A ``frozen dataclass`` cannot stop
+     arbitrary code from constructing a same-named object. The real security boundary
+     is the CONTROLLED CALL CHAIN, not the type name: this verifier is reachable ONLY
+     from ``outcomes/verified_proof.reconcile_verified_execution`` (an authenticated-
+     operator PULL orchestration); the proof data comes ONLY from a platform-controlled
+     source (a factory-authorized trusted reader's real ``GET`` + facts derived from
+     the immutable ``execution_log``); the reconcile request body is EMPTY with
+     ``extra="forbid"`` so a client cannot inject ANY proof/context/verified field; NO
+     route accepts a client-constructed ``VerifiedReadResult`` / ``VerifiedCreationEffect``
+     / ``ReadCorrelationContext``; and the webhook path is a SEPARATE function graph
+     that never reaches this verifier. "Do not import" is NOT the only defense — the
+     call-chain reachability is (proven by AST + runtime tests in the M3 suite).
+  2. HISTORY IS NEVER FABRICATED. ``ReadCorrelationContext`` carries ONLY facts that
+     really exist in the immutable dispatch chain. Amendment §11.3 source-verified
+     that the target INSTANCE / TENANT binding DOES NOT EXIST in ``ExecutionLog`` nor
+     in the TheHive 4.1.24-1 ``OutputCase``, so ``instance_binding`` / ``tenant_binding``
+     stay ``None`` (UNKNOWN) for ALL real history and are NEVER back-filled from the
+     CURRENT config (base URL / tenant / version). Gate 5 therefore FAILS CLOSED for
+     every real historical execution (Amendment §12 — the sole remaining design blocker).
+  3. VERSION CONFIG IS NOT A LIVENESS PROOF. ``THEHIVE_EXPECTED_VERSION == 4.1.24-1``
+     only proves an operator CONFIGURED that expectation; it does NOT prove the remote
+     server actually runs it. Nothing here treats a config string as a live proof.
+
+PURE, SIDE-EFFECT FREE. This module is declarative types + constants + ONE pure
+adjudicator (``verify_creation_effect``). It imports NO sqlalchemy, NO HTTP, NO
+``app.models``, NO ``app.services.outcomes``, NO ``app.services.executions`` — only
+stdlib and the pure A1 read-contract request shape. The DB-owning derivation /
+orchestration / persistence live in ``outcomes/verified_proof.py`` (which MAY own a
+transaction); the dependency direction is one-way (outcomes -> this pure module),
+never the reverse.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Protocol, runtime_checkable
+
+from app.services.manual_reconcile.read.base import AdapterReadRequest
+
+# ---------------------------------------------------------------------------
+# The approved creation action + approval status (gate 6)
+# ---------------------------------------------------------------------------
+#: The ONLY TheHive action this platform dispatches (``executions.thehive.THEHIVE_ACTIONS``
+#: = ``{"escalate_to_incident}``). Gate 6 requires the immutable dispatch chain's
+#: server-snapshotted ``action`` to EQUAL this — a case Resolved / a task Completed /
+#: a Cortex job / any other effect is NEVER this action's creation effect (Amendment
+#: §8: "case created != case resolved"). Declared here (not imported from the WRITE
+#: side) to keep the read/proof layer physically isolated from ``app.services.executions``
+#: (design §21); an M3 Component test pins this string is a member of the frozen
+#: ``THEHIVE_ACTIONS`` so the two can never silently drift.
+APPROVED_CREATION_ACTION = "escalate_to_incident"
+
+#: The approval status gate 6 requires on the chain's linked ``AIResponseApproval``.
+#: A dispatch that was never ``approved`` (requested / rejected / absent) is NEVER a
+#: verified creation effect — the reference must come from an APPROVED escalate.
+APPROVED_APPROVAL_STATUS = "approved"
+
+#: The proof scope stamped into the whitelisted Outcome detail (§3): declares this
+#: ``confirmed_success`` arrived through the trusted creation-proof channel, NOT the
+#: shared (empty) external-state vocabulary.
+PROOF_SCOPE_VERIFIED_CREATION = "verified_creation"
+
+
+# ---------------------------------------------------------------------------
+# Gate identities + fail-closed reason codes (Amendment §4 six conjunctive gates)
+# ---------------------------------------------------------------------------
+#: The six conjunctive gates, in evaluation order. EVERY one must pass for a
+#: ``VerifiedCreationEffect``; the FIRST failure yields a ``CreationRefusal`` carrying
+#: its gate + a SAFE STATIC reason code (never a secret, never a raw reference value).
+GATE_IDENTITY = "identity"
+GATE_CORRELATION = "correlation"
+GATE_CREATION_TIME = "creation_time"
+GATE_TIME_ORDER = "time_order"
+GATE_INSTANCE_TENANT = "instance_tenant"
+GATE_APPROVED_ACTION = "approved_action"
+
+# gate 1 — IDENTITY
+REASON_NO_STRING_RESOURCE_ID = "no_string_resource_id"
+REASON_RESOURCE_ID_MISMATCH = "resource_id_mismatch"
+REASON_REFERENCE_UNKNOWN = "reference_unknown"
+# gate 2 — CORRELATION
+REASON_MISSING_EXECUTION_CORRELATION_TAG = "missing_execution_correlation_tag"
+# gate 3 — CREATION-TIME
+REASON_MISSING_CREATED_AT = "missing_created_at"
+# gate 4 — TIME-ORDER + bounded window + exact immutable-dispatch match
+REASON_DISPATCH_TIME_UNKNOWN = "dispatch_time_unknown"
+REASON_CREATED_BEFORE_DISPATCH = "created_before_dispatch"
+REASON_CREATED_OUT_OF_WINDOW = "created_out_of_window"
+REASON_DISPATCH_CREATED_AT_UNKNOWN = "dispatch_created_at_unknown"
+REASON_DISPATCH_CREATED_AT_MISMATCH = "dispatch_created_at_mismatch"
+# gate 5 — INSTANCE / TENANT (Amendment §12: UNKNOWN for ALL real history -> fail-closed)
+REASON_INSTANCE_BINDING_UNKNOWN = "instance_binding_unknown"
+REASON_INSTANCE_MISMATCH = "instance_mismatch"
+REASON_TENANT_BINDING_UNKNOWN = "tenant_binding_unknown"
+REASON_TENANT_MISMATCH = "tenant_mismatch"
+# gate 6 — APPROVED ACTION + reference provenance
+REASON_UNAPPROVED_ACTION = "unapproved_action"
+REASON_APPROVAL_NOT_APPROVED = "approval_not_approved"
+REASON_REFERENCE_NOT_FROM_TERMINAL_SUCCESS = "reference_not_from_terminal_success"
+
+
+# ---------------------------------------------------------------------------
+# Bounded time window (gate 4) — DEFENSE-IN-DEPTH, NOT an authoritative number
+# ---------------------------------------------------------------------------
+#: Bounded clock-skew tolerance for the "created before dispatch" sanity check.
+#:
+#: WHY THIS VALUE (Amendment §4: "不得随意写死一个数字后宣称权威"). This is NOT the
+#: authoritative creation bound — the AUTHORITATIVE gate-4 check is the EXACT match
+#: against ``dispatch_created_at_millis`` (the ``createdAt`` the platform PERSISTED
+#: into the immutable terminal ``succeeded`` row's ``raw_response`` at dispatch time).
+#: A live-read ``createdAt`` that does not EQUAL that immutable value is refused
+#: (``dispatch_created_at_mismatch``) with NO window involved. This skew bound is a
+#: DEFENSE-IN-DEPTH sanity check that independently rejects an absurd ``createdAt``
+#: (the reviewer's ten-year-old re-tagged-case probe) EVEN IF the exact-match source
+#: fact were somehow absent. Its magnitude mirrors the platform's existing frozen
+#: bounded-skew precedent ``reconciliation.MAX_FUTURE_SKEW`` (300s, design §10.5):
+#: SentinelFlow stamps the ``succeeded`` row's ``created_at`` (``dispatch_time``)
+#: AFTER the synchronous ``POST /api/case`` returns, so a legitimate ``createdAt``
+#: precedes ``dispatch_time`` by well under a second; 300s is a generous cross-clock
+#: (SentinelFlow host vs TheHive host) NTP-skew tolerance, never a claim about the
+#: real creation window.
+MAX_DISPATCH_CLOCK_SKEW = timedelta(seconds=300)
+
+#: Bounded forward window for the "created out of window" sanity check.
+#:
+#: Same discipline as ``MAX_DISPATCH_CLOCK_SKEW``: a DEFENSE-IN-DEPTH bound, NOT the
+#: authoritative gate (the exact immutable ``dispatch_created_at_millis`` match is).
+#: A case is created DURING the synchronous ``POST``, so its ``createdAt`` cannot be
+#: meaningfully LATER than the ``dispatch_time`` row-stamp that follows the response;
+#: more than 300s of forward skew (the ``MAX_FUTURE_SKEW`` precedent) is an absurd
+#: future-dated ``createdAt`` (a probe) and is refused. It is NEVER used to gain a
+#: sorting advantage for a missing/early time (Amendment §6.1).
+MAX_CREATION_WINDOW = timedelta(seconds=300)
+
+
+def created_at_to_datetime(value: object) -> datetime | None:
+    """Convert an ``OutputCase.createdAt`` (epoch MILLISECONDS) to an aware UTC
+    datetime, or ``None`` when it is absent / malformed / absurd. PURE.
+
+    This is the M3 proof-layer canonical converter. It is SEMANTICALLY IDENTICAL to
+    ``read_adapters.thehive._created_at_to_datetime`` (the frozen M2 read-path helper,
+    preserved byte-identical so the sealed ``read()`` never changes); an M3 Component
+    test pins the two agree on a matrix (epoch millis / bool / non-number / out-of-range
+    / None) so the proof layer and the read path can never drift. ScalliGraph
+    serializes a ``Date`` as ``JsNumber(d.getTime)`` (milliseconds); a ``bool`` is NOT
+    a timestamp (``isinstance(True, int)`` is True in Python, so it is excluded);
+    ``datetime.fromtimestamp`` can raise on an out-of-range value, and any failure
+    yields ``None`` (fail-closed — the verifier never substitutes a server time for
+    the historical creation time, Amendment §6.1).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000.0, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def created_at_millis(value: object) -> int | None:
+    """The RAW epoch-milliseconds ``createdAt`` as an ``int``, or ``None`` when it is
+    absent / a bool / a non-integer / malformed. PURE.
+
+    Gate 4's AUTHORITATIVE exact match compares the live-read ``createdAt`` against the
+    immutable ``dispatch_created_at`` on these RAW INTEGERS (not the converted
+    datetimes), so the decisive check is independent of any datetime-conversion
+    precision concern: the same external case always re-serves the SAME immutable
+    ``createdAt`` millis, and a different (historical / cross-instance) case never does.
+    A ``float`` millis is refused (ScalliGraph emits an integer ``JsNumber`` for a
+    ``Date``; a float is not a faithful creation timestamp).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+# ---------------------------------------------------------------------------
+# The typed observation a TRUSTED reader returns (Amendment §5.3)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class VerifiedReadResult:
+    """The TYPED observation an internal TRUSTED reader returns from ``read_creation``
+    (Amendment §5.3 — NOT the frozen public ``AdapterReadResult``, NOT an arbitrary
+    ``raw_evidence`` Mapping).
+
+    It is a faithful OBSERVATION, never a VERDICT: the reader reports WHAT IT SAW on
+    the single ``GET`` and ``verify_creation_effect`` adjudicates it against the
+    platform-derived immutable ``ReadCorrelationContext``. Fields:
+
+      resource_id -- the fetched string ``_id`` (fallback ``id``) EXACTLY as observed,
+          even when it does NOT match the persisted reference (so gate 1 can refuse
+          with the precise ``resource_id_mismatch`` reason). ``None`` when no string
+          id was present.
+      correlation_tag_present -- whether the resource's ``tags`` carried THIS
+          execution's ``sentinelflow:execution:{id}`` tag (the reader computes it with
+          the single-source-of-truth tag helper; the verifier trusts the reader's
+          observation because the reader is a platform-controlled, factory-authorized
+          component, NOT client input).
+      external_created_at / external_created_at_millis -- the authoritative EXTERNAL
+          creation time (``OutputCase.createdAt``) as an aware UTC datetime AND its raw
+          epoch-millis. ``None`` when absent / invalid (gate 3 refuses).
+      case_number -- the audit-only human ``caseId`` (an ``int``), NEVER the reference
+          and NEVER required; ``None`` when absent / non-int / a bool.
+      observed_instance / observed_tenant -- the instance / tenant identity the read
+          ACTUALLY hit. TheHive 4.1.24-1 ``OutputCase`` carries NEITHER (Amendment
+          §11.3 / §12.1), so the real reader ALWAYS sets both ``None`` -> gate 5 fails
+          CLOSED. Only a future forward-binding-capable reader (Amendment §12, not yet
+          landed) could populate them; a test double simulates that shape.
+
+    Immutable (frozen + slots). Carries NO credential, NO raw response body, NO
+    outcome word.
+    """
+
+    resource_id: str | None
+    correlation_tag_present: bool
+    external_created_at: datetime | None
+    external_created_at_millis: int | None
+    case_number: int | None
+    observed_instance: str | None
+    observed_tenant: str | None
+
+
+@runtime_checkable
+class TrustedCreationReader(Protocol):
+    """The internal trusted-reader capability (Amendment §5.3 / constraint #1).
+
+    A reader the PULL-only proof orchestration may hand an ``AdapterReadRequest`` to
+    for a TYPED creation observation. ``isinstance`` against this ``runtime_checkable``
+    Protocol checks ONLY the presence of ``read_creation`` — the TRUST does NOT come
+    from the type name (a frozen dataclass / Protocol cannot stop arbitrary code from
+    implementing it). It comes from the CONTROLLED CALL CHAIN: the orchestration is
+    reachable only from an authenticated-operator PULL entrypoint, and the reader
+    instance is obtained from the settings-driven factory whose THREE fail-closed gates
+    (well-formed base URL + an INDEPENDENT read-only key + an EXACT certified-version
+    match) are the real trust anchor (``read_adapters.registry``). The frozen public
+    ``ReadAdapter.read`` verb is UNCHANGED; ``read_creation`` is an ADDITIONAL internal
+    read verb on the concrete reader (it is a READ, never a write verb, so the
+    write-verb-absence seal is untouched).
+    """
+
+    def read_creation(self, request: AdapterReadRequest) -> VerifiedReadResult:
+        """One ``GET`` -> the typed creation observation (never a mutation, never a
+        retry, never a verdict)."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# The platform-derived immutable correlation context (Amendment §6.2)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class ReadCorrelationContext:
+    """The IMMUTABLE dispatch facts the PLATFORM derives from the historical
+    ``execution_log`` chain (Amendment §6.2) — the strict-correlation half the frozen
+    ``AdapterReadRequest`` deliberately does NOT carry.
+
+    Built ONLY by ``outcomes/verified_proof.derive_read_correlation_context`` from a
+    read-only SELECT of the chain; NEVER from an HTTP request body, NEVER from the
+    current config. Fields whose immutable fact DOES NOT EXIST stay ``None`` (UNKNOWN)
+    and are NEVER back-filled (constraint #2):
+
+      execution_id / adapter / external_reference -- the correlated chain identity +
+          the adapter (``detail["executor"]`` of the first row) + the persisted STRING
+          resource reference (``detail["case_id"]`` of the terminal ``succeeded`` row).
+      approved_action -- the server-snapshotted ``action`` column (``escalate_to_incident``);
+          NEVER accepted from a request body.
+      approval_status -- the linked ``AIResponseApproval.status`` (``approved``); gate 6
+          requires the dispatch was genuinely approved.
+      dispatch_time -- the immutable SERVER timestamp (``created_at``) of the terminal
+          dispatch row: the platform's record of WHEN it dispatched. ``None`` if absent
+          (gate 4 fails closed).
+      dispatch_created_at / dispatch_created_at_millis -- the EXTERNAL ``createdAt`` the
+          platform PERSISTED into the terminal ``succeeded`` row's ``raw_response`` at
+          dispatch time (the authoritative gate-4 exact-match source). ``None`` if the
+          immutable fact is absent (gate 4 fails closed — NEVER re-derived from the live
+          read, NEVER from config).
+      instance_binding / tenant_binding -- the authenticated target instance / tenant at
+          dispatch time. Amendment §11.3 source-verified these DO NOT EXIST in current
+          history, so they are ``None`` (UNKNOWN) for ALL real executions and gate 5
+          FAILS CLOSED (Amendment §12). A future forward-binding Amendment (§12.2) may
+          populate them from an authenticated dispatch-time fact — NEVER from config.
+      reference_from_terminal_success -- whether ``external_reference`` came from a
+          terminal ``succeeded`` row (gate 6: the reference must be the persisted result
+          of the corresponding execution, never a fabricated handle).
+
+    Immutable (frozen + slots). Carries NO credential, NO operator, NO callback token.
+    """
+
+    execution_id: uuid.UUID
+    adapter: str
+    external_reference: str | None
+    approved_action: str | None
+    approval_status: str | None
+    dispatch_time: datetime | None
+    dispatch_created_at: datetime | None
+    dispatch_created_at_millis: int | None
+    instance_binding: str | None
+    tenant_binding: str | None
+    reference_from_terminal_success: bool
+
+
+# ---------------------------------------------------------------------------
+# The verifier's two verdicts (Amendment §5.3)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class VerifiedCreationEffect:
+    """The POSITIVE verdict: ALL SIX conjunctive gates passed, so the trusted read
+    INDEPENDENTLY proves THIS approved execution created THIS case (Amendment §4).
+
+    This is the ONLY thing that authorizes a ``confirmed_success`` Outcome Fact on the
+    source-isolated channel — and it is produced ONLY by ``verify_creation_effect``
+    from a platform-derived ``ReadCorrelationContext`` + a trusted ``VerifiedReadResult``.
+    It is NOT constructible from an HTTP body (no route accepts one) and NOT reachable
+    from the webhook path.
+
+    Carries ONLY what the whitelisted persistence detail needs (§3): the correlated
+    identity, the authoritative EXTERNAL creation time (-> the fact's ``observed_at``,
+    ``observed_at_kind="external"``), the audit-only case number, and the two gate-5
+    verification BOOLEANS (``instance_verified`` / ``tenant_verified``) — NEVER the raw
+    instance / tenant VALUES (§3: "tenant_verified: bool 而非租户敏感原值"). Immutable.
+    """
+
+    execution_id: uuid.UUID
+    adapter: str
+    external_reference: str
+    external_created_at: datetime
+    case_number: int | None
+    instance_verified: bool
+    tenant_verified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CreationRefusal:
+    """The NEGATIVE verdict: at least one gate FAILED, so the read does NOT prove a
+    verified creation (Amendment §4 — fail-closed).
+
+    A refusal produces ZERO Outcome Fact and is NEVER ``confirmed_failure`` (the case
+    may exist but be unprovable as THIS execution's effect, or may have been created
+    then re-tagged / deleted — a refused proof is not proof of failure) and NEVER
+    ``reconciliation_failed`` (that is the read-TRANSPORT-failure verdict, a separate
+    path). ``gate`` / ``reason`` are SAFE STATIC codes for diagnostics; they echo NO
+    secret and NO raw reference value. Immutable.
+    """
+
+    gate: str
+    reason: str
+
+
+def verify_creation_effect(
+    context: ReadCorrelationContext, observed: VerifiedReadResult
+) -> VerifiedCreationEffect | CreationRefusal:
+    """THE single trusted creation-effect verifier (Amendment §5.3 / §6.2 — "单一可信
+    证明校验器"). PURE: no DB, no HTTP, no side effect, no mutation of either input.
+
+    Cross-checks a trusted reader's OBSERVATION (``observed``) against the PLATFORM-
+    derived IMMUTABLE dispatch facts (``context``) through the SIX conjunctive gates of
+    Amendment §4, in order. The FIRST failing gate yields a ``CreationRefusal`` (its
+    gate + a safe static reason); ALL SIX passing yields a ``VerifiedCreationEffect``.
+    This function is the crux of the source-isolation channel: it is the ONLY place a
+    ``confirmed_success`` can be authorized, and it can only be fed a context the
+    platform built from immutable history and an observation a trusted reader returned
+    — NEVER a client-supplied proof.
+
+    THE SIX GATES (Amendment §4):
+
+      1. IDENTITY — the observed string ``resource_id`` is a non-empty str EQUAL to the
+         persisted ``external_reference`` (the terminal ``succeeded`` row's ``case_id``).
+      2. CORRELATION — the observed resource carried THIS execution's correlation tag.
+      3. CREATION-TIME — an authoritative external ``createdAt`` was observed (a valid
+         aware datetime), never a server-observation substitute.
+      4. TIME-ORDER — ``createdAt`` is not absurdly before ``dispatch_time`` (skew bound),
+         not absurdly after it (forward window), and — the AUTHORITATIVE, decisive check
+         — its RAW epoch-millis EQUALS the immutable ``dispatch_created_at_millis`` the
+         platform persisted at dispatch time. This EXACT match kills the ten-year-old
+         re-tagged-case probe (its ``createdAt`` can never equal the dispatch-time value)
+         with NO arbitrary window (Amendment §11.3 "门④更强").
+      5. INSTANCE / TENANT — the observed instance / tenant EQUAL the authenticated
+         dispatch-time bindings. For ALL real history both bindings are UNKNOWN
+         (``None``) -> FAIL CLOSED (``instance_binding_unknown`` / ``tenant_binding_unknown``,
+         Amendment §12); the real 4.1.24-1 reader also observes ``None`` -> a second
+         fail-closed. NO confirmed_success is reachable for real history until §12 lands.
+      6. APPROVED ACTION — the immutable dispatch ``action`` is the approved
+         ``escalate_to_incident``, the linked approval status is ``approved``, and the
+         reference came from a terminal ``succeeded`` row (never a fabricated handle).
+
+    A missing immutable fact (``dispatch_time`` / ``dispatch_created_at_millis`` /
+    ``instance_binding`` / ``tenant_binding``) is NEVER treated as a pass and NEVER
+    back-filled from config — it fails the relevant gate closed (constraint #2).
+    """
+    # -- gate 1: IDENTITY ----------------------------------------------------
+    resource_id = observed.resource_id
+    if not isinstance(resource_id, str) or not resource_id:
+        return CreationRefusal(GATE_IDENTITY, REASON_NO_STRING_RESOURCE_ID)
+    if not isinstance(context.external_reference, str) or not context.external_reference:
+        # The platform could not derive an immutable reference -> fail closed (never
+        # accept an observed id with nothing to match it against).
+        return CreationRefusal(GATE_IDENTITY, REASON_REFERENCE_UNKNOWN)
+    if resource_id != context.external_reference:
+        # A DIFFERENT case answered (cross-instance / historical same-number) -> never
+        # this execution's effect.
+        return CreationRefusal(GATE_IDENTITY, REASON_RESOURCE_ID_MISMATCH)
+
+    # -- gate 2: CORRELATION -------------------------------------------------
+    if observed.correlation_tag_present is not True:
+        return CreationRefusal(
+            GATE_CORRELATION, REASON_MISSING_EXECUTION_CORRELATION_TAG
+        )
+
+    # -- gate 3: CREATION-TIME -----------------------------------------------
+    created = observed.external_created_at
+    if not isinstance(created, datetime) or created.tzinfo is None:
+        # Absent / invalid / naive -> no authoritative external creation time. The
+        # verifier NEVER substitutes a server-observation time (Amendment §6.1).
+        return CreationRefusal(GATE_CREATION_TIME, REASON_MISSING_CREATED_AT)
+
+    # -- gate 4: TIME-ORDER + bounded window + exact immutable-dispatch match --
+    dispatch_time = context.dispatch_time
+    if not isinstance(dispatch_time, datetime) or dispatch_time.tzinfo is None:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_TIME_UNKNOWN)
+    # 4a. not absurdly BEFORE dispatch (defense-in-depth skew bound; independently
+    #     kills the ten-year-old re-tagged probe).
+    if created < dispatch_time - MAX_DISPATCH_CLOCK_SKEW:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_CREATED_BEFORE_DISPATCH)
+    # 4b. not absurdly AFTER dispatch (defense-in-depth forward window).
+    if created > dispatch_time + MAX_CREATION_WINDOW:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_CREATED_OUT_OF_WINDOW)
+    # 4c. AUTHORITATIVE exact match against the immutable dispatch-time createdAt.
+    if context.dispatch_created_at_millis is None:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_CREATED_AT_UNKNOWN)
+    if observed.external_created_at_millis != context.dispatch_created_at_millis:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_CREATED_AT_MISMATCH)
+
+    # -- gate 5: INSTANCE / TENANT (Amendment §12 — fail-closed for real history) --
+    if context.instance_binding is None:
+        return CreationRefusal(GATE_INSTANCE_TENANT, REASON_INSTANCE_BINDING_UNKNOWN)
+    if observed.observed_instance is None or observed.observed_instance != context.instance_binding:
+        return CreationRefusal(GATE_INSTANCE_TENANT, REASON_INSTANCE_MISMATCH)
+    if context.tenant_binding is None:
+        return CreationRefusal(GATE_INSTANCE_TENANT, REASON_TENANT_BINDING_UNKNOWN)
+    if observed.observed_tenant is None or observed.observed_tenant != context.tenant_binding:
+        return CreationRefusal(GATE_INSTANCE_TENANT, REASON_TENANT_MISMATCH)
+
+    # -- gate 6: APPROVED ACTION + reference provenance ----------------------
+    if context.approved_action != APPROVED_CREATION_ACTION:
+        return CreationRefusal(GATE_APPROVED_ACTION, REASON_UNAPPROVED_ACTION)
+    if context.approval_status != APPROVED_APPROVAL_STATUS:
+        return CreationRefusal(GATE_APPROVED_ACTION, REASON_APPROVAL_NOT_APPROVED)
+    if context.reference_from_terminal_success is not True:
+        return CreationRefusal(
+            GATE_APPROVED_ACTION, REASON_REFERENCE_NOT_FROM_TERMINAL_SUCCESS
+        )
+
+    # -- ALL SIX GATES PASSED -> the verified creation effect ----------------
+    return VerifiedCreationEffect(
+        execution_id=context.execution_id,
+        adapter=context.adapter,
+        external_reference=resource_id,
+        external_created_at=created,
+        case_number=observed.case_number,
+        # gate 5 passed, so both bindings matched an authenticated dispatch-time fact.
+        instance_verified=True,
+        tenant_verified=True,
+    )

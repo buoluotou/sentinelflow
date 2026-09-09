@@ -13,6 +13,20 @@ structurally CANNOT execute / compensate / dispatch / create_case / close_case �
 those verbs do not exist on this contract. It performs a single ``GET`` and NEVER
 mutates the external world (read / query ONLY), NEVER retries, NEVER polls.
 
+M3 (Phase 3.4.5-M3 §3) ADDS one INTERNAL read verb, ``read_creation``, for the
+SOURCE-ISOLATED trusted-proof channel (Amendment §5.3): it performs the SAME
+single ``GET`` (sharing the no-redirect transport, the HTTP-error discrimination
+and the secret sanitizer) but returns a TYPED ``VerifiedReadResult`` OBSERVATION
+instead of the synthesized ``case_created`` word — the VERDICT is adjudicated by
+``verified.verify_creation_effect`` against a platform-derived immutable context,
+NEVER here. The frozen PUBLIC ``read`` (the A1 contract's SOLE abstract verb) is
+UNCHANGED byte-for-byte; ``read_creation`` is an ADDITIONAL READ verb on the
+concrete subclass (never a write verb, so BOTH the write-verb-absence seal
+(``test_read_adapter_thehive.py``) and the ABC-level ``vars(ReadAdapter) == {read}``
+seal (``test_adapter_read_contract.py``) are untouched). It is reachable ONLY from
+``outcomes/verified_proof.reconcile_verified_execution`` (the authenticated-operator
+PULL orchestration), NEVER from the webhook path.
+
 WHERE THIS LIVES — AND WHY (evidence-driven placement). The 3.4.5-A1 read
 CONTRACT (``app/services/manual_reconcile/read/``) is a SEALED PURE package:
 ``test_adapter_read_contract.py`` AST-audits its ENTIRE import surface
@@ -129,6 +143,11 @@ from app.services.manual_reconcile.read.base import (
     AdapterReadRequest,
     AdapterReadResult,
     ReadAdapter,
+)
+from app.services.read_adapters.verified import (
+    VerifiedReadResult,
+    created_at_millis,
+    created_at_to_datetime,
 )
 
 #: The synthesized case-CREATION effect word — the ONLY external_state this
@@ -357,6 +376,162 @@ class TheHiveReadAdapter(ReadAdapter):
         if not isinstance(payload, dict):
             return _unverified("non_object_body", status)
         return self._verify(request, payload, status)
+
+    # -- trusted creation read (M3 §3 — the source-isolated proof channel) --
+
+    def read_creation(self, request: AdapterReadRequest) -> VerifiedReadResult:
+        """One ``GET /api/case/{reference}`` -> the TYPED creation OBSERVATION (M3 §3).
+
+        The INTERNAL trusted-reader verb for the source-isolated proof channel
+        (Amendment §5.3). It performs the SAME single ``GET`` as ``read`` and returns
+        a ``VerifiedReadResult`` — a faithful OBSERVATION of what the ONE ``GET`` saw,
+        NEVER a VERDICT: ``verified.verify_creation_effect`` adjudicates it against the
+        platform-derived immutable ``ReadCorrelationContext`` through the six conjunctive
+        gates (Amendment §4). The frozen public ``read`` is UNCHANGED; this is an
+        ADDITIONAL internal READ verb (never a write verb, never a mutation, never a
+        retry, never a poll).
+
+        Transport failures (401 / 403 / 404 / timeout / 5xx / a refused redirect / an
+        unexpected non-200) raise ``ReadTransportError`` EXACTLY as ``read`` does, so the
+        orchestration maps them to ``reconciliation_failed`` — the INDEPENDENT read-failure
+        semantics Amendment §4 requires (NEVER ``confirmed_failure``). A 200 whose body
+        yields no string resource id returns an observation with ``resource_id=None`` (the
+        verifier refuses at gate 1 — ZERO fact, mirroring ``read``'s ``case_unverified``,
+        NOT a transport failure).
+
+        ``observed_instance`` / ``observed_tenant`` are ALWAYS ``None``: TheHive 4.1.24-1
+        ``OutputCase`` carries NEITHER an instance nor a tenant/organisation identity
+        (Amendment §11.3 / §12.1), so gate 5 FAILS CLOSED for every real read — no real
+        historical execution can reach ``confirmed_success`` until the §12 forward-binding
+        Amendment lands. This method NEVER back-fills them from the current config.
+        """
+        payload = self._read_creation_payload(request)
+        if payload is None:
+            # A 200 with a non-JSON / non-object body: NO string resource id was observed
+            # -> the verifier refuses at gate 1 (no_string_resource_id), ZERO fact. This
+            # mirrors read()'s case_unverified (a refusal, never a transport failure, never
+            # a fabricated id).
+            return VerifiedReadResult(
+                resource_id=None,
+                correlation_tag_present=False,
+                external_created_at=None,
+                external_created_at_millis=None,
+                case_number=None,
+                observed_instance=None,
+                observed_tenant=None,
+            )
+
+        # IDENTITY observation — the string _id (fallback id) EXACTLY as observed, EVEN when
+        # it does NOT match the persisted reference: the verifier (not this reader) adjudicates
+        # the match -> resource_id_mismatch. The numeric caseId is NEVER a substitute (M1 §4).
+        resource_id = payload.get("_id")
+        if not isinstance(resource_id, str) or not resource_id:
+            resource_id = payload.get("id")
+        if not isinstance(resource_id, str) or not resource_id:
+            resource_id = None
+
+        # CORRELATION observation — whether THIS execution's tag is present, computed with the
+        # SAME single-source-of-truth helper read() uses (sentinelflow_execution_tag via
+        # _tags_carry_execution), so the two read paths can never drift on the tag semantics.
+        correlation_tag_present = _tags_carry_execution(
+            payload.get("tags"), request.execution_id
+        )
+
+        # CREATION-TIME observation — the authoritative EXTERNAL createdAt (epoch millis) as an
+        # aware datetime AND its RAW millis. Gate 4's decisive exact match compares the RAW
+        # INTEGERS against the immutable dispatch-time createdAt, so both are reported; a float
+        # millis yields a datetime but a None raw-millis (gate 4 then refuses the mismatch —
+        # fail-closed). None when absent / invalid (gate 3 refuses; NEVER a server-time substitute).
+        raw_created_at = payload.get("createdAt")
+        external_created_at = created_at_to_datetime(raw_created_at)
+        external_created_at_millis = created_at_millis(raw_created_at)
+
+        # audit-only human case number; NEVER the reference, NEVER required, NEVER a bool.
+        case_number = payload.get("caseId")
+        if not isinstance(case_number, int) or isinstance(case_number, bool):
+            case_number = None
+
+        return VerifiedReadResult(
+            resource_id=resource_id,
+            correlation_tag_present=correlation_tag_present,
+            external_created_at=external_created_at,
+            external_created_at_millis=external_created_at_millis,
+            case_number=case_number,
+            # 4.1.24-1 OutputCase carries NO instance / tenant identity (Amendment §11.3 /
+            # §12.1) -> ALWAYS None -> gate 5 fails CLOSED for every real read.
+            observed_instance=None,
+            observed_tenant=None,
+        )
+
+    def _read_creation_payload(self, request: AdapterReadRequest) -> dict | None:
+        """The single ``GET /api/case/{reference}`` for ``read_creation`` -> the parsed dict
+        body, or ``None`` when a 200 carried a non-JSON / non-object body (an observation the
+        verifier refuses at gate 1, mirroring ``read``'s ``case_unverified`` — ZERO fact, NOT a
+        transport failure). Raises ``ReadTransportError`` on ANY transport failure (timeout /
+        401 / 403 / 404 / 5xx / a refused redirect / an unexpected non-200) EXACTLY as the
+        frozen ``read`` does.
+
+        DELIBERATE MIRROR, NOT A REFACTOR (Amendment §11.4: "冻结 read() 保持不变"). ``read``
+        keeps its own inline GET sequence byte-identical; this helper mirrors ONLY the mechanical
+        try/except skeleton for ``read_creation``. EVERY security-critical decision is
+        SINGLE-SOURCED in the shared members BOTH paths call — the no-redirect ``self._transport``
+        (M2-R §4: a 3xx never carries Authorization cross-host), ``_on_http_error`` (the
+        401/403/404/5xx -> SAFE STATIC category mapping) and ``_sanitize`` (3.2.2 secret
+        redaction) — so the two GET paths can never drift on security semantics; only the
+        control-flow skeleton is duplicated.
+        """
+        reference = request.external_reference
+        if not isinstance(reference, str) or not reference:
+            # The orchestration short-circuits an UNKNOWN reference BEFORE the GET (gate 1
+            # reference_unknown); this defensive branch mirrors read()'s missing_reference
+            # refusal as a transport-shaped uncertainty (never fabricate a reference).
+            raise ReadTransportError(
+                self._sanitize("thehive case creation read missing reference"),
+                category="transport_error",
+            )
+        safe_reference = urllib.parse.quote(reference, safe="")
+        url = f"{self._credentials.base_url}/api/case/{safe_reference}"
+        http_request = urllib.request.Request(
+            url, headers=self._credentials.auth_headers(), method="GET"
+        )
+        try:
+            response = self._transport(http_request, timeout=self._timeout)
+        except TimeoutError as exc:
+            raise ReadTransportError(
+                self._sanitize(
+                    f"thehive case creation read timed out after {self._timeout:g}s"
+                ),
+                category="timeout",
+            ) from exc
+        except urllib.error.HTTPError as exc:
+            raise self._on_http_error(exc) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            raise ReadTransportError(
+                self._sanitize(
+                    f"thehive case creation read connection failed: {exc}"
+                ),
+                category="connection_failure",
+            ) from exc
+
+        status = getattr(response, "status", None)
+        if status != 200:
+            # urllib raises HTTPError for 4xx/5xx, so a NON-raising non-200 is an unexpected
+            # transport shape (an odd 2xx, or a stub returning one) — a read UNCERTAINTY, never
+            # a confirmed effect (identical discipline to the frozen read()).
+            raise ReadTransportError(
+                self._sanitize(
+                    f"thehive case creation read returned unexpected status {status}"
+                ),
+                category="transport_error",
+            )
+        payload_text = response.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(payload_text)
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
 
     # -- internals ---------------------------------------------------------
 
