@@ -583,18 +583,42 @@ class TestZeroFactOnFailure:
         assert _outcome_count(db_session) == 0
 
     def test_thehive_fail_closed_writes_no_fact(self, client, db_session, all_tokens):
-        # §30 / M2 §5: the native-lifecycle words a TheHive webhook could plausibly
-        # carry (resolved/closed/success/completed/ok) are ALL still refused — case
-        # created != resolved. NONE is ``case_created``, the ONLY mapped TheHive
-        # word: it is a reader-synthesized creation-effect signal produced solely by
-        # TheHiveReadAdapter's verified GET on the authenticated reconcile path, and
-        # TheHive emits no such webhook body natively. Zero facts.
+        # §30 / M2-R §2: EVERY TheHive word a webhook could plausibly carry is
+        # refused — the native-lifecycle words (resolved/closed/success/completed/ok,
+        # case created != resolved) AND the M2 §5 synthesized ``case_created``, which
+        # M2-R §2 REMOVED from the path-agnostic vocabulary (fail-closed). Zero facts.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
-        for state in ("resolved", "closed", "success", "completed", "ok"):
+        for state in ("resolved", "closed", "success", "completed", "ok", "case_created"):
             resp = client.post(f"{WEBHOOK}/thehive", json=_body(eid, external_state=state), headers=_bearer(THEHIVE_TOKEN))
             assert resp.status_code == 422, state
         assert _outcome_count(db_session) == 0
+
+    def test_thehive_forged_case_created_callback_is_refused_zero_facts(
+        self, client, db_session, all_tokens
+    ):
+        # M2-R §2 SECURITY REGRESSION (reviewer P1-1). BEFORE the fix, ``case_created``
+        # sat in the path-agnostic thehive vocabulary, so THIS request — a VALID
+        # THEHIVE_CALLBACK_TOKEN (Gate 1 pass), a Gate-2-valid schema, a SEEDED chain
+        # so execution correlation passes (Gate 3), and the bare string
+        # ``case_created`` — mapped straight to ``confirmed_success`` and appended an
+        # Outcome Fact WITHOUT ever passing the trusted reader. That is the G1-A/G1-C
+        # defect class: a verified-effect signal degraded into a string ANY inbound
+        # entry can submit. AFTER M2-R §2 (empty vocabulary, fail-closed) the SAME
+        # forged callback is REFUSED at Gate 4 -> 422 (static detail) -> ZERO fact.
+        # No caller-controllable verified=true flag, no second table: the word simply
+        # maps to NOTHING on the webhook path (and every other path).
+        eid = uuid.uuid4()
+        _seed_chain(db_session, eid)  # Gate 3 correlation PASSES -> refusal is Gate 4
+        resp = client.post(
+            f"{WEBHOOK}/thehive",
+            json=_body(eid, external_state="case_created"),
+            headers=_bearer(THEHIVE_TOKEN),  # a VALID, configured callback token
+        )
+        assert resp.status_code == 422
+        assert resp.json() == {"detail": CALLBACK_VALIDATION_FAILURE_DETAIL}
+        assert _outcome_count(db_session) == 0  # ZERO Outcome Fact — forgery refused
+        _assert_session_clean(db_session)
 
     def test_unsupported_adapter_writes_no_fact(self, client, db_session, all_tokens):
         eid = uuid.uuid4()

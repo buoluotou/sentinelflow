@@ -258,10 +258,26 @@ class TestFailClosedAdapters:
             _map("shuffle", word)
 
     @pytest.mark.parametrize(
-        "word", ["resolved", "success", "closed", "open", "completed"]
+        "word",
+        [
+            "resolved",
+            "success",
+            "closed",
+            "open",
+            "completed",
+            # M2-R §2 (reviewer P1-1): the M2-synthesized ``case_created`` word
+            # was REMOVED from the path-agnostic thehive vocabulary, so the
+            # mapping REFUSES it too — a forged webhook string can never become
+            # confirmed_success at the single convergence point. ``case_unverified``
+            # (the reader's own negative verdict) is likewise NOT a success word.
+            "case_created",
+            "case_unverified",
+        ],
     )
     def test_thehive_every_state_rejected(self, word):
-        # §13.10 / §21: case created != case resolved; no evidenced vocabulary.
+        # §13.10 / §21 / M2-R §2: case created != case resolved; the ENTIRE
+        # thehive vocabulary is now empty (fail-closed), so every word — native
+        # lifecycle words AND the withdrawn synthesized ``case_created`` — refuses.
         with pytest.raises(UnrecognizedExternalState):
             _map("thehive", word)
 

@@ -541,39 +541,48 @@ ADAPTER_STATE_VOCABULARIES: dict[str, AdapterStateVocabulary] = {
     ),
     "thehive": AdapterStateVocabulary(
         adapter="thehive",
-        # M2 §5 (version-qualified, case-CREATION effect ONLY). TheHive creates a
-        # case and NEVER auto-closes it — "case created ≠ case resolved";
-        # investigation is human-led, so NO native TheHive lifecycle STATE
-        # (resolved/closed/solved/…) is evidenced and every such word stays
-        # REFUSED. The ONE word frozen here, ``case_created``, is NOT a native
-        # lifecycle state: it is the SentinelFlow-SYNTHESIZED creation-effect
-        # signal emitted ONLY by ``read_adapters.thehive.TheHiveReadAdapter`` when
-        # the full identity + correlation + creation conjunction holds on a real
-        # ``GET /api/case/{_id}`` (a bare 200 / mere existence yields
-        # ``case_unverified``, which is NOT in this vocabulary and is REFUSED — a
-        # 200 is NEVER laundered into confirmed_success). Source-certified against
-        # TheHive 4.1.24-1 (git ``b6649bb``) / ScalliGraph ``2c2a7a4``: OutputCase
-        # ``_id`` == ``id`` (String), ``createdAt`` (epoch millis -> observed_at),
-        # ``tags`` (Set[String], persisted by CaseSrv.create -> the correlation
-        # channel). NO terminal_failure / pending / ambiguous word is evidenced: a
-        # failed READ (401/403/404/timeout/5xx) is ``reconciliation_failed`` via
-        # the read-failure path, NEVER ``confirmed_failure``. ``case_insensitive``
-        # / ``state_key`` stay at their strict defaults (no TheHive code evidences
-        # a case-fold or a nested state key). Lab runtime evidence GAPPED (LAB
-        # BLOCKED) — the reader is delivered + isolation-tested, NOT yet wired.
-        terminal_success_states=frozenset({"case_created"}),
+        # M2-R §2 SECURITY REMEDIATION (new forward commit; 117ab6b — which added
+        # the M2 §5 ``case_created`` word — is untouched, history is read-only).
+        # M2 §5 froze EXACTLY ONE synthesized word here, ``case_created``, reasoning
+        # that native TheHive never emits it and the callback token defaults empty.
+        # M2 Final Review falsified that as a SECURITY GATE: this vocabulary is
+        # PATH-AGNOSTIC — ``normalize_external_state(adapter, external_state)``
+        # (frozen 2-param) is reached by BOTH the LIVE webhook PUSH path
+        # (webhook.py) AND the manual_reconcile PULL path, and ``map_external_state``
+        # is sealed to a single delegation with NO source / trust_domain branch. So
+        # with a VALID ``THEHIVE_CALLBACK_TOKEN``, a schema- and correlation-valid
+        # webhook body carrying the bare string ``case_created`` maps to
+        # ``confirmed_success`` WITHOUT ever passing the trusted reader — the exact
+        # G1-A defect class (an unsafe mapping proven LIVE-reachable). The frozen
+        # general contract STRUCTURALLY cannot express source isolation (a source
+        # param, an ``if`` branch, or a second table each violate a seal), so per the
+        # reviewer's Amendment clause this applies the G1-C precedent: ALL FOUR SETS
+        # EMPTIED -> fail-closed. ``case_created`` is now unforgeable because it
+        # maps to NOTHING on ANY path (``UnrecognizedExternalState`` -> 422 / ZERO
+        # fact). The reader STILL emits ``case_created`` at the READER level
+        # (identity + correlation + creation conjunction, isolation-tested) but the
+        # mapping REFUSES it until a trusted-reader SOURCE-ISOLATION channel is
+        # designed + approved (see the M2-R Amendment). NO second mapping table, NO
+        # caller-controllable verified flag. Version scope TheHive 4.1.24-1 (git
+        # ``b6649bb``) / ScalliGraph ``2c2a7a4``; wazuh (G1-C) / shuffle / mock
+        # vocabularies are UNCHANGED.
+        terminal_success_states=frozenset(),
         terminal_failure_states=frozenset(),
         pending_states=frozenset(),
         ambiguous_states=frozenset(),
         case_insensitive=False,
         state_key=None,
         evidence=(
-            "M2 §5: case-CREATION effect ONLY. 'case_created' is a SentinelFlow-"
-            "synthesized signal from TheHiveReadAdapter's verified GET /api/case/"
-            "{_id} (identity+correlation+creation conjunction), source-certified "
-            "TheHive 4.1.24-1=b6649bb / ScalliGraph 2c2a7a4; NOT a native "
-            "lifecycle state (resolved/closed/… stay REFUSED); no failure/pending/"
-            "ambiguous word evidenced; Lab runtime evidence GAPPED (LAB BLOCKED)"
+            "M2-R §2 FAIL-CLOSED (forward commit; 117ab6b untouched): the M2 §5 "
+            "synthesized 'case_created' word is REMOVED from this path-agnostic "
+            "vocabulary — the frozen 2-param mapping contract cannot express source "
+            "isolation, so in this shared table the word was forgeable from the LIVE "
+            "webhook inbound path (valid callback token + schema/correlation-valid "
+            "body), the G1-A defect class. The reader still emits case_created "
+            "(isolation-tested) but the mapping now REFUSES it on EVERY path (zero "
+            "fact) until a trusted-reader source-isolation channel is approved (M2-R "
+            "Amendment). Version scope TheHive 4.1.24-1=b6649bb/ScalliGraph 2c2a7a4; "
+            "wazuh/shuffle/mock unchanged."
         ),
     ),
     "mock": AdapterStateVocabulary(
@@ -679,13 +688,14 @@ def normalize_external_state(
 
     THE ANTI-FABRICATION RULE (user §十六): only code/design-evidenced states are
     frozen. G1-C EMPTIED the fabricated Wazuh ``agent_status`` set (see the inline
-    Wazuh note), so Wazuh / Shuffle / Mock have NO evidenced external-state
-    vocabulary and EVERY state they report is unrecognized. M2 §5 adds EXACTLY ONE
-    evidenced word platform-wide: TheHive's synthesized creation-effect signal
-    ``case_created`` (-> confirmed_success), produced only by
-    ``TheHiveReadAdapter``'s verified read and never a native TheHive lifecycle
-    state; every OTHER TheHive state (resolved/closed/… and the reader's own
-    ``case_unverified``) stays unrecognized. An unrecognized state is REFUSED
+    Wazuh note). M2 §5 then added EXACTLY ONE word — TheHive's synthesized
+    ``case_created`` — but M2-R §2 EMPTIED it again (see the inline TheHive note):
+    this vocabulary is PATH-AGNOSTIC, so a source-isolated reader-only signal cannot
+    live in it without being forgeable from the LIVE webhook path, and the frozen
+    2-param contract cannot express source isolation. The result is that NO adapter
+    (Wazuh / Shuffle / TheHive / Mock) has an evidenced external-state vocabulary
+    and EVERY reported state is unrecognized, pending a trusted-reader source-
+    isolation Amendment. An unrecognized state is REFUSED
     (``UnrecognizedExternalState``) — NEVER guessed to ``unknown`` and NEVER
     ``reconciliation_failed``.
     """
