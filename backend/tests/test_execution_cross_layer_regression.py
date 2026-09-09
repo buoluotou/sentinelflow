@@ -756,3 +756,114 @@ class TestFactSmugglingAttacks:
         response = post_execute(client, auth, approval, action="disable_account")
         assert response.status_code == 422
         assert all_rows(db_session) == []
+
+
+# --------------------------------------------------------------------------
+# M4-E: the pre-dispatch binding survives EVERY outcome (M4-A hard requirement)
+# --------------------------------------------------------------------------
+class TestBindingSurvivesEveryOutcome:
+    """M4-A persists the immutable target binding in the ``dispatched`` row BEFORE
+    the external request, so it survives success / timeout / connection failure /
+    HTTP error / response loss alike, and the terminal row only REFERENCES it.
+
+    TestSuccessChain locks the SUCCESS journey; this class locks the FAILURE
+    journeys — the ones that leave NO ``succeeded`` row, exactly where a
+    terminal-only binding (the pre-M4 shape) would be LOST — plus the
+    guard-rejection journey, which never dispatches and so must carry NO binding.
+    Every fact is produced by the REAL service + DB; the only seam is the executor
+    dependency (a failing mock / a rogue adapter), identical to journeys 3-4."""
+
+    def _assert_binding_present_and_referenced(self, rows, approval, execution_id):
+        dispatched = rows[1]
+        assert dispatched.decision == "dispatched"
+        binding = dispatched.detail[BINDING_DETAIL_KEY]
+        assert binding["schema"] == BINDING_SCHEMA
+        assert binding["execution_id"] == str(execution_id)
+        assert binding["approval_id"] == str(approval.id)
+        assert binding["action"] == SNAPSHOT_ACTION
+        assert binding["target"] == SNAPSHOT_TARGET
+        assert binding["approval_status_at_dispatch"] == "approved"
+        assert binding["dispatch_started_at"]  # a non-empty server-clock ISO fact
+        # the mock is NOT a contributor -> honest UNKNOWN identity, never fabricated
+        assert binding["endpoint"] is None
+        assert binding["target_instance"] is None
+        assert binding["target_tenant"] is None
+        # the terminal REFERENCES the same attempt and NEVER re-writes the binding
+        terminal = rows[-1]
+        assert terminal.detail[TERMINAL_REFERENCE_KEY] == binding["attempt_id"]
+        assert BINDING_DETAIL_KEY not in terminal.detail
+
+    def test_binding_survives_success(self, client, db_session, auth):
+        approval, *_ = seed_world(db_session)
+        execution_id = uuid.uuid4()
+        assert post_execute(client, auth, approval, execution_id).status_code == 201
+        rows = assert_chain_rows(
+            db_session, execution_id, ["requested", "dispatched", "succeeded"]
+        )
+        self._assert_binding_present_and_referenced(rows, approval, execution_id)
+
+    @pytest.mark.parametrize(
+        "classification", ["adapter_unavailable", "timeout", "adapter_error"]
+    )
+    def test_binding_survives_adapter_failure(
+        self, client, db_session, auth, app, classification
+    ):
+        # connection failure / timeout / HTTP error: NO succeeded row, yet the
+        # pre-dispatch binding still stands and the failed terminal references it
+        approval, *_ = seed_world(db_session)
+        app.dependency_overrides[get_response_executor] = (
+            lambda: MockExecutor(fail_with=classification)
+        )
+        execution_id = uuid.uuid4()
+        assert post_execute(client, auth, approval, execution_id).status_code == 201
+        rows = assert_chain_rows(
+            db_session, execution_id, ["requested", "dispatched", "failed"]
+        )
+        self._assert_binding_present_and_referenced(rows, approval, execution_id)
+        assert rows[2].detail["classification"] == classification
+
+    @pytest.mark.parametrize("bad_outcome", ROGUE_OUTCOMES)
+    def test_binding_survives_response_loss_protocol_violation(
+        self, client, db_session, auth, app, bad_outcome
+    ):
+        # a lost / unparseable response is judged protocol_violation by the platform;
+        # the binding recorded BEFORE the request still survives the lost response
+        approval, *_ = seed_world(db_session)
+        app.dependency_overrides[get_response_executor] = (
+            lambda: MaliciousAdapter(bad_outcome)
+        )
+        execution_id = uuid.uuid4()
+        assert post_execute(client, auth, approval, execution_id).status_code == 201
+        rows = assert_chain_rows(
+            db_session, execution_id, ["requested", "dispatched", "failed"]
+        )
+        self._assert_binding_present_and_referenced(rows, approval, execution_id)
+        assert rows[2].detail["classification"] == "protocol_violation"
+
+    def test_guard_rejection_writes_no_binding(self, client, db_session, auth, app):
+        # the guard rejects BEFORE the dispatch DTO is built -> NO dispatched row and
+        # NO binding anywhere (a binding is a pre-DISPATCH fact, never pre-approval)
+        approval, *_ = seed_world(db_session, status="rejected")
+        app.dependency_overrides[get_response_executor] = lambda: CanaryExecutor()
+        execution_id = uuid.uuid4()
+        assert post_execute(client, auth, approval, execution_id).status_code == 201
+        rows = assert_chain_rows(
+            db_session, execution_id, ["requested", "guard_rejected"]
+        )
+        for row in rows:
+            assert BINDING_DETAIL_KEY not in row.detail
+            assert TERMINAL_REFERENCE_KEY not in row.detail
+
+    def test_binding_never_leaks_the_execution_token(
+        self, client, db_session, auth, app
+    ):
+        # secret hygiene at the REAL write point, on a failure journey where the
+        # binding survives: the token never lands in any row's detail
+        approval, *_ = seed_world(db_session)
+        app.dependency_overrides[get_response_executor] = (
+            lambda: MockExecutor(fail_with="timeout")
+        )
+        execution_id = uuid.uuid4()
+        assert post_execute(client, auth, approval, execution_id).status_code == 201
+        for row in rows_for(db_session, execution_id):
+            assert TOKEN not in str(row.detail)
