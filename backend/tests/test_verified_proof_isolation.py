@@ -283,6 +283,52 @@ class TestProofChannelClosure:
 
 
 # ===========================================================================
+# 2c. M4-B IDENTITY SEAM ISOLATION — the read-side probe is an UNWIRED seam
+# ===========================================================================
+class TestIdentitySeamIsolation:
+    """M4-B: the read-side identity/version evidence seam (``TheHiveReadAdapter.read_identity``
+    + ``verified.assess_identity_evidence``) is DELIVERED + isolation-tested but NOT wired into
+    any production router, the webhook path, or the reconcile derive orchestration (contract:
+    the sealed registry stays empty, no production router). It NEVER back-fills a gate-5 binding:
+    the assessor is PURE and its ``gate5_instance_binding`` / ``gate5_tenant_binding`` are ALWAYS
+    ``None`` for TheHive 4.1.24-1 (the case-owned tenant is unobservable), so the seam can NEVER
+    unlock ``confirmed_success`` on its own — it upgrades the version assertion to a runtime
+    observation and records the reader's tenant context, nothing more."""
+
+    def test_no_api_router_wires_the_identity_probe(self):
+        for router in sorted((APP / "api" / "v1").glob("*.py")):
+            called = _called_function_names(ast.parse(router.read_text(encoding="utf-8")))
+            assert "read_identity" not in called, router.name
+            assert "assess_identity_evidence" not in called, router.name
+
+    def test_webhook_path_never_reaches_the_identity_probe(self):
+        for relpath in ("services/outcomes/webhook.py", "api/v1/webhooks.py"):
+            called = _called_function_names(_parse(relpath))
+            assert "read_identity" not in called
+            assert "assess_identity_evidence" not in called
+
+    def test_assess_identity_evidence_has_no_production_caller(self):
+        # The assessor is an UNWIRED seam: NO module under app/ CALLS it (only tests do). This is
+        # the honest state — the identity evidence is assessed in isolation tests, never wired
+        # into the reconcile derive path (which keeps the gate-5 bindings None for real history).
+        callers = set()
+        for py in APP.rglob("*.py"):
+            if "assess_identity_evidence" in _called_function_names(
+                ast.parse(py.read_text(encoding="utf-8"))
+            ):
+                callers.add(_module_name(py))
+        assert callers == set()
+
+    def test_derive_context_never_calls_the_identity_probe(self):
+        # The reconcile derive path (verified_proof) NEVER consults read_identity to back-fill a
+        # gate-5 binding — instance_binding / tenant_binding come ONLY from the M4-A dispatch
+        # binding (None for 4.1.24-1), never from a read-side identity probe.
+        called = _called_function_names(_parse("services/outcomes/verified_proof.py"))
+        assert "read_identity" not in called
+        assert "assess_identity_evidence" not in called
+
+
+# ===========================================================================
 # 3. PROOF-KERNEL PURITY — the pure types + verifier are side-effect-free
 # ===========================================================================
 class TestProofKernelPurity:

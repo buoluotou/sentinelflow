@@ -53,8 +53,10 @@ THE THREE BINDING CONSTRAINTS (Amendment §11.2) THIS MODULE HONORS:
      only proves an operator CONFIGURED that expectation; it does NOT prove the remote
      server actually runs it. Nothing here treats a config string as a live proof.
 
-PURE, SIDE-EFFECT FREE. This module is declarative types + constants + ONE pure
-adjudicator (``verify_creation_effect``). It imports NO sqlalchemy, NO HTTP, NO
+PURE, SIDE-EFFECT FREE. This module is declarative types + constants + TWO pure
+adjudicators: ``verify_creation_effect`` (the six-gate creation verdict) and, since
+M4-B, ``assess_identity_evidence`` (the read-side identity/version evidence verdict,
+Amendment §12.2-B). It imports NO sqlalchemy, NO HTTP, NO
 ``app.models``, NO ``app.services.outcomes``, NO ``app.services.executions`` — only
 stdlib and the pure A1 read-contract request shape. The DB-owning derivation /
 orchestration / persistence live in ``outcomes/verified_proof.py`` (which MAY own a
@@ -582,4 +584,153 @@ def verify_creation_effect(
         # M4-C: the ONE AND ONLY mint site of the private seal — persist refuses an effect
         # that does not carry it, so a plain hand-built object can never reach confirmed_success.
         seal=_VERIFIER_SEAL,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M4-B: the read-side IDENTITY / VERSION evidence seam (Amendment §12.2-B)
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. Gate 5 (INSTANCE / TENANT) fails CLOSED for every real historical
+# execution because TheHive 4.1.24-1 exposes NO authoritative dispatch-time instance /
+# tenant binding (Amendment §12). M4-A added the DISPATCH-side binding (it records
+# target_instance / target_tenant as None for 4.1.24-1 — no authoritative source existed).
+# M4-B is the READ-side half (Amendment §12.2-B): forensically identify and probe the
+# AUTHORITATIVE version / instance / organisation / permission interfaces the EXACT
+# certified version supports, and assess the evidence FAIL-CLOSED. SOURCE FORENSICS
+# (TheHive 4.1.24-1 = git b6649bb / ScalliGraph 2c2a7a4; /api/ -> the v0 default router,
+# TheHiveRouter.scala:25) establishes:
+#
+#   GET /api/status          (v0 StatusCtrl, PUBLIC — entrypoint("status"){...} with NO
+#                             .auth* chain, ScalliGraph Entrypoint.scala:153) returns
+#                             versions.TheHive / versions.Scalligraph from the running JARs'
+#                             getImplementationVersion — a REAL RUNTIME version observation,
+#                             NOT the config-declared THEHIVE_EXPECTED_VERSION. The SAME body
+#                             ALSO carries config.protectDownloadsWith (the attachment-ZIP
+#                             password — a SECRET), so a probe MUST extract ONLY the version
+#                             field and NEVER return / log / persist the raw body.
+#   GET /api/user/current    (v0 UserCtrl.current, AUTHENTICATED — .authRoTransaction, 401 if
+#                             the read-only key is invalid) returns OutputUser.organisation
+#                             (String) + roles (Set[String]) — the READER's OWN organisation
+#                             (tenant context) and RBAC roles.
+#   GET /api/system          DOES NOT EXIST in the 4.1.24-1 source (zero matches) — it is a
+#                             CANDIDATE only and is NEVER assumed (the task's explicit rule).
+#   GET /api/case/{id}       OutputCase (v0/v1) carries NO organisation field, and TheHive's
+#                             visibility model returns 200 for a case OWNED *OR SHARED* into
+#                             the reader's organisation (a 404 merges absent + tenant-invisible).
+#
+# THE HONEST CONCLUSION (why gate 5 STAYS fail-closed even with this seam). The reader's OWN
+# organisation (/api/user/current) is NOT the CASE's owner, and a 200 on /api/case/{id} proves
+# only VISIBILITY, never ownership; /api/status exposes NO stable instance identity. So for
+# 4.1.24-1 NEITHER a case-owned tenant NOR a bindable instance identity is observable —
+# Amendment §12.2-B B2's precondition ("the target version's OutputCase contains organisation")
+# is UNMET. This seam therefore UPGRADES the version assertion from config-declaration to a
+# runtime observation and establishes the reader's authenticated tenant context, but it NEVER
+# fabricates a gate-5 binding: assess_identity_evidence ALWAYS returns instance / tenant = None
+# for 4.1.24-1, so it can NEVER unlock confirmed_success on its own. A base URL or a config
+# string is NEVER treated as a real identity.
+
+#: SAFE STATIC probe-outcome kinds (never a secret, never a raw value). ``observed`` = a real
+#: read-only GET returned the field; ``unavailable`` = the probe failed OR the field was absent
+#: -> INSUFFICIENT evidence (fail-closed).
+IDENTITY_PROBE_OBSERVED = "observed"
+IDENTITY_PROBE_UNAVAILABLE = "unavailable"
+
+#: SAFE STATIC reasons the gate-5 binding STAYS None / the evidence is insufficient. The deepest
+#: structural blocker (4.1.24-1) is that the CASE-owned organisation is unobservable, so even a
+#: fully-observed version + reader organisation can NEVER bind the case's tenant / instance.
+IDENTITY_REASON_VERSION_UNOBSERVED = "version_unobserved"
+IDENTITY_REASON_VERSION_NOT_CERTIFIED = "version_not_certified"
+IDENTITY_REASON_READER_ORG_UNOBSERVED = "reader_organisation_unobserved"
+IDENTITY_REASON_CASE_OWNER_UNOBSERVABLE = "case_owner_organisation_unobservable"
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityEvidence:
+    """M4-B: the TYPED OBSERVATION a read-side identity/version probe returns (Amendment
+    §12.2-B) — the read-side counterpart of ``VerifiedReadResult``. NEVER a VERDICT
+    (``assess_identity_evidence`` adjudicates), NEVER a credential, NEVER a raw response body.
+
+      observed_version -- ``versions.TheHive`` from ``GET /api/status`` (the AUTHORITATIVE
+          RUNTIME version), or ``None`` when the probe failed / the field was absent.
+      observed_reader_organisation -- ``organisation`` from ``GET /api/user/current`` (the
+          READER's OWN tenant context, authenticated by the read-only key), or ``None``.
+      observed_reader_roles -- the reader's ``roles`` (RBAC evidence), sorted; ``()`` when absent.
+      version_probe / organisation_probe -- SAFE STATIC ``IDENTITY_PROBE_*`` kinds recording
+          whether each GET actually observed its field (diagnostics; never a secret).
+
+    Immutable (frozen + slots). It carries NO attachment password, NO base URL as identity,
+    NO case-owned tenant (unobservable in 4.1.24-1).
+    """
+
+    observed_version: str | None
+    observed_reader_organisation: str | None
+    observed_reader_roles: tuple[str, ...]
+    version_probe: str
+    organisation_probe: str
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityAssessment:
+    """M4-B: the FAIL-CLOSED adjudication of an ``IdentityEvidence`` against the certified
+    version. PURE, side-effect free.
+
+      version_matches_certified -- the OBSERVED runtime version EQUALS ``CERTIFIED_THEHIVE_VERSION``
+          (a real liveness observation, DISTINCT from the config-declaration; False when the
+          version was unobserved or mismatched — a base URL / config string NEVER counts).
+      reader_organisation_known -- a real reader organisation was OBSERVED (the reader's tenant
+          context + RBAC are authenticated). This is the READER's org, NOT the case's owner.
+      gate5_instance_binding / gate5_tenant_binding -- ALWAYS ``None`` for TheHive 4.1.24-1: the
+          CASE-owned instance / tenant is UNOBSERVABLE (OutputCase has no organisation; /api/status
+          has no stable instance id), so gate 5 STAYS fail-closed REGARDLESS of probe success. NEVER
+          back-filled from the base URL, the config string, or the reader's own organisation.
+      reason -- a SAFE STATIC ``IDENTITY_REASON_*`` code naming the deepest blocker.
+
+    Immutable (frozen + slots).
+    """
+
+    version_matches_certified: bool
+    reader_organisation_known: bool
+    gate5_instance_binding: str | None
+    gate5_tenant_binding: str | None
+    reason: str
+
+
+def assess_identity_evidence(
+    evidence: IdentityEvidence, *, certified_version: str
+) -> IdentityAssessment:
+    """M4-B PURE assessor: adjudicate read-side identity/version evidence FAIL-CLOSED
+    (Amendment §12.2-B). No DB, no HTTP, no side effect, no mutation of the input.
+
+    A base URL / config string is NEVER a real identity: ``version_matches_certified`` requires
+    the version to have been OBSERVED from ``/api/status`` AND to EQUAL ``certified_version``;
+    ``reader_organisation_known`` requires the organisation to have been OBSERVED from
+    ``/api/user/current``. The gate-5 instance / tenant binding is ALWAYS ``None`` for TheHive
+    4.1.24-1 (the CASE-owned tenant is unobservable, so §12.2-B B2 is unmet) — this assessor
+    NEVER unlocks gate 5; it records the version-liveness upgrade + the reader's tenant context
+    and states WHY the binding stays closed.
+    """
+    version = evidence.observed_version
+    version_observed = isinstance(version, str) and bool(version)
+    version_matches = version_observed and version == certified_version
+    org = evidence.observed_reader_organisation
+    org_known = isinstance(org, str) and bool(org)
+
+    # Deepest-blocker reason, in order: version liveness, then the reader organisation, then the
+    # STRUCTURAL case-owner unobservability that ALWAYS keeps gate 5 closed for 4.1.24-1.
+    if not version_observed:
+        reason = IDENTITY_REASON_VERSION_UNOBSERVED
+    elif not version_matches:
+        reason = IDENTITY_REASON_VERSION_NOT_CERTIFIED
+    elif not org_known:
+        reason = IDENTITY_REASON_READER_ORG_UNOBSERVED
+    else:
+        reason = IDENTITY_REASON_CASE_OWNER_UNOBSERVABLE
+
+    return IdentityAssessment(
+        version_matches_certified=version_matches,
+        reader_organisation_known=org_known,
+        # ALWAYS None for 4.1.24-1 -> gate 5 stays fail-closed (Amendment §12.2-B B2 unmet).
+        gate5_instance_binding=None,
+        gate5_tenant_binding=None,
+        reason=reason,
     )

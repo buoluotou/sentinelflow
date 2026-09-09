@@ -145,6 +145,9 @@ from app.services.manual_reconcile.read.base import (
     ReadAdapter,
 )
 from app.services.read_adapters.verified import (
+    IDENTITY_PROBE_OBSERVED,
+    IDENTITY_PROBE_UNAVAILABLE,
+    IdentityEvidence,
     VerifiedReadResult,
     created_at_millis,
     created_at_to_datetime,
@@ -532,6 +535,110 @@ class TheHiveReadAdapter(ReadAdapter):
         if not isinstance(payload, dict):
             return None
         return payload
+
+    # -- read-side identity / version evidence (M4-B, Amendment §12.2-B) -----
+
+    def read_identity(self) -> IdentityEvidence:
+        """M4-B: probe the target instance's AUTHORITATIVE runtime version + the reader's
+        organisation / roles via TWO read-only GETs, for the read-side identity/version
+        evidence seam (Amendment §12.2-B). Returns a TYPED ``IdentityEvidence`` OBSERVATION
+        (NEVER a raw body, NEVER a verdict — ``verified.assess_identity_evidence`` adjudicates).
+
+        SOURCE-CERTIFIED endpoints (TheHive 4.1.24-1 = ``b6649bb``; ``/api/`` -> the v0 default
+        router, the SAME API the frozen ``read``'s ``/api/case/{id}`` uses):
+
+          - ``GET /api/status`` (PUBLIC) -> ``versions.TheHive``: the REAL RUNTIME version (a
+            liveness observation, NOT the config-declared ``THEHIVE_EXPECTED_VERSION``). The body
+            ALSO carries ``config.protectDownloadsWith`` (the attachment-ZIP password — a SECRET),
+            so this extracts ONLY the version field and NEVER returns / logs / persists the body.
+          - ``GET /api/user/current`` (AUTHENTICATED with the INDEPENDENT read-only key) ->
+            ``organisation`` + ``roles``: the READER's OWN tenant context and RBAC roles.
+
+        ``GET /api/system`` is NOT assumed to exist (it does NOT in the 4.1.24-1 source) and is
+        NEVER probed. A base URL / config string is NEVER passed off as a real identity.
+
+        FAIL-CLOSED: ANY probe failure (timeout / 401 / 403 / 404 / 5xx / a refused redirect / a
+        non-JSON body / an absent field) yields the corresponding ``None`` field + an
+        ``unavailable`` probe kind — NEVER a raise that aborts the reconcile, NEVER a fabricated
+        identity. This is a READ (never a write / mutation / retry / poll). For 4.1.24-1 the
+        CASE-owned tenant / instance is UNOBSERVABLE (OutputCase has no organisation; /api/status
+        has no stable instance id), so the assessor keeps the gate-5 binding ``None`` — this seam
+        NEVER unlocks ``confirmed_success`` on its own. Shares the no-redirect transport (M2-R §4),
+        the HTTP-error discrimination and the secret sanitizer with ``read`` / ``read_creation``.
+        """
+        version, version_probe = self._probe_status_version()
+        organisation, roles, organisation_probe = self._probe_reader_organisation()
+        return IdentityEvidence(
+            observed_version=version,
+            observed_reader_organisation=organisation,
+            observed_reader_roles=roles,
+            version_probe=version_probe,
+            organisation_probe=organisation_probe,
+        )
+
+    def _identity_get(self, path: str) -> dict | None:
+        """ONE read-only GET to an identity endpoint -> the parsed dict body, or ``None`` on ANY
+        failure. FAIL-CLOSED, NOT a raise: an identity-probe failure is INSUFFICIENT EVIDENCE
+        (the assessor keeps gate 5 closed), NEVER a transport error that aborts the reconcile and
+        NEVER a fabricated identity. Shares the no-redirect ``self._transport`` (M2-R §4: a 3xx
+        never carries Authorization cross-host) and NEVER returns / logs the raw body of
+        ``/api/status`` (it carries the attachment password) — only the caller-extracted field
+        survives. A timeout / 401 / 403 / 404 / 5xx / refused redirect / non-200 / non-JSON body
+        all yield ``None``.
+        """
+        url = f"{self._credentials.base_url}{path}"
+        http_request = urllib.request.Request(
+            url, headers=self._credentials.auth_headers(), method="GET"
+        )
+        try:
+            response = self._transport(http_request, timeout=self._timeout)
+        except (TimeoutError, urllib.error.HTTPError, urllib.error.URLError, OSError):
+            return None
+        status = getattr(response, "status", None)
+        if status != 200:
+            return None
+        try:
+            payload_text = response.read().decode("utf-8", errors="replace")
+            payload = json.loads(payload_text)
+        except (ValueError, AttributeError, OSError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def _probe_status_version(self) -> tuple[str | None, str]:
+        """``GET /api/status`` -> ``(versions.TheHive | None, probe-kind)``. Extracts ONLY the
+        version field; the raw body (which carries ``config.protectDownloadsWith``, the attachment
+        password) is NEVER returned / logged / persisted. ``None`` + ``unavailable`` on any failure
+        or an absent / non-string / empty version."""
+        payload = self._identity_get("/api/status")
+        if payload is None:
+            return None, IDENTITY_PROBE_UNAVAILABLE
+        versions = payload.get("versions")
+        if not isinstance(versions, dict):
+            return None, IDENTITY_PROBE_UNAVAILABLE
+        version = versions.get("TheHive")
+        if not isinstance(version, str) or not version:
+            return None, IDENTITY_PROBE_UNAVAILABLE
+        return version, IDENTITY_PROBE_OBSERVED
+
+    def _probe_reader_organisation(self) -> tuple[str | None, tuple[str, ...], str]:
+        """``GET /api/user/current`` -> ``(organisation | None, roles, probe-kind)``. The READER's
+        OWN organisation (tenant context) + RBAC ``roles``, authenticated with the INDEPENDENT
+        read-only key (a 401 -> ``None`` + ``unavailable``, fail-closed). ``roles`` is sorted for a
+        stable observation; ``()`` when absent / non-iterable. NEVER the CASE's owner (unobservable
+        in 4.1.24-1), NEVER a base URL / config string."""
+        payload = self._identity_get("/api/user/current")
+        if payload is None:
+            return None, (), IDENTITY_PROBE_UNAVAILABLE
+        organisation = payload.get("organisation")
+        if not isinstance(organisation, str) or not organisation:
+            return None, (), IDENTITY_PROBE_UNAVAILABLE
+        raw_roles = payload.get("roles")
+        roles: tuple[str, ...] = ()
+        if isinstance(raw_roles, (list, tuple, set, frozenset)):
+            roles = tuple(sorted(r for r in raw_roles if isinstance(r, str)))
+        return organisation, roles, IDENTITY_PROBE_OBSERVED
 
     # -- internals ---------------------------------------------------------
 
