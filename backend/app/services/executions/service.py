@@ -47,7 +47,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -84,6 +84,9 @@ from app.services.executions.policy import (
 from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.secrets import redact_detail
 from app.services.executions.state import derive_execution_state
+
+if TYPE_CHECKING:  # annotation-only: the Service depends on record(), not the class
+    from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
 
 #: Conflict family -> HTTP status the future API layer maps (frozen here
 #: so 3.1.7 never re-shapes the Service exceptions). 401/422 stay in the
@@ -185,6 +188,11 @@ _CONFLICT_MARKERS = {
     "ux_execution_log_approval_id_execute": ApprovalAlreadyExecuted,
     "execution_log.compensates_execution_id": ExecutionAlreadyCompensated,
     "ux_execution_log_compensates_requested": ExecutionAlreadyCompensated,
+    # M4-F §1: the durable pre-dispatch attempt carries its OWN unique index on
+    # execution_id — a duplicate/concurrent replay is refused at the independent
+    # commit BEFORE the adapter runs, mapping to the SAME typed 409 (D14).
+    "dispatch_attempt.execution_id": ExecutionIdAlreadyBound,
+    "ux_dispatch_attempt_execution_id": ExecutionIdAlreadyBound,
 }
 
 
@@ -368,6 +376,7 @@ def execute_response(
     executor: ResponseExecutor,
     comment: str | None = None,
     policy: ExecutionPolicy | None = None,
+    dispatch_attempt_store: DurableDispatchAttemptStore | None = None,
 ) -> ExecutionResult:
     """Run one complete forward execution chain (design §9).
 
@@ -380,6 +389,14 @@ def execute_response(
     omitted it is built from application settings (disabled by default
     -> the exact frozen 3.1/3.2 behavior). Tests inject a policy to
     drive refusal paths deterministically.
+
+    M4-F §1: ``dispatch_attempt_store``, when provided, durably commits the
+    pre-dispatch binding on an INDEPENDENT transaction BEFORE the external
+    request (surviving a caller rollback / terminal-write failure / crash). It
+    does NOT breach the frozen "the Service NEVER calls commit()" clause — that
+    protects the CALLER's business transaction, which still commits in the API
+    layer; the store owns a SEPARATE session (the outcomes-service precedent).
+    Omitted (None) -> the exact pre-M4-F flush-only path.
     """
     approval = session.get(AIResponseApproval, approval_id)
     if approval is None:
@@ -530,6 +547,19 @@ def execute_response(
         dispatch_started_at=dispatch_started_at,
         contributor_facts=contributor_facts,
     )
+    # M4-F §1 — DURABLE PRE-DISPATCH COMMIT. Before ANY external request, commit
+    # the dispatch intent + target binding on an INDEPENDENT transaction (a
+    # separate Session/connection) so it SURVIVES a caller rollback, a
+    # terminal-write failure or a process crash — the M4 review's "flush 不等于
+    # 持久提交" fix. store=None (the default) keeps the pre-M4-F path byte-identical.
+    # A persistence failure means the adapter is NEVER called: a duplicate
+    # execution_id at the durable commit is the D14 race last line and maps to the
+    # SAME typed 409; any other failure propagates and aborts before dispatch.
+    if dispatch_attempt_store is not None:
+        try:
+            dispatch_attempt_store.record(binding)
+        except IntegrityError as exc:
+            _translate_integrity_error(exc, session)
     _append(
         session,
         execution_id=execution_id,

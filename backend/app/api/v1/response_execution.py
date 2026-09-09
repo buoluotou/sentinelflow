@@ -68,6 +68,7 @@ from app.services.executions import (
     derive_execution_state,
     execute_response,
 )
+from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
 from app.services.executions.operators import (
     Operator,
     get_operator_registry,
@@ -184,6 +185,23 @@ def get_response_executor() -> ResponseExecutor:
         )
 
 
+def get_dispatch_attempt_store(
+    db: Session = Depends(get_db),
+) -> DurableDispatchAttemptStore | None:
+    """Dependency seam for the durable pre-dispatch attempt store (M4-F §1).
+
+    Production returns a store bound to the caller's engine so ``execute_response``
+    commits the immutable dispatch intent + target binding on an INDEPENDENT
+    transaction BEFORE the external request — surviving a caller rollback /
+    terminal-write failure / crash (the "flush 不等于持久提交" fix). Tests override
+    this seam: the in-memory ``StaticPool`` harness shares ONE connection, so a real
+    independent commit cannot interleave there — the conftest ``client`` fixture
+    overrides it to ``None`` (keeping the existing endpoint journeys byte-identical)
+    and dedicated file-backed tests drive the REAL store.
+    """
+    return DurableDispatchAttemptStore(db.get_bind())
+
+
 # --------------------------------------------------------------------------
 # Write endpoints (token required)
 # --------------------------------------------------------------------------
@@ -197,6 +215,9 @@ def create_execution(
     db: Session = Depends(get_db),
     executor: ResponseExecutor = Depends(get_response_executor),
     authenticated: Operator = Depends(authenticate_operator),
+    dispatch_attempt_store: DurableDispatchAttemptStore | None = Depends(
+        get_dispatch_attempt_store
+    ),
 ) -> ExecutionRead:
     """Run one Execute Intent end-to-end. 201 = an execution fact exists;
     the verdict lives in derived_state (succeeded / failed /
@@ -211,7 +232,13 @@ def create_execution(
     3.3.2.4: a malformed execution-policy configuration is a
     server-side deployment fault, mapped to ONE static 503 detail —
     the transaction rolls back, so a broken policy never silently
-    becomes an allow and never leaves a half-written chain."""
+    becomes an allow and never leaves a half-written chain.
+
+    M4-F §1: ``dispatch_attempt_store`` commits the immutable dispatch intent +
+    target binding on an INDEPENDENT transaction BEFORE ``executor.execute()``
+    fires the external request, so the binding survives a caller rollback /
+    terminal-write failure / crash (a flush inside this transaction would not).
+    A pre-dispatch commit failure aborts BEFORE any external call."""
     try:
         result = execute_response(
             db,
@@ -220,6 +247,7 @@ def create_execution(
             operator=authenticated.name,
             executor=executor,
             comment=payload.comment,
+            dispatch_attempt_store=dispatch_attempt_store,
         )
     except PolicyViolation:
         # The requested intent row was already flushed inside the

@@ -591,7 +591,13 @@ class TestTargetSmugglingImpossible:
         there is no parameter through which a client could hand in
         action or target. 3.3.2.4 adds exactly ONE parameter, ``policy``:
         the server-side ExecutionPolicy (built from .env -> Settings,
-        never a client fact) — the request surface itself is unchanged."""
+        never a client fact). M4-F §1 adds exactly ONE more,
+        ``dispatch_attempt_store``: the server-side durable pre-dispatch store
+        the API layer injects via ``Depends(get_dispatch_attempt_store)`` — an
+        infra seam, NEVER a client fact, carrying NO action/target (those stay
+        the server-side approval snapshot). The client-facing request surface
+        (``ExecuteRequest``, extra="forbid") is unchanged, so the smuggling
+        guard still holds: no parameter lets a client hand in action/target."""
         import inspect
 
         signature = inspect.signature(execute_response)
@@ -603,6 +609,7 @@ class TestTargetSmugglingImpossible:
             "executor",
             "comment",
             "policy",
+            "dispatch_attempt_store",
         }
 
     def test_replayed_facts_cannot_overwrite_the_snapshot(self, db_session):

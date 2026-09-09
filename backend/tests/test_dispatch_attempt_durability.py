@@ -32,8 +32,12 @@ from sqlalchemy.pool import NullPool
 from app.core.config import settings
 from app.core.database import Base
 from app.models import DispatchAttempt
+from app.models.execution_log import ExecutionLog
 from app.services.executions.binding import build_dispatch_binding
-from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
+from app.services.executions.durable_dispatch import (
+    DurableDispatchAttemptStore,
+    find_unreconciled_attempts,
+)
 
 
 @pytest.fixture()
@@ -186,3 +190,77 @@ class TestDurableStoreCommit:
             rows = session.scalars(select(DispatchAttempt)).all()
         assert len(rows) == 1
         assert rows[0].attempt_id == uuid.UUID(binding.attempt_id)
+
+
+def _seed_terminal(engine, execution_id, approval_id, decision="succeeded"):
+    """Commit a terminal execution_log row on the SAME execution_id — what the
+    caller's business transaction writes AFTER the external request returns. FK
+    enforcement is OFF on this file-backed engine, so no approval row is needed;
+    the CHECK + partial-unique-index DDL IS enforced, and a legal execute/terminal
+    combo (``direction='execute'``, decision ``succeeded``/``failed``) lands cleanly
+    outside the ``requested``-only partial indexes."""
+    with Session(engine) as session:
+        session.add(
+            ExecutionLog(
+                execution_id=execution_id,
+                approval_id=approval_id,
+                decision=decision,
+                direction="execute",
+                action="create_case",
+                target="203.0.113.10",
+                operator="ops-1",
+                detail={},
+            )
+        )
+        session.commit()
+
+
+class TestUnreconciledRecovery:
+    """M4-F §1/§2 recovery: a committed attempt with NO committed terminal row is a
+    MANUAL reconciliation candidate — surfaced, never auto-retried (constraint 5).
+    The store is the ONLY writer here, so the file-backed SQLite single-writer lock
+    is not contended (the caller's overlapping write transaction is the PostgreSQL
+    ``external`` case, tracked separately)."""
+
+    def test_committed_attempt_without_a_terminal_row_is_unreconciled(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+
+    def test_committed_attempt_with_a_terminal_row_is_reconciled(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+        )
+
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert unreconciled == []
+
+    def test_recovery_selects_only_the_attempts_missing_a_terminal(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        settled = _binding()
+        pending = _binding()
+        store.record(settled)
+        store.record(pending)
+        # the settled attempt's terminal landed as a FAILED outcome — still a
+        # terminal, so it is NOT unreconciled (an emitted-and-failed attempt is
+        # settled; only "no reliable terminal" needs a human).
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(settled.execution_id),
+            uuid.UUID(settled.approval_id),
+            decision="failed",
+        )
+
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(pending.attempt_id)]

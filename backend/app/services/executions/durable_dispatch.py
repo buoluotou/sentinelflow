@@ -31,12 +31,15 @@ secret-free base URL; the version is a config declaration, never a liveness proo
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import DispatchAttempt
+from app.models.execution_log import ExecutionLog
 from app.services.executions.binding import DispatchBinding
 from app.services.executions.secrets import redact_detail
 
@@ -92,3 +95,45 @@ class DurableDispatchAttemptStore:
             raise
         finally:
             session.close()
+
+
+#: execution_log decisions that SETTLE an attempt's external outcome. A committed
+#: attempt whose execution_id has NO such terminal row is "emitted but no reliable
+#: terminal" — a MANUAL reconciliation candidate, NEVER an auto-retry (M4-F §1/§2,
+#: constraint 5).
+_TERMINAL_DECISIONS = ("succeeded", "failed")
+
+
+def find_unreconciled_attempts(session: Session) -> Sequence[DispatchAttempt]:
+    """Committed pre-dispatch attempts with NO committed terminal execution_log row.
+
+    RECOVERY READ (M4-F §1/§2). After a crash / lost response / terminal-write
+    failure / caller rollback, the durably committed ``DispatchAttempt`` SURVIVES
+    while the caller's execution_log terminal (``succeeded`` / ``failed``) may never
+    have committed. This correlates a committed attempt against a terminal row on
+    the SAME ``execution_id``: an attempt with none is "emitted but no reliable
+    terminal" — surfaced for MANUAL human reconciliation.
+
+    It NEVER re-dispatches, retries or compensates (constraint 5): the external
+    effect of such an attempt is UNKNOWN, and an absent terminal is NOT proof the
+    external call failed. Pure read of committed data on the caller's session.
+    """
+    # A correlated NOT EXISTS: keep every committed attempt whose execution_id has
+    # NO terminal (succeeded/failed) execution_log row. ``requested`` / ``dispatched``
+    # rows do NOT settle an attempt — only a terminal proves the external outcome was
+    # recorded — so an attempt with merely a dispatched row is still unreconciled.
+    terminal_exists = (
+        select(ExecutionLog.id)
+        .where(
+            ExecutionLog.execution_id == DispatchAttempt.execution_id,
+            ExecutionLog.decision.in_(_TERMINAL_DECISIONS),
+        )
+        .correlate(DispatchAttempt)
+        .exists()
+    )
+    stmt = (
+        select(DispatchAttempt)
+        .where(~terminal_exists)
+        .order_by(DispatchAttempt.recorded_at, DispatchAttempt.id)
+    )
+    return session.scalars(stmt).all()

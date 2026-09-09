@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.v1.response_execution import get_dispatch_attempt_store
 from app.core.database import Base, get_db
 from app.main import app
 from app.services.executions.operators import reset_operator_registry
@@ -92,6 +93,12 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
             pass
 
     app.dependency_overrides[get_db] = override_get_db
+    # M4-F §1: the durable pre-dispatch store commits on an INDEPENDENT connection,
+    # which cannot interleave with the in-memory StaticPool single shared connection
+    # (a commit there would also flush the caller's pending chain). Override to None
+    # so the existing endpoint journeys stay byte-identical; dedicated file-backed
+    # tests (test_dispatch_endpoint_durability) re-override with the REAL store.
+    app.dependency_overrides[get_dispatch_attempt_store] = lambda: None
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
