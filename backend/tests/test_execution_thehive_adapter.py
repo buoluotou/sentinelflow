@@ -49,14 +49,21 @@ through an injected transport double. The ONE test touching a real
 TheHive instance carries @pytest.mark.external and is DESELECTED unless
 the run opts in with `-m external`.
 """
+import http.client
 import json
 import logging
 import urllib.error
+import urllib.request
 import uuid
 
 import pytest
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, settings
+from app.core.database import Base
+from app.models import DispatchAttempt
 from app.services.executions import (
     THEHIVE_ACTIONS,
     ExecutorConfigError,
@@ -64,6 +71,7 @@ from app.services.executions import (
     TheHiveExecutor,
     create_executor,
 )
+from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
 from app.services.executions.exceptions import ExecutorOutcomeViolation
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import compensate_response, execute_response
@@ -128,6 +136,35 @@ class StubTransport:
     @property
     def last(self) -> dict:
         return self.calls[-1]
+
+
+class _InterruptedReadResponse:
+    """M4-F §3: a response whose BODY read is INTERRUPTED mid-stream. The
+    request was already SENT (the case MAY exist) but the answer is lost — the
+    exact "emitted but abandoned" uncertainty the durable attempt survives."""
+
+    def __init__(self, exc, status=200):
+        self.status = status
+        self._exc = exc
+
+    def read(self):
+        raise self._exc
+
+    def close(self) -> None:
+        pass
+
+
+class InterruptedReadTransport:
+    """Injected transport that returns a response whose ``read()`` raises."""
+
+    def __init__(self, exc, *, status=200):
+        self._exc = exc
+        self._status = status
+        self.calls: list[str] = []
+
+    def __call__(self, request, timeout=None):
+        self.calls.append(request.full_url)
+        return _InterruptedReadResponse(self._exc, self._status)
 
 
 def _creds() -> AdapterCredentials:
@@ -449,6 +486,45 @@ class TestOutcomeMatrix:
 
 
 # --------------------------------------------------------------------------
+# 3b. M4-F §3 — response READ interruption (the request was SENT, the body was
+#     lost): fail closed, NEVER infer success/failure of the external effect,
+#     ZERO auto-retry; the committed pre-dispatch attempt survives for MANUAL
+#     reconciliation (paired with §1 in TestDurableAttemptSurvivesFailures).
+# --------------------------------------------------------------------------
+class TestResponseReadInterruption:
+    def test_incomplete_read_is_fail_closed_never_success(self):
+        transport = InterruptedReadTransport(http.client.IncompleteRead(b""))
+        outcome = _executor(transport).execute(_dispatch())
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "adapter_unavailable"
+        assert len(transport.calls) == 1  # ZERO auto-retry
+
+    def test_connection_reset_mid_body_is_fail_closed(self):
+        transport = InterruptedReadTransport(ConnectionResetError("reset"))
+        outcome = _executor(transport).execute(_dispatch())
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "adapter_unavailable"
+        assert len(transport.calls) == 1
+
+    def test_read_timeout_is_classified_timeout(self):
+        transport = InterruptedReadTransport(TimeoutError())
+        outcome = _executor(transport).execute(_dispatch())
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "timeout"
+        assert len(transport.calls) == 1
+
+    def test_a_secret_in_a_read_interruption_error_is_redacted(self, monkeypatch):
+        sentinel = "SUPER_SECRET_WRITE_KEY_0123456789"
+        monkeypatch.setattr(settings, "THEHIVE_API_KEY", sentinel)
+        transport = InterruptedReadTransport(
+            OSError(f"connection reset while posting {sentinel}")
+        )
+        outcome = _executor(transport).execute(_dispatch())
+        assert outcome.status == "failed"
+        assert sentinel not in json.dumps(outcome.detail)
+
+
+# --------------------------------------------------------------------------
 # 4. Protocol violations (D9 — platform judges, adapter only raises)
 # --------------------------------------------------------------------------
 class TestProtocolViolation:
@@ -743,6 +819,100 @@ class TestSecurity:
 
 
 # --------------------------------------------------------------------------
+# 7b. M4-F §3 — no-redirect write transport (finding ②: the WRITE adapter must
+#     refuse 3xx exactly like the READ adapter, M2-R §4, so the Authorization
+#     Bearer key is NEVER forwarded to a cross-host redirect target and the real
+#     request target stays the bound endpoint).
+# --------------------------------------------------------------------------
+class TestWriteNoRedirectCredentialLeak:
+    def test_default_transport_is_not_bare_urlopen(self):
+        # With NO injected transport the executor must NOT default to bare
+        # ``urlopen`` (which follows a cross-host 3xx WITH the Bearer key). This
+        # fails on the CURRENT code (``_transport is urllib.request.urlopen``).
+        executor = TheHiveExecutor(_creds())
+        assert executor._transport is not urllib.request.urlopen
+
+    def test_default_opener_installs_the_no_redirect_handler(self):
+        # The production write opener carries _NoRedirectHandler (default
+        # verifying TLS handlers UNCHANGED — §3 forbids disabling TLS/URL checks).
+        from app.services.executions.thehive import (
+            _build_opener,
+            _NoRedirectHandler,
+        )
+
+        opener = _build_opener()
+        assert any(isinstance(h, _NoRedirectHandler) for h in opener.handlers)
+
+    def test_redirect_request_returns_none_so_auth_is_never_forwarded(self):
+        # Returning ``None`` makes urllib RAISE ``HTTPError`` for the 3xx instead
+        # of re-issuing the POST (with the Bearer key) to another host; execute()
+        # maps that to a fail-closed adapter_error, NEVER a cross-host leak.
+        from app.services.executions.thehive import _NoRedirectHandler
+
+        handler = _NoRedirectHandler()
+        req = urllib.request.Request(
+            "https://thehive.lab.local/api/case",
+            headers={"Authorization": "Bearer WRITE_SECRET"},
+            method="POST",
+        )
+        assert (
+            handler.redirect_request(
+                req,
+                None,
+                302,
+                "Found",
+                {"Location": "https://evil.example/steal"},
+                "https://evil.example/steal",
+            )
+            is None
+        )
+
+
+# --------------------------------------------------------------------------
+# 7c. M4-F §3 — target-binding consistency: the endpoint the durable binding
+#     records and the target the executor ACTUALLY requests must be one and the
+#     same, and a 3xx can never divert the write to an unbound host. These LOCK
+#     the invariant the no-redirect opener (7b) makes robust; the base URL is a
+#     CONFIG DECLARATION, never a certified instance/tenant identity (gate 5 stays
+#     UNKNOWN).
+# --------------------------------------------------------------------------
+class TestWriteTargetBindingConsistency:
+    def test_binding_endpoint_is_the_exact_request_origin(self):
+        stub = StubTransport(payload=_success_payload())
+        executor = _executor(stub)
+        dispatch = _dispatch()
+        facts = executor.dispatch_binding_facts(dispatch)
+        executor.execute(dispatch)
+        # The bound endpoint is the EXACT origin the POST targets — the request
+        # URL is ``{endpoint}/api/case``, so the real target never diverges from
+        # the durable binding.
+        assert stub.last["url"] == facts["endpoint"] + "/api/case"
+        assert stub.last["url"].startswith(facts["endpoint"])
+
+    def test_binding_is_config_declaration_never_an_instance_identity(self):
+        from app.services.executions.binding import VERSION_ASSERTION_CONFIG
+
+        executor = _executor(StubTransport(payload=_success_payload()))
+        facts = executor.dispatch_binding_facts(_dispatch())
+        # §3: the version stays a config-declaration; instance/tenant stay None so
+        # gate 5 STILL fails closed — a base URL is never passed off as an identity.
+        assert facts["version_assertion_kind"] == VERSION_ASSERTION_CONFIG
+        assert facts["target_instance"] is None
+        assert facts["target_tenant"] is None
+
+    def test_a_3xx_fails_closed_and_is_never_followed_to_another_host(self):
+        # The no-redirect opener surfaces a 3xx as ``HTTPError`` (redirect_request
+        # -> None); execute() maps it to a fail-closed adapter_error with ZERO
+        # second call — the write is NEVER re-issued to the Location host, so the
+        # target cannot diverge from the bound endpoint.
+        stub = StubTransport(exc=_http_error(302, b""))
+        outcome = _executor(stub).execute(_dispatch())
+        assert outcome.status == "failed"
+        assert outcome.detail["classification"] == "adapter_error"
+        assert len(stub.calls) == 1
+
+
+# --------------------------------------------------------------------------
 # 8. End-to-end (full chain: Approval -> Guard -> Executor -> log)
 # --------------------------------------------------------------------------
 class TestEndToEnd:
@@ -876,6 +1046,88 @@ class TestEndToEnd:
             executor=MockExecutor(),
         )
         assert compensation.final_decision == "compensation_failed"
+
+
+# --------------------------------------------------------------------------
+# 8b. M4-F §3 × §1 — EVERY TheHive failure classification preserves the
+#     COMMITTED pre-dispatch attempt (real file-backed store, read back on an
+#     INDEPENDENT connection), makes EXACTLY ONE external request (zero
+#     auto-retry), and NEVER infers success from a lost/ambiguous answer.
+# --------------------------------------------------------------------------
+@pytest.fixture()
+def durable_engine(tmp_path):
+    """A FILE-backed engine (real, non-shared pool) for the durable store, so its
+    independent commit is genuinely isolated from the in-memory caller session
+    (constraint 2: no shared-connection artifact masks durability)."""
+    db_path = tmp_path / "thehive_durable.db"
+    engine = create_engine(
+        f"sqlite:///{db_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+    )
+    Base.metadata.create_all(engine)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
+class TestDurableAttemptSurvivesFailures:
+    @pytest.mark.parametrize(
+        "transport_factory, classification",
+        [
+            (lambda: StubTransport(status=409, body=b'{"error":"exists"}'),
+             "adapter_error"),
+            (lambda: StubTransport(status=503, body=b""),
+             "adapter_unavailable"),
+            (lambda: StubTransport(exc=TimeoutError()), "timeout"),
+            (lambda: InterruptedReadTransport(http.client.IncompleteRead(b"")),
+             "adapter_unavailable"),
+            (lambda: StubTransport(status=201, body=b"<html>not json</html>"),
+             "protocol_violation"),
+            (lambda: StubTransport(status=201, payload={"caseId": 42}),
+             "protocol_violation"),
+        ],
+        ids=["409", "5xx", "timeout", "read-interrupted", "non-json",
+             "missing-resource-id"],
+    )
+    def test_every_failure_preserves_the_committed_attempt_no_retry(
+        self, db_session, durable_engine, transport_factory, classification
+    ):
+        from tests.test_execution_service import seed_approved
+
+        transport = transport_factory()
+        approval = seed_approved(
+            db_session,
+            recommendations=[{"action": ESCALATE, "target": TARGET,
+                              "rationale": "confirmed compromise"}],
+        )
+        store = DurableDispatchAttemptStore(durable_engine)
+        execution_id = uuid.uuid4()
+        result = execute_response(
+            db_session,
+            approval_id=approval.id,
+            execution_id=execution_id,
+            operator="ops-1",
+            executor=TheHiveExecutor(_creds(), timeout=1.0, transport=transport),
+            dispatch_attempt_store=store,
+        )
+        # NEVER a success inferred from a lost / ambiguous answer.
+        assert result.final_decision == "failed"
+        assert result.rows[-1].detail["classification"] == classification
+        # ZERO auto-retry: exactly ONE external request was made.
+        assert len(transport.calls) == 1
+        # The COMMITTED pre-dispatch attempt SURVIVES on an independent connection
+        # (§1) — the external effect is uncertain, so it stays a MANUAL
+        # reconciliation candidate, never auto-retried or auto-resolved.
+        with Session(durable_engine) as session:
+            rows = session.scalars(
+                select(DispatchAttempt).where(
+                    DispatchAttempt.execution_id == execution_id
+                )
+            ).all()
+        assert len(rows) == 1
+        assert rows[0].execution_id == execution_id
 
 
 # --------------------------------------------------------------------------

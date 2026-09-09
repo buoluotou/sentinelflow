@@ -60,6 +60,7 @@ log line or a raised message.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -122,6 +123,40 @@ def sentinelflow_approval_tag(approval_id: object) -> str:
     return f"{SENTINELFLOW_APPROVAL_TAG_PREFIX}{approval_id}"
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """M4-F §3 (reviewer finding ②): REFUSE to follow ANY HTTP redirect on the
+    case-CREATION POST — the write side now matches the read side (M2-R §4).
+
+    ``urllib.request.urlopen`` follows 3xx automatically and — critically —
+    FORWARDS the ``Authorization`` header to the redirect target, INCLUDING a
+    CROSS-HOST one. For a credential-bearing ``POST /api/case`` that is both a
+    leak (CWE-522: a compromised or misconfigured proxy could 302 the write to an
+    attacker host and harvest the Bearer key) AND a target-binding violation: the
+    durable pre-dispatch binding records ``{base_url}/api/case`` as the endpoint,
+    so silently following a 3xx would make the REAL target diverge from the bound
+    one. A case creation must resolve DIRECTLY on the declared endpoint, so any
+    redirect is treated as a transport anomaly: returning ``None`` makes urllib
+    raise ``HTTPError`` for the 3xx, which ``execute()`` already maps to a
+    fail-closed ``adapter_error`` — NEVER a cross-host credential leak, NEVER a
+    write to an unbound target, NEVER a fabricated success.
+
+    This ONLY declines redirects. TLS certificate verification and base-URL
+    validation are UNCHANGED (§3 forbids solving connectivity by disabling TLS or
+    relaxing URL checks); ``build_opener`` still installs the default verifying
+    ``HTTPSHandler``.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    """The production write opener: default handlers (verifying TLS) with the
+    redirect handler REPLACED by ``_NoRedirectHandler``. ``.open(request,
+    timeout=...)`` matches the ``urlopen`` call shape ``execute()`` uses."""
+    return urllib.request.build_opener(_NoRedirectHandler)
+
+
 class TheHiveExecutor(ResponseExecutor):
     """Case creation over the TheHive Case API (synchronous, no retry).
 
@@ -132,8 +167,11 @@ class TheHiveExecutor(ResponseExecutor):
       transport -- the deployment seam for tests: a callable
           ``transport(request, timeout=...) -> response`` where response
           has ``status``/``read()`` — matching ``urllib.request.urlopen``
-          shape. Production uses the default urllib opener; there is NO
-          retry layer, NO polling and NO callback surface around it.
+          shape. Production uses a NO-REDIRECT urllib opener (M4-F §3: a 3xx
+          is refused, so the ``Authorization`` header is NEVER forwarded to a
+          cross-host redirect target and the real request target stays the
+          bound endpoint); there is NO retry layer, NO polling and NO callback
+          surface around it.
     """
 
     def __init__(
@@ -157,7 +195,11 @@ class TheHiveExecutor(ResponseExecutor):
             )
         self._credentials = credentials
         self._timeout = float(timeout)
-        self._transport = transport or urllib.request.urlopen
+        # M4-F §3 (finding ②): the production default is a NO-REDIRECT opener,
+        # never bare ``urlopen`` — a case-creation POST must resolve directly on
+        # the bound endpoint, and a 3xx must NOT carry the Bearer key to another
+        # host nor silently divert the write from the recorded target binding.
+        self._transport = transport or _build_opener().open
 
     # -- contract ----------------------------------------------------------
 
@@ -284,7 +326,41 @@ class TheHiveExecutor(ResponseExecutor):
             )
 
         status = getattr(response, "status", None)
-        payload_text = response.read().decode("utf-8", errors="replace")
+        try:
+            payload_bytes = response.read()
+        except TimeoutError:
+            # M4-F §3: a timeout DURING the body read is the same uncertainty as
+            # a connect timeout — the request was SENT, the case MAY exist, the
+            # answer is lost. Fail closed as timeout, NEVER a success, ZERO retry.
+            return ExecutionOutcome(
+                status="failed",
+                detail={
+                    "classification": "timeout",
+                    "error": self._sanitize(
+                        f"thehive case creation timed out reading the "
+                        f"response after {self._timeout:g}s"
+                    ),
+                },
+                raw_response=None,
+            )
+        except (OSError, http.client.HTTPException) as exc:
+            # M4-F §3: the request was SENT (the case MAY exist) but the response
+            # body was interrupted mid-stream (IncompleteRead / ConnectionReset /
+            # OS error) — an UNCERTAINTY, never a success and never a claim the
+            # effect failed. Fail closed as adapter_unavailable; the committed
+            # pre-dispatch attempt survives for MANUAL reconciliation (§1), with
+            # ZERO auto-retry. The error text is sanitized against live secrets.
+            return ExecutionOutcome(
+                status="failed",
+                detail={
+                    "classification": "adapter_unavailable",
+                    "error": self._sanitize(
+                        f"thehive response read interrupted: {exc}"
+                    ),
+                },
+                raw_response=None,
+            )
+        payload_text = payload_bytes.decode("utf-8", errors="replace")
         if status == 202:
             # "Accepted but not executed" is not a success in the frozen
             # 3.2 semantics — no waiting state exists in the outcome
