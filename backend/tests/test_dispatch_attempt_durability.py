@@ -33,9 +33,15 @@ from app.core.config import settings
 from app.core.database import Base
 from app.models import DispatchAttempt
 from app.models.execution_log import ExecutionLog
-from app.services.executions.binding import build_dispatch_binding
+from app.services.executions.binding import (
+    TERMINAL_REFERENCE_KEY,
+    build_dispatch_binding,
+)
 from app.services.executions.durable_dispatch import (
+    AttemptRecovery,
     DurableDispatchAttemptStore,
+    RecoveryDisposition,
+    classify_attempt_recovery,
     find_unreconciled_attempts,
 )
 
@@ -218,12 +224,20 @@ class TestDurableStoreCommit:
         assert rows[0].attempt_id == uuid.UUID(binding.attempt_id)
 
 
-def _seed_execution_row(engine, execution_id, approval_id, decision, direction="execute"):
+def _seed_execution_row(
+    engine, execution_id, approval_id, decision, direction="execute", attempt_id=None
+):
     """Commit ONE execution_log row on the SAME execution_id — what the caller's
     business transaction writes. FK enforcement is OFF on this file-backed engine,
     so no approval row is needed; the CHECK + partial-unique-index DDL IS enforced,
     and a legal execute decision lands cleanly (a non-``requested`` row falls outside
-    the ``requested``-only partial indexes)."""
+    the ``requested``-only partial indexes).
+
+    M4-G §3: when ``attempt_id`` is supplied the row REFERENCES it under
+    ``TERMINAL_REFERENCE_KEY`` exactly as the REAL service does (the terminal
+    ``detail["dispatch_attempt_id"] = binding.attempt_id``). Recovery correlates BY
+    attempt_id, so a terminal that does not reference the attempt no longer settles it."""
+    detail = {} if attempt_id is None else {TERMINAL_REFERENCE_KEY: str(attempt_id)}
     with Session(engine) as session:
         session.add(
             ExecutionLog(
@@ -234,16 +248,21 @@ def _seed_execution_row(engine, execution_id, approval_id, decision, direction="
                 action="create_case",
                 target="203.0.113.10",
                 operator="ops-1",
-                detail={},
+                detail=detail,
             )
         )
         session.commit()
 
 
-def _seed_terminal(engine, execution_id, approval_id, decision="succeeded"):
+def _seed_terminal(engine, execution_id, approval_id, decision="succeeded", attempt_id=None):
     """Commit a TERMINAL (``succeeded``/``failed``) execution_log row — the outcome
-    the caller writes AFTER the external request returns, which SETTLES an attempt."""
-    _seed_execution_row(engine, execution_id, approval_id, decision)
+    the caller writes AFTER the external request returns. M4-G §3: it SETTLES an
+    attempt ONLY when it REFERENCES that attempt's immutable id (``attempt_id``),
+    mirroring the real service; a terminal with no / a wrong reference leaves the
+    attempt unreconciled (correlation is BY attempt_id, never by execution_id alone)."""
+    _seed_execution_row(
+        engine, execution_id, approval_id, decision, attempt_id=attempt_id
+    )
 
 
 class TestUnreconciledRecovery:
@@ -270,6 +289,7 @@ class TestUnreconciledRecovery:
             durable_engine,
             uuid.UUID(binding.execution_id),
             uuid.UUID(binding.approval_id),
+            attempt_id=binding.attempt_id,
         )
 
         with _independent_session(durable_engine) as session:
@@ -290,6 +310,7 @@ class TestUnreconciledRecovery:
             uuid.UUID(settled.execution_id),
             uuid.UUID(settled.approval_id),
             decision="failed",
+            attempt_id=settled.attempt_id,
         )
 
         with _independent_session(durable_engine) as session:
@@ -367,3 +388,150 @@ class TestEmittedThenAbandoned:
         with _independent_session(durable_engine) as session:
             unreconciled = find_unreconciled_attempts(session)
         assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+
+
+class TestAttemptIdCorrelation:
+    """M4-G §3: a terminal SETTLES an attempt ONLY by REFERENCING its immutable
+    ``attempt_id`` — NEVER by ``execution_id`` alone. A terminal for a DIFFERENT /
+    wrong attempt on the SAME execution_id (a stale or mis-attributed terminal) must
+    NOT mask the pending attempt (§4 requirement 7: a wrong-attempt_id terminal
+    cannot cover an unreconciled attempt)."""
+
+    def test_terminal_for_a_wrong_attempt_id_does_not_settle_the_attempt(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        # A terminal on the SAME execution_id but referencing a DIFFERENT attempt_id
+        # (never this attempt's). Under the OLD execution_id-only correlation it would
+        # wrongly settle; §3 requires the attempt_id reference, so it stays pending.
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            attempt_id=uuid.uuid4(),  # a WRONG / unrelated attempt id
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+
+    def test_terminal_without_an_attempt_id_reference_does_not_settle(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        # A terminal carrying NO dispatch_attempt_id reference (detail={}) on the same
+        # execution_id: execution_id alone is NOT proof THIS attempt settled.
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            attempt_id=None,
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+
+
+class TestRecoveryClassification:
+    """M4-G §3: the READ-ONLY three-state recovery classification. A TERMINAL AUDIT
+    (a terminal references the attempt) is KEPT DISTINCT from DISPATCH_STATUS_UNKNOWN
+    (no terminal references it) and from EXTERNAL_EFFECT_CONFIRMED (an Outcome-layer
+    state the recovery read NEVER produces). A FAILED terminal is an AUDIT fact about
+    what the service recorded, NEVER ``confirmed_failure`` about the external world."""
+
+    def test_classify_separates_terminal_audit_from_dispatch_unknown(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        settled = _binding()
+        pending = _binding()
+        store.record(settled)
+        store.record(pending)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(settled.execution_id),
+            uuid.UUID(settled.approval_id),
+            attempt_id=settled.attempt_id,
+        )
+        with _independent_session(durable_engine) as session:
+            classified = {r.attempt_id: r for r in classify_attempt_recovery(session)}
+        assert isinstance(classified[uuid.UUID(settled.attempt_id)], AttemptRecovery)
+        assert classified[uuid.UUID(settled.attempt_id)].disposition is (
+            RecoveryDisposition.TERMINAL_AUDIT_PRESENT
+        )
+        assert classified[uuid.UUID(settled.attempt_id)].audit_decision == "succeeded"
+        assert classified[uuid.UUID(pending.attempt_id)].disposition is (
+            RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+        )
+        assert classified[uuid.UUID(pending.attempt_id)].audit_decision is None
+
+    def test_failed_terminal_is_audit_present_never_confirmed_failure(self, durable_engine):
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="failed",
+            attempt_id=binding.attempt_id,
+        )
+        with _independent_session(durable_engine) as session:
+            record = classify_attempt_recovery(session)[0]
+        # A failed terminal is a TERMINAL AUDIT fact — the dispatch was RECORDED as
+        # failed — but the EXTERNAL effect is NOT confirmed to have failed (the action
+        # may have landed before the timeout / lost response). NEVER confirmed_failure.
+        assert record.disposition is RecoveryDisposition.TERMINAL_AUDIT_PRESENT
+        assert record.audit_decision == "failed"
+        assert record.disposition is not RecoveryDisposition.EXTERNAL_EFFECT_CONFIRMED
+
+    def test_recovery_never_produces_external_effect_confirmed(self, durable_engine):
+        # No durable attempt, terminal audit, or external JSON can authorize
+        # EXTERNAL_EFFECT_CONFIRMED here: confirmed_success / confirmed_failure live
+        # ONLY in the Outcome layer via the authoritative reconcile / trusted-reader
+        # proof path (verify_creation_effect), never in the recovery read.
+        store = DurableDispatchAttemptStore(durable_engine)
+        settled = _binding()
+        pending = _binding()
+        store.record(settled)
+        store.record(pending)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(settled.execution_id),
+            uuid.UUID(settled.approval_id),
+            attempt_id=settled.attempt_id,
+        )
+        with _independent_session(durable_engine) as session:
+            records = classify_attempt_recovery(session)
+        assert RecoveryDisposition.EXTERNAL_EFFECT_CONFIRMED not in {
+            r.disposition for r in records
+        }
+
+    def test_recovery_identity_comes_from_the_immutable_attempt_not_config(
+        self, durable_engine, monkeypatch
+    ):
+        # The recovery identity (adapter / action / target) is the durable attempt's
+        # IMMUTABLE snapshot, NEVER back-filled from the CURRENT config: changing the
+        # adapter base URL after the attempt committed must not alter the record.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        monkeypatch.setattr(settings, "THEHIVE_BASE_URL", "https://changed.example")
+        with _independent_session(durable_engine) as session:
+            record = classify_attempt_recovery(session)[0]
+        assert record.adapter == "thehive"
+        assert record.action == "create_case"
+        assert record.target == "203.0.113.10"
+
+    def test_classification_is_read_only_no_new_rows(self, durable_engine):
+        # The recovery classifier is a PURE read: it appends ZERO dispatch_attempt /
+        # execution_log rows and never re-dispatches, retries or compensates.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        with _independent_session(durable_engine) as session:
+            attempts_before = len(session.scalars(select(DispatchAttempt)).all())
+            logs_before = len(session.scalars(select(ExecutionLog)).all())
+            classify_attempt_recovery(session)
+            find_unreconciled_attempts(session)
+            attempts_after = len(session.scalars(select(DispatchAttempt)).all())
+            logs_after = len(session.scalars(select(ExecutionLog)).all())
+        assert attempts_after == attempts_before == 1
+        assert logs_after == logs_before == 0
