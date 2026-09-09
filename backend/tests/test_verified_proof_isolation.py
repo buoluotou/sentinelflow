@@ -71,7 +71,8 @@ PROOF_SYMBOLS = {
     "TrustedCreationReader",
     "reconcile_verified_execution",
     "derive_read_correlation_context",
-    "persist_verified_creation_outcome",
+    "_persist_verified_creation_outcome",
+    "UnsealedCreationEffect",
     "VerifiedCreationRefused",
 }
 
@@ -232,6 +233,53 @@ class TestVerifierReachability:
             called = _called_function_names(_parse(relpath))
             assert "verify_creation_effect" not in called
             assert "reconcile_verified_execution" not in called
+
+
+# ===========================================================================
+# 2b. PROOF-CHANNEL CLOSURE (M4-C) — the effect has ONE mint site, persist ONE caller
+# ===========================================================================
+class TestProofChannelClosure:
+    """M4-C: ``persist`` no longer trusts the TYPE NAME. ``VerifiedCreationEffect`` is minted
+    at EXACTLY ONE site (``verify_creation_effect``) and the now-PRIVATE
+    ``_persist_verified_creation_outcome`` is called from EXACTLY ONE module
+    (``reconcile_verified_execution``), so the verify -> authorize -> persist triad is a single
+    controlled chain. The runtime seal (``is_sealed()``) is the ACTIVE gate; these AST proofs
+    are the REAL boundary (constraint #1: an internal type is NOT a magic credential)."""
+
+    def test_verified_creation_effect_has_exactly_one_construction_site(self):
+        sites = set()
+        for py in APP.rglob("*.py"):
+            if "VerifiedCreationEffect" in _called_function_names(
+                ast.parse(py.read_text(encoding="utf-8"))
+            ):
+                sites.add(_module_name(py))
+        # The ONLY module that CONSTRUCTS a VerifiedCreationEffect is the pure verifier. The
+        # orchestration imports it for isinstance/type-hint only (never calls it); a plain
+        # hand-built effect is refused at runtime by the seal (test_verified_creation_proof.py).
+        assert sites == {"app.services.read_adapters.verified"}
+
+    def test_persist_verified_creation_outcome_has_exactly_one_caller(self):
+        callers = set()
+        for py in APP.rglob("*.py"):
+            if "_persist_verified_creation_outcome" in _called_function_names(
+                ast.parse(py.read_text(encoding="utf-8"))
+            ):
+                callers.add(_module_name(py))
+        # The private persist is called ONLY inside the controlled orchestration — no webhook,
+        # no router, no other service reaches the confirmed_success persistence path.
+        assert callers == {"app.services.outcomes.verified_proof"}
+
+    def test_persist_is_module_private_not_publicly_exported(self):
+        # The persist entry is PRIVATE (``_`` prefix): there is NO public
+        # ``persist_verified_creation_outcome`` name left for an external caller to import.
+        tree = _parse("services/outcomes/verified_proof.py")
+        defined = {
+            n.name
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert "_persist_verified_creation_outcome" in defined
+        assert "persist_verified_creation_outcome" not in defined
 
 
 # ===========================================================================

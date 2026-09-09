@@ -24,7 +24,7 @@ WHAT THIS PROVES. The source-isolated trusted creation-proof channel (Amendment 
      (``VerifiedCreationRefused``, ZERO fact — Amendment §12), a transport failure is
      ``reconciliation_failed`` (NEVER ``confirmed_failure``), the EMPTY production
      registry fails closed (``UnsupportedAdapterRead``), a reader without ``read_creation``
-     is not a trusted reader, and the whitelisted ``persist_verified_creation_outcome``
+     is not a trusted reader, and the whitelisted ``_persist_verified_creation_outcome``
      appends exactly ONE ``confirmed_success`` fact with NO raw response / NO secret /
      NO tenant value.
 
@@ -71,9 +71,10 @@ from app.services.manual_reconcile import (
     UnsupportedAdapterRead,
 )
 from app.services.outcomes.verified_proof import (
+    UnsealedCreationEffect,
     VerifiedCreationRefused,
+    _persist_verified_creation_outcome,
     derive_read_correlation_context,
-    persist_verified_creation_outcome,
     reconcile_verified_execution,
 )
 from app.services.read_adapters.thehive import (
@@ -878,14 +879,23 @@ class TestReconcileVerifiedExecution:
 
 class TestPersistVerifiedCreationOutcome:
     def _effect(self, execution_id=EID, case_number=42):
-        return VerifiedCreationEffect(
-            execution_id=execution_id, adapter="thehive", external_reference=REFERENCE,
-            external_created_at=NOW, case_number=case_number,
-            instance_verified=True, tenant_verified=True,
+        # M4-C: a REAL verifier-minted (SEALED) effect — the ONLY shape persist now accepts.
+        # Built by running the six-gate verifier over a fully-passing context + observation,
+        # NOT a plain hand-constructed VerifiedCreationEffect (which persist now REFUSES).
+        verdict = verify_creation_effect(
+            _context(execution_id=execution_id), _observed(case_number=case_number)
         )
+        assert isinstance(verdict, VerifiedCreationEffect)
+        return verdict
+
+    def test_verifier_mints_a_sealed_effect(self):
+        # The verifier's positive verdict IS sealed; persist accepts ONLY a sealed effect.
+        effect = verify_creation_effect(_context(), _observed())
+        assert isinstance(effect, VerifiedCreationEffect)
+        assert effect.is_sealed()
 
     def test_appends_one_confirmed_success_with_whitelisted_detail(self, db_session):
-        outcome = persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
+        outcome = _persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
         assert outcome.outcome_status == "confirmed_success"
         assert outcome.observed_at == NOW
         assert outcome.observed_at_kind == "external"
@@ -901,7 +911,7 @@ class TestPersistVerifiedCreationOutcome:
         assert d["external_reference"] == REFERENCE
 
     def test_whitelist_excludes_raw_response_secret_and_tenant_value(self, db_session):
-        persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
+        _persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
         d = _only_fact(db_session, EID).detail
         serialized = json.dumps(d)
         assert "raw_response" not in d
@@ -913,16 +923,32 @@ class TestPersistVerifiedCreationOutcome:
         assert LAB_API_KEY not in serialized
 
     def test_case_number_is_optional_in_the_whitelist(self, db_session):
-        persist_verified_creation_outcome(
+        _persist_verified_creation_outcome(
             db_session, self._effect(case_number=None), OPERATOR
         )
         assert "case_number" not in _only_fact(db_session, EID).detail
 
     def test_persist_is_append_only_no_side_effects(self, db_session):
         # ONE INSERT per call; two calls append two facts (never UPDATE / UPSERT).
-        persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
-        persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
+        _persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
+        _persist_verified_creation_outcome(db_session, self._effect(), OPERATOR)
         assert len(_facts(db_session, EID)) == 2
+
+    def test_persist_refuses_a_plain_unsealed_effect_zero_fact(self, db_session):
+        # M4-C BOUNDARY: a PLAIN hand-constructed VerifiedCreationEffect (NOT minted by the
+        # verifier — its seal is not the private sentinel) is REFUSED with ZERO fact. persist
+        # no longer trusts the TYPE NAME alone (Amendment §11.2 constraint #1). The seal is NOT
+        # a magic credential — the real boundary is the AST-proven single construction site.
+        plain = VerifiedCreationEffect(
+            execution_id=EID, adapter="thehive", external_reference=REFERENCE,
+            external_created_at=NOW, case_number=42,
+            instance_verified=True, tenant_verified=True,
+            seal=object(),  # NOT the verifier's private _VERIFIER_SEAL
+        )
+        assert not plain.is_sealed()
+        with pytest.raises(UnsealedCreationEffect):
+            _persist_verified_creation_outcome(db_session, plain, OPERATOR)
+        assert _outcome_count(db_session) == 0
 
 
 # ===========================================================================

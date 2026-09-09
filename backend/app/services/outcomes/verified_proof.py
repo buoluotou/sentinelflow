@@ -50,10 +50,22 @@ function calls ``map_external_state``, whose thehive vocabulary is EMPTY (M2-R �
 fail-closed), so ANY word — including the synthesized ``case_created`` — raises
 ``UnrecognizedExternalState`` (-> 422, zero fact). The trusted channel's ``confirmed_success``
 is authorized by the SIX-GATE VERIFIER, NOT by the shared vocabulary, so
-``persist_verified_creation_outcome`` appends DIRECTLY (reusing the ``ExecutionOutcomeFact``
+``_persist_verified_creation_outcome`` appends DIRECTLY (reusing the ``ExecutionOutcomeFact``
 alias + ``OutcomePersistenceError`` + ``MANUAL_RECONCILE_SOURCE`` + append-only discipline
 from ``webhook.py`` / ``manual_persist.py``) — this is exactly "source isolation lives
 OUTSIDE the shared vocabulary". No second external-state vocabulary is created.
+
+M4-C PROOF-CHANNEL CLOSURE. ``_persist_verified_creation_outcome`` is MODULE-PRIVATE and
+SEALED: it is the ONLY ``confirmed_success`` persistence path on this channel, its ONLY
+caller is ``reconcile_verified_execution`` (AST-proven), and it FIRST verifies the effect
+carries ``verify_creation_effect``'s private mint seal (``effect.is_sealed()``) — so a PLAIN
+hand-constructed ``VerifiedCreationEffect`` can NEVER be fed straight to persist (the
+boundary the M4-C ruling closes; Amendment §11.2 constraint #1: persist does NOT trust the
+TYPE NAME). The verify -> authorize -> persist triad CONVERGES into the ONE controlled
+service ``reconcile_verified_execution``. A FUTURE HTTP wiring MUST reuse the operator
+authentication, RBAC and Manual Reconcile permission of the sealed A2 reconcile route (it
+MUST NOT expose a new unauthenticated persist entry); this milestone wires NO production
+router (Amendment §5 / §11.4 — the channel stays PULL-only and unwired).
 
 PERSISTENCE WHITELIST (Amendment §3 / §11.4). ``raw_evidence`` / ``raw_response`` are NEVER
 written. Only whitelisted, non-secret fields enter ``ExecutionOutcome.detail`` (through
@@ -73,7 +85,7 @@ current config (constraint #2). The verifier's gate 5 therefore refuses
 (``instance_binding_unknown``) -> ``VerifiedCreationRefused`` -> 422, ZERO fact. NO real
 historical execution can reach ``confirmed_success`` until the §12 forward-binding Amendment
 lands. The ``confirmed_success`` arm below is delivered + composition-tested (the pure
-verifier positive + ``persist_verified_creation_outcome`` direct) but is UNREACHABLE for real
+verifier positive + ``_persist_verified_creation_outcome`` direct) but is UNREACHABLE for real
 history by design — that is the correct, honest fail-closed state, not a gap to paper over.
 
 APPEND-ONLY + NO SIDE EFFECTS. ONE INSERT per reconcile, never UPDATE / UPSERT / MERGE /
@@ -146,6 +158,21 @@ class VerifiedCreationRefused(ContractValidationFailure):
         super().__init__(message)
         self.gate = gate
         self.reason = reason
+
+
+class UnsealedCreationEffect(RuntimeError):
+    """M4-C: ``_persist_verified_creation_outcome`` was handed a ``VerifiedCreationEffect``
+    NOT minted by ``verify_creation_effect`` (its ``is_sealed()`` is False).
+
+    This is the CLOSED boundary the M4-C ruling requires: persist no longer trusts the TYPE
+    NAME alone, so a PLAIN hand-constructed internal object can never be fed straight to
+    persist to write a ``confirmed_success``. In the controlled chain this NEVER fires
+    (``reconcile_verified_execution`` only ever passes the verifier's own return value); it is
+    a fail-closed integrity guard against a future caller bypassing the six-gate verifier. A
+    ``RuntimeError`` (an internal integrity violation, NOT a client-facing 4xx): ZERO fact is
+    written. The seal is NOT a magic credential (constraint #1) — the real boundary is the
+    AST-proven single construction site + single persist caller.
+    """
 
 
 def _aware_utc(value: datetime | None) -> datetime | None:
@@ -285,10 +312,18 @@ def derive_read_correlation_context(
     )
 
 
-def persist_verified_creation_outcome(
+def _persist_verified_creation_outcome(
     session: Session, effect: VerifiedCreationEffect, operator: str
 ) -> ReconciledOutcome:
     """Append ONE ``confirmed_success`` Outcome Fact authorized by a ``VerifiedCreationEffect``.
+
+    M4-C PRIVATE + SEALED. MODULE-PRIVATE (``_`` prefix): the controlled service
+    ``reconcile_verified_execution`` is its ONLY caller (AST-proven), so the verify ->
+    authorize -> persist triad converges into ONE controlled entrypoint. It FIRST checks
+    ``effect.is_sealed()`` — an effect NOT minted by ``verify_creation_effect`` raises
+    ``UnsealedCreationEffect`` with ZERO fact, so a PLAIN hand-constructed internal object can
+    never be fed straight here to write ``confirmed_success`` (the M4-C boundary fix; persist
+    does NOT trust the TYPE NAME alone — Amendment §11.2 constraint #1).
 
     Called ONLY after ``verify_creation_effect`` returned the POSITIVE verdict (all six gates
     passed). It BYPASSES the shared (empty) vocabulary deliberately (see the module docstring):
@@ -305,6 +340,14 @@ def persist_verified_creation_outcome(
     ``adapter:{identity}`` machine domain). ONE INSERT; on ``SQLAlchemyError`` rollback (no
     partial fact) + ``OutcomePersistenceError`` -> the router maps a 5xx, never ``accepted=true``.
     """
+    # M4-C seal gate: refuse an effect NOT minted by the six-gate verifier (fail-closed, ZERO
+    # fact). In the controlled chain this never fires (reconcile passes the verifier's own
+    # return value); it closes the "persist accepts a plain internal object" boundary.
+    if not effect.is_sealed():
+        raise UnsealedCreationEffect(
+            "the VerifiedCreationEffect was not minted by verify_creation_effect; refusing to "
+            "persist a confirmed_success from an unsealed (plain) internal object"
+        )
     detail = redact_detail(
         {
             "adapter": effect.adapter,
@@ -516,7 +559,7 @@ def reconcile_verified_execution(
     # 7. ALL SIX gates passed -> the ONLY authorization for a confirmed_success on the
     #    source-isolated channel. Persist the whitelisted fact (bypassing the EMPTY shared
     #    vocabulary) and return the success envelope (observed_at = the EXTERNAL creation time).
-    persisted = persist_verified_creation_outcome(session, verdict, operator)
+    persisted = _persist_verified_creation_outcome(session, verdict, operator)
     observations = list(
         session.scalars(
             select(ExecutionOutcomeFact).where(

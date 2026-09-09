@@ -360,6 +360,21 @@ class ReadCorrelationContext:
 # ---------------------------------------------------------------------------
 # The verifier's two verdicts (Amendment §5.3)
 # ---------------------------------------------------------------------------
+#: Module-private MINT SEAL. ``verify_creation_effect`` is the ONLY place this sentinel is
+#: stamped into a ``VerifiedCreationEffect``; ``_persist_verified_creation_outcome`` checks
+#: ``effect.is_sealed()`` BEFORE writing a ``confirmed_success``.
+#:
+#: NOT A MAGIC CREDENTIAL (Amendment §11.2 constraint #1). A determined caller can reach
+#: ``verified._VERIFIER_SEAL`` and forge a sealed effect — a Python attribute is never an
+#: unforgeable token, and this module does NOT claim otherwise. The seal is a STRUCTURAL
+#: consistency layer that makes persist ACTIVELY refuse a PLAIN hand-constructed effect (the
+#: M4-C boundary fix: persist no longer trusts the TYPE NAME alone). The REAL boundary is the
+#: CONTROLLED CALL CHAIN, proven by AST in the isolation suite: ``VerifiedCreationEffect`` has
+#: EXACTLY ONE construction site (``verify_creation_effect``) and the private persist has
+#: EXACTLY ONE caller (``reconcile_verified_execution``).
+_VERIFIER_SEAL = object()
+
+
 @dataclass(frozen=True, slots=True)
 class VerifiedCreationEffect:
     """The POSITIVE verdict: ALL SIX conjunctive gates passed, so the trusted read
@@ -370,6 +385,13 @@ class VerifiedCreationEffect:
     from a platform-derived ``ReadCorrelationContext`` + a trusted ``VerifiedReadResult``.
     It is NOT constructible from an HTTP body (no route accepts one) and NOT reachable
     from the webhook path.
+
+    M4-C MINT SEAL. ``verify_creation_effect`` stamps the module-private ``_VERIFIER_SEAL``
+    into ``seal``; ``_persist_verified_creation_outcome`` REFUSES an effect whose
+    ``is_sealed()`` is False, so a PLAIN hand-constructed ``VerifiedCreationEffect`` can no
+    longer be fed straight to persist to write ``confirmed_success`` (the boundary the M4-C
+    ruling closes). The seal is NOT a magic credential (constraint #1) — the real boundary is
+    the AST-proven single construction site + single persist caller.
 
     Carries ONLY what the whitelisted persistence detail needs (§3): the correlated
     identity, the authoritative EXTERNAL creation time (-> the fact's ``observed_at``,
@@ -385,6 +407,16 @@ class VerifiedCreationEffect:
     case_number: int | None
     instance_verified: bool
     tenant_verified: bool
+    #: M4-C mint seal — the module-private ``_VERIFIER_SEAL``, stamped ONLY by
+    #: ``verify_creation_effect``. A plain hand-built effect carries something else and
+    #: ``is_sealed()`` is False. NOT a secret, NOT a magic credential (constraint #1).
+    seal: object
+
+    def is_sealed(self) -> bool:
+        """Whether THIS effect was minted by ``verify_creation_effect`` (the ONLY place the
+        private ``_VERIFIER_SEAL`` is stamped). ``_persist_verified_creation_outcome`` checks
+        this BEFORE writing, so persist never trusts the TYPE NAME alone (constraint #1)."""
+        return self.seal is _VERIFIER_SEAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,4 +579,7 @@ def verify_creation_effect(
         # gate 5 passed, so both bindings matched an authenticated dispatch-time fact.
         instance_verified=True,
         tenant_verified=True,
+        # M4-C: the ONE AND ONLY mint site of the private seal — persist refuses an effect
+        # that does not carry it, so a plain hand-built object can never reach confirmed_success.
+        seal=_VERIFIER_SEAL,
     )
