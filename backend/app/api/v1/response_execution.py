@@ -56,6 +56,7 @@ from app.schemas.response_execution import (
     ObservedHealthRead,
 )
 from app.services.executions import (
+    DurableStoreRequired,
     ExecutionGuardError,
     ExecutionResult,
     ExecutionServiceError,
@@ -256,6 +257,19 @@ def create_execution(
         db.rollback()
         raise HTTPException(
             status_code=503, detail="Execution policy misconfigured"
+        )
+    except DurableStoreRequired:
+        # M4-G §2: a recognized external adapter reached the dispatch point with
+        # NO durable store (a DI gap / config fault). The requested intent row was
+        # already flushed inside the aborted transaction — roll it back so a
+        # refused-before-dispatch execution leaves NO half-written chain, then fail
+        # closed with ONE static 503 (the sanitized precedent of PolicyViolation /
+        # ExecutorConfigError; the internal message never reaches the client). The
+        # adapter was NEVER called, so no external effect needs reconciling.
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Execution adapter requires a durable dispatch store",
         )
     except (ExecutionServiceError, ExecutionGuardError) as exc:
         # http_status-driven mapping: ApprovalNotFound / ExecutionNotFound

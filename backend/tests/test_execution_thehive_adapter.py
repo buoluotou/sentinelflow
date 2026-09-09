@@ -76,6 +76,13 @@ from app.services.executions.exceptions import ExecutorOutcomeViolation
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import compensate_response, execute_response
 
+# M4-G §2: these service-chain tests drive the REAL durable path — a RECOGNIZED
+# adapter (thehive) with store=None is now refused before dispatch by the
+# fail-closed gate. They inject the shared no-DB recording store double (a real
+# independent-commit store cannot interleave with the in-memory StaticPool
+# harness; file-backed durability lives in test_dispatch_attempt_durability.py).
+from tests.test_dispatch_durable_integration import FakeStore
+
 # User-specified sentinel key for the 3.2.5 five-check battery.
 FAKE_SECRET = "sentinel-thehive-secret-test"
 
@@ -591,6 +598,7 @@ class TestProtocolViolation:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            dispatch_attempt_store=FakeStore(),
         )
         assert result.final_decision == "failed"
         assert result.rows[-1].detail["classification"] == "protocol_violation"
@@ -737,6 +745,7 @@ class TestSecretBoundary:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            dispatch_attempt_store=FakeStore(),
         )
         db_session.commit()
         raw = "".join(str(row.detail) for row in result.rows)
@@ -931,6 +940,7 @@ class TestEndToEnd:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=_executor(transport),
+            dispatch_attempt_store=FakeStore(),
         )
 
     def test_success_chain_writes_provider_thehive(self, db_session):
@@ -1005,6 +1015,7 @@ class TestEndToEnd:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            dispatch_attempt_store=FakeStore(),
         )
         assert forward.final_decision == "succeeded"
         compensation = compensate_response(

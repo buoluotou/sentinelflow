@@ -39,7 +39,10 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from app.api.v1.response_execution import get_response_executor
+from app.api.v1.response_execution import (
+    get_dispatch_attempt_store,
+    get_response_executor,
+)
 from app.core.config import settings
 from app.models import (
     AIResponseApproval,
@@ -54,6 +57,13 @@ from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.shuffle import ShuffleExecutor
 from app.services.executions.thehive import TheHiveExecutor
 from app.services.executions.wazuh import WazuhExecutor
+
+# M4-G §2: the real-adapter journeys below drive RECOGNIZED external adapters
+# (shuffle / wazuh / thehive) over HTTP, so the fail-closed durable-store gate
+# now requires a store before the external request. Inject the no-DB FakeStore so
+# these journeys take the REAL durable path; the mock journey stays on the legacy
+# path (the conftest client fixture defaults the seam to None).
+from tests.test_dispatch_durable_integration import FakeStore
 
 EXECUTE = "/api/v1/executions"
 TOKEN = "exec-secret-policy-cross-layer-01"
@@ -527,6 +537,7 @@ class TestRealAdapterChains:
             transport=allow_stub,
         )
         app.dependency_overrides[get_response_executor] = lambda: executor
+        app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
         world = seed_world(db_session)
         response = client.post(
             EXECUTE, json=execute_body(world["approval"]), headers=legacy_auth
@@ -574,6 +585,7 @@ class TestRealAdapterChains:
         app.dependency_overrides[get_response_executor] = lambda: make_executor(
             allow_stub
         )
+        app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
         world = seed_world(db_session, action="isolate_host", target="agent001")
         response = client.post(
             EXECUTE, json=execute_body(world["approval"]), headers=legacy_auth
@@ -616,6 +628,7 @@ class TestRealAdapterChains:
         app.dependency_overrides[get_response_executor] = lambda: make_executor(
             allow_stub
         )
+        app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
         world = seed_world(
             db_session, action="escalate_to_incident", target="INC-2026-0142"
         )

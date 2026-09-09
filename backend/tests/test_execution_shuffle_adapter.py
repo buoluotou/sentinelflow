@@ -42,6 +42,11 @@ from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import execute_response
 
+# M4-G §2: these service-chain tests drive the REAL durable path — a RECOGNIZED
+# adapter (shuffle) with store=None is now refused before dispatch by the
+# fail-closed gate. They inject the shared no-DB recording store double.
+from tests.test_dispatch_durable_integration import FakeStore
+
 FAKE_SECRET = "s3cr3t-PHASE32-TEST-ONLY"
 
 _ALL_WORKFLOWS = {
@@ -454,6 +459,7 @@ class TestSecretLeakage:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            dispatch_attempt_store=FakeStore(),
         )
         db_session.commit()
         raw = "".join(str(row.detail) for row in result.rows)
@@ -479,6 +485,7 @@ class TestServiceChain:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=_executor(transport),
+            dispatch_attempt_store=FakeStore(),
         )
 
     def test_success_chain_is_workflow_triggered(self, db_session):
@@ -526,6 +533,7 @@ class TestServiceChain:
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            dispatch_attempt_store=FakeStore(),
         )
         from app.services.executions.service import compensate_response
 

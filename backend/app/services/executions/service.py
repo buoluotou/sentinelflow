@@ -82,6 +82,7 @@ from app.services.executions.policy import (
     policy_from_settings,
 )
 from app.services.executions.protocol import parse_execution_outcome
+from app.services.executions.registry import RECOGNIZED_ADAPTER_NAMES
 from app.services.executions.secrets import redact_detail
 from app.services.executions.state import derive_execution_state
 
@@ -93,6 +94,7 @@ if TYPE_CHECKING:  # annotation-only: the Service depends on record(), not the c
 #: HTTP layer and never reach this module.
 HTTP_CONFLICT = 409
 HTTP_NOT_FOUND = 404
+HTTP_SERVICE_UNAVAILABLE = 503
 
 #: High-water mark for audit timestamps. One business transaction writes
 #: the whole chain, and (a) SQLite's CURRENT_TIMESTAMP is second-precision
@@ -145,6 +147,20 @@ class ExecutionNotFound(ExecutionServiceError):
     new row. Compensation cannot target a phantom execution."""
 
     http_status = HTTP_NOT_FOUND
+
+
+class DurableStoreRequired(ExecutionServiceError):
+    """M4-G §2 fail-closed gate: a RECOGNIZED real external adapter
+    (shuffle/wazuh/thehive) was asked to dispatch WITHOUT a durable
+    pre-dispatch attempt store (``store=None`` — a DI gap, a config error, or
+    a test default). Dispatching anyway would degrade to the flush-only
+    pre-M4-F path, firing an external request whose intent was never durably
+    committed. This is a server-side wiring fault (503), never a business
+    rejection: the adapter is NOT called and no dispatch fact is produced. The
+    offline mock is exempt — it makes no external call, so there is no durable
+    fact to protect."""
+
+    http_status = HTTP_SERVICE_UNAVAILABLE
 
 
 class ExecutionConflictError(ExecutionServiceError):
@@ -553,6 +569,22 @@ def execute_response(
         dispatch_started_at=dispatch_started_at,
         contributor_facts=contributor_facts,
     )
+    # M4-G §2 — FAIL-CLOSED DURABLE-STORE GATE. A RECOGNIZED real external adapter
+    # (shuffle/wazuh/thehive) MUST NOT degrade to the flush-only pre-M4-F path: if
+    # the durable store is absent (store=None — a DI gap, a config error, or a test
+    # default), refuse BEFORE the external request rather than fire an adapter whose
+    # dispatch intent was never durably committed. This is a server-side wiring
+    # fault (503), not a business rejection — no dispatch fact is produced and the
+    # adapter is never called. The offline mock is exempt (no external call, so no
+    # durable fact to protect); isolated tests exercise the real durable path by
+    # injecting a store explicitly.
+    if executor.name in RECOGNIZED_ADAPTER_NAMES and dispatch_attempt_store is None:
+        raise DurableStoreRequired(
+            f"Executor '{executor.name}' is a recognized external adapter and "
+            "requires a durable dispatch-attempt store before any external "
+            "request; none was provided (store=None). Refusing to degrade to the "
+            "flush-only path (M4-G §2 fail-closed)."
+        )
     # M4-F §1 — DURABLE PRE-DISPATCH COMMIT. Before ANY external request, commit
     # the dispatch intent + target binding on an INDEPENDENT transaction (a
     # separate Session/connection) so it SURVIVES a caller rollback, a

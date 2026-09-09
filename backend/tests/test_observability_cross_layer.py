@@ -37,7 +37,10 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
 
-from app.api.v1.response_execution import get_response_executor
+from app.api.v1.response_execution import (
+    get_dispatch_attempt_store,
+    get_response_executor,
+)
 from app.core.config import settings
 from app.models import ExecutionLog
 from app.services.executions import service as service_module
@@ -60,6 +63,12 @@ from tests.test_execution_policy_cross_layer import (
     world_snapshot,
 )
 from tests.test_execution_service import BadOutcomeExecutor
+
+# M4-G §2: the multi-adapter journey drives RECOGNIZED external adapters
+# (shuffle / wazuh / thehive) over HTTP, so the fail-closed durable-store gate now
+# requires a store before the external request. Inject the no-DB FakeStore for the
+# real-adapter legs (real durable path); the mock leg stays on the legacy path.
+from tests.test_dispatch_durable_integration import FakeStore
 
 METRICS_URL = "/api/v1/executions/metrics"
 HEALTH_URL = "/api/v1/executions/health"
@@ -360,6 +369,10 @@ class TestMultiAdapterBuckets:
     ):
         # mock: registry-produced, zero seams.
         execute_ok(client, db_session, operator_auth)
+
+        # M4-G §2: from here the chain drives RECOGNIZED real adapters, so satisfy
+        # the fail-closed durable-store gate (real durable path, no-DB FakeStore).
+        app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
 
         # shuffle over the frozen offline transport seam.
         shuffle_stub = StubTransport(payload={"success": True})

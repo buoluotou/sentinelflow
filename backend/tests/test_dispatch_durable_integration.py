@@ -17,6 +17,12 @@ SERVICE wiring around it:
   pre-check alone cannot (both requests read an empty prior_approval_rows)
 - the terminal row REFERENCES the recorded ``attempt_id`` (never re-writes it)
 - ``store=None`` is byte-identical to the pre-M4-F path (no regression)
+- M4-G §2: a RECOGNIZED real external adapter (thehive/shuffle/wazuh) with
+  ``store=None`` is REFUSED before dispatch (``DurableStoreRequired``, a typed
+  503) — it may never degrade to the flush-only path; the offline mock is exempt
+- M4-G §2: an AMBIGUOUS durable-commit outcome is never auto-retried with a new
+  execution_id / approval reservation — ZERO external calls, the store is asked
+  exactly once, the uncertainty propagates for read-only recovery (§3)
 - exactly ONE external call per dispatch — no automatic retry / re-dispatch
   (constraint 5)
 
@@ -38,6 +44,7 @@ from app.services.executions.binding import TERMINAL_REFERENCE_KEY
 from app.services.executions.mock import MockExecutor
 from app.services.executions.service import (
     ApprovalAlreadyExecuted,
+    DurableStoreRequired,
     ExecutionIdAlreadyBound,
     execute_response,
 )
@@ -70,14 +77,19 @@ class FakeStore:
 class CountingExecutor(ResponseExecutor):
     """Wraps ``MockExecutor``; counts ``execute()`` calls and logs the order."""
 
-    def __init__(self, events=None, fail_with=None):
+    def __init__(self, events=None, fail_with=None, name="mock"):
         self._inner = MockExecutor(fail_with=fail_with)
         self.calls = 0
         self._events = events
+        self._name = name
 
     @property
     def name(self):
-        return "mock"
+        # M4-G §2: the fail-closed gate keys on ``executor.name``, so a test can
+        # present a RECOGNIZED adapter identity (thehive/shuffle/wazuh) while the
+        # offline MockExecutor still does the (stubbed) work — control flow only,
+        # never a real external call.
+        return self._name
 
     def supports(self, action):
         return self._inner.supports(action)
@@ -232,3 +244,75 @@ class TestDurableDispatchWiring:
         assert result.final_decision == "failed"
         assert executor.calls == 1
         assert len(store.recorded) == 1
+
+    def test_recognized_adapter_without_a_durable_store_is_refused_before_dispatch(
+        self, db_session
+    ):
+        # M4-G §2 FAIL-CLOSED GATE: a RECOGNIZED real external adapter
+        # (thehive/shuffle/wazuh) presented with store=None — a DI gap, a config
+        # error, or a test default — MUST be refused BEFORE the external request.
+        # It may never silently degrade to the flush-only pre-M4-F path, because
+        # then the dispatch intent would not be durably committed before the wire
+        # call. The refusal is a typed DurableStoreRequired (a 503 at the API) and
+        # the adapter is NEVER invoked.
+        approval = seed_approved(db_session)
+        events = _Events()
+        executor = CountingExecutor(events=events, name="thehive")
+        with pytest.raises(DurableStoreRequired):
+            execute_response(
+                db_session,
+                approval_id=approval.id,
+                execution_id=uuid.uuid4(),
+                operator="ops-1",
+                executor=executor,
+                dispatch_attempt_store=None,
+            )
+        assert executor.calls == 0
+        assert "execute" not in events
+        assert "record" not in events  # refused before even reaching the store
+
+    def test_recognized_adapter_with_a_durable_store_proceeds(self, db_session):
+        # M4-G §2 positive control: the SAME recognized adapter identity WITH an
+        # injected store takes the real durable path — the gate does not over-block.
+        # record() still precedes execute() (the pre-dispatch guarantee holds).
+        approval = seed_approved(db_session)
+        events = _Events()
+        store = FakeStore(events=events)
+        executor = CountingExecutor(events=events, name="thehive")
+        result = execute_response(
+            db_session,
+            approval_id=approval.id,
+            execution_id=uuid.uuid4(),
+            operator="ops-1",
+            executor=executor,
+            dispatch_attempt_store=store,
+        )
+        assert result.chain == ("requested", "dispatched", "succeeded")
+        assert executor.calls == 1
+        assert events.index("record") < events.index("execute")
+
+    def test_ambiguous_store_commit_never_retries_the_external_action(self, db_session):
+        # M4-G §2 COMMIT-UNCERTAINTY: the durable commit outcome is AMBIGUOUS (the
+        # DB may have committed but the confirmation was lost — a connection drop
+        # mid-commit). The Service MUST NOT auto-retry the external action with a
+        # new execution_id or a new approval reservation: it propagates the
+        # uncertainty, makes ZERO external calls, and asks the store exactly ONCE.
+        # Read-only recovery (§3) later surfaces whatever actually committed —
+        # there is no automatic second external action here.
+        approval = seed_approved(db_session)
+        events = _Events()
+        ambiguous = SQLAlchemyError("connection lost during commit — outcome unknown")
+        store = FakeStore(events=events, raise_exc=ambiguous)
+        executor = CountingExecutor(events=events)
+        with pytest.raises(SQLAlchemyError):
+            execute_response(
+                db_session,
+                approval_id=approval.id,
+                execution_id=uuid.uuid4(),
+                operator="ops-1",
+                executor=executor,
+                dispatch_attempt_store=store,
+            )
+        assert executor.calls == 0            # no external action on an uncertain commit
+        assert events.count("record") == 1    # asked ONCE — no auto-retry / re-reservation
+        assert "execute" not in events

@@ -62,7 +62,10 @@ import pytest
 from sqlalchemy import select
 
 from app.api.v1.reconcile import RECONCILE_UNSUPPORTED_ADAPTER_DETAIL
-from app.api.v1.response_execution import get_response_executor
+from app.api.v1.response_execution import (
+    get_dispatch_attempt_store,
+    get_response_executor,
+)
 from app.core.config import settings
 from app.models import (
     AIResponseApproval,
@@ -86,6 +89,14 @@ from app.services.read_adapters.thehive import (
     CASE_UNVERIFIED,
     TheHiveReadAdapter,
 )
+
+# M4-G §2: the level-3 HTTP chain drives a RECOGNIZED real adapter (thehive), so
+# the fail-closed durable-store gate now requires a store before the external
+# request. Inject the no-DB FakeStore so this HTTP journey takes the REAL durable
+# path (the conftest client fixture defaults the seam to None for legacy/mock
+# journeys); FakeStore touches no DB, so it never trips the in-memory StaticPool
+# single-writer artifact.
+from tests.test_dispatch_durable_integration import FakeStore
 
 LAB_BASE_URL = "https://thehive.lab.local"
 LAB_API_KEY = "LAB_THEHIVE_KEY_DO_NOT_USE"
@@ -306,6 +317,9 @@ def _drive_http_execution(client, app, db_session, exec_auth):
     app.dependency_overrides[get_response_executor] = lambda: TheHiveExecutor(
         _creds(), timeout=1.0, transport=write
     )
+    # M4-G §2: satisfy the fail-closed durable-store gate for this RECOGNIZED
+    # adapter so the REAL service writes the chain over HTTP (real durable path).
+    app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
     resp = client.post(
         EXECUTE,
         json={
