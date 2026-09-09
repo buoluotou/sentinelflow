@@ -41,12 +41,14 @@ THE THREE BINDING CONSTRAINTS (Amendment §11.2) THIS MODULE HONORS:
      that never reaches this verifier. "Do not import" is NOT the only defense — the
      call-chain reachability is (proven by AST + runtime tests in the M3 suite).
   2. HISTORY IS NEVER FABRICATED. ``ReadCorrelationContext`` carries ONLY facts that
-     really exist in the immutable dispatch chain. Amendment §11.3 source-verified
-     that the target INSTANCE / TENANT binding DOES NOT EXIST in ``ExecutionLog`` nor
-     in the TheHive 4.1.24-1 ``OutputCase``, so ``instance_binding`` / ``tenant_binding``
-     stay ``None`` (UNKNOWN) for ALL real history and are NEVER back-filled from the
-     CURRENT config (base URL / tenant / version). Gate 5 therefore FAILS CLOSED for
-     every real historical execution (Amendment §12 — the sole remaining design blocker).
+     really exist in the immutable dispatch chain + the M4-A pre-dispatch binding.
+     Amendment §11.3 source-verified that the target INSTANCE / TENANT binding DOES NOT
+     EXIST in ``ExecutionLog`` nor in the TheHive 4.1.24-1 ``OutputCase``, so the M4-A
+     binding records ``target_instance`` / ``target_tenant`` as ``None`` and
+     ``instance_binding`` / ``tenant_binding`` stay ``None`` (UNKNOWN) for ALL real history
+     — NEVER back-filled from the binding's config-declared endpoint / version, NEVER from
+     the CURRENT config. Gate 5 therefore FAILS CLOSED for every real historical execution
+     (Amendment §12 — the sole remaining design blocker; M4-B addresses the read side).
   3. VERSION CONFIG IS NOT A LIVENESS PROOF. ``THEHIVE_EXPECTED_VERSION == 4.1.24-1``
      only proves an operator CONFIGURED that expectation; it does NOT prove the remote
      server actually runs it. Nothing here treats a config string as a live proof.
@@ -113,8 +115,9 @@ REASON_REFERENCE_UNKNOWN = "reference_unknown"
 REASON_MISSING_EXECUTION_CORRELATION_TAG = "missing_execution_correlation_tag"
 # gate 3 — CREATION-TIME
 REASON_MISSING_CREATED_AT = "missing_created_at"
-# gate 4 — TIME-ORDER + bounded window + exact immutable-dispatch match
-REASON_DISPATCH_TIME_UNKNOWN = "dispatch_time_unknown"
+# gate 4 — TIME-ORDER (M4-D: DISTINCT real-dispatch-start vs terminal-record semantics)
+REASON_DISPATCH_STARTED_AT_UNKNOWN = "dispatch_started_at_unknown"
+REASON_TERMINAL_RECORDED_AT_UNKNOWN = "terminal_recorded_at_unknown"
 REASON_CREATED_BEFORE_DISPATCH = "created_before_dispatch"
 REASON_CREATED_OUT_OF_WINDOW = "created_out_of_window"
 REASON_DISPATCH_CREATED_AT_UNKNOWN = "dispatch_created_at_unknown"
@@ -124,9 +127,10 @@ REASON_INSTANCE_BINDING_UNKNOWN = "instance_binding_unknown"
 REASON_INSTANCE_MISMATCH = "instance_mismatch"
 REASON_TENANT_BINDING_UNKNOWN = "tenant_binding_unknown"
 REASON_TENANT_MISMATCH = "tenant_mismatch"
-# gate 6 — APPROVED ACTION + reference provenance
+# gate 6 — APPROVED ACTION + dispatch-time approval snapshot + execution-snapshot consistency
 REASON_UNAPPROVED_ACTION = "unapproved_action"
 REASON_APPROVAL_NOT_APPROVED = "approval_not_approved"
+REASON_APPROVAL_SNAPSHOT_INCONSISTENT = "approval_snapshot_inconsistent"
 REASON_REFERENCE_NOT_FROM_TERMINAL_SUCCESS = "reference_not_from_terminal_success"
 
 
@@ -284,30 +288,45 @@ class ReadCorrelationContext:
     ``AdapterReadRequest`` deliberately does NOT carry.
 
     Built ONLY by ``outcomes/verified_proof.derive_read_correlation_context`` from a
-    read-only SELECT of the chain; NEVER from an HTTP request body, NEVER from the
+    read-only SELECT of the chain + the immutable PRE-DISPATCH BINDING (M4-A) carried in
+    the ``dispatched`` row's detail; NEVER from an HTTP request body, NEVER from the
     current config. Fields whose immutable fact DOES NOT EXIST stay ``None`` (UNKNOWN)
-    and are NEVER back-filled (constraint #2):
+    and are NEVER back-filled (constraint #2). M4-D splits the time semantics and moves
+    gate 6 onto the DISPATCH-TIME approval snapshot:
 
       execution_id / adapter / external_reference -- the correlated chain identity +
           the adapter (``detail["executor"]`` of the first row) + the persisted STRING
           resource reference (``detail["case_id"]`` of the terminal ``succeeded`` row).
       approved_action -- the server-snapshotted ``action`` column (``escalate_to_incident``);
           NEVER accepted from a request body.
-      approval_status -- the linked ``AIResponseApproval.status`` (``approved``); gate 6
-          requires the dispatch was genuinely approved.
-      dispatch_time -- the immutable SERVER timestamp (``created_at``) of the terminal
-          dispatch row: the platform's record of WHEN it dispatched. ``None`` if absent
-          (gate 4 fails closed).
+      approval_status_at_dispatch -- the linked approval's status CAPTURED IN THE BINDING
+          BEFORE the external request (M4-D). Gate 6 uses THIS dispatch-time snapshot,
+          NEVER the live ``approval.status`` re-read at reconcile time. ``None`` when no
+          binding exists (old history) -> gate 6 fails closed.
+      bound_approval_id / bound_action / bound_target -- the binding's execution snapshot
+          of the approved approval_id / action / target. Gate 6 cross-checks them against
+          the chain's immutable ``chain_approval_id`` / ``approved_action`` / ``chain_target``
+          so a tampered / cross-execution binding is refused. ``None`` with no binding.
+      chain_approval_id / chain_target -- the chain's immutable ``approval_id`` / ``target``
+          columns (the requested row), the cross-check counterparts of the bound_* snapshot.
+      dispatch_started_at -- the REAL dispatch START (M4-D): when the platform BEGAN the
+          external request, from the binding (recorded BEFORE the request). ``None`` when no
+          binding exists (old history) -> gate 4 fails closed. This is NEVER the terminal
+          row's ``created_at`` (the M3 conflation M4-D fixes).
+      terminal_recorded_at -- the immutable SERVER ``created_at`` of the TERMINAL row: when
+          the platform RECORDED the terminal state AFTER the response. The gate-4 upper
+          bound. ``None`` if absent (gate 4 fails closed).
       dispatch_created_at / dispatch_created_at_millis -- the EXTERNAL ``createdAt`` the
           platform PERSISTED into the terminal ``succeeded`` row's ``raw_response`` at
           dispatch time (the authoritative gate-4 exact-match source). ``None`` if the
           immutable fact is absent (gate 4 fails closed — NEVER re-derived from the live
           read, NEVER from config).
-      instance_binding / tenant_binding -- the authenticated target instance / tenant at
-          dispatch time. Amendment §11.3 source-verified these DO NOT EXIST in current
-          history, so they are ``None`` (UNKNOWN) for ALL real executions and gate 5
-          FAILS CLOSED (Amendment §12). A future forward-binding Amendment (§12.2) may
-          populate them from an authenticated dispatch-time fact — NEVER from config.
+      instance_binding / tenant_binding -- the target instance / tenant the dispatch was
+          BOUND to, read from the binding's ``target_instance`` / ``target_tenant`` (M4-A).
+          TheHive 4.1.24-1 records ``None`` (no authoritative dispatch-time identity source)
+          and old history has no binding, so they are ``None`` (UNKNOWN) for ALL real
+          executions and gate 5 FAILS CLOSED (Amendment §12) — NEVER back-filled from the
+          binding's config-declared endpoint / version, NEVER from the current config.
       reference_from_terminal_success -- whether ``external_reference`` came from a
           terminal ``succeeded`` row (gate 6: the reference must be the persisted result
           of the corresponding execution, never a fabricated handle).
@@ -319,8 +338,18 @@ class ReadCorrelationContext:
     adapter: str
     external_reference: str | None
     approved_action: str | None
-    approval_status: str | None
-    dispatch_time: datetime | None
+    #: M4-D gate 6 — the DISPATCH-TIME approval snapshot (from the binding), NEVER live.
+    approval_status_at_dispatch: str | None
+    #: M4-D gate 6 — the binding's execution snapshot, cross-checked against the chain.
+    bound_approval_id: str | None
+    bound_action: str | None
+    bound_target: str | None
+    #: M4-D gate 6 — the chain's immutable counterparts of the bound_* snapshot.
+    chain_approval_id: str | None
+    chain_target: str | None
+    #: M4-D gate 4 — the REAL dispatch START (binding) vs the TERMINAL RECORD time.
+    dispatch_started_at: datetime | None
+    terminal_recorded_at: datetime | None
     dispatch_created_at: datetime | None
     dispatch_created_at_millis: int | None
     instance_binding: str | None
@@ -390,27 +419,31 @@ def verify_creation_effect(
     platform built from immutable history and an observation a trusted reader returned
     — NEVER a client-supplied proof.
 
-    THE SIX GATES (Amendment §4):
+    THE SIX GATES (Amendment §4, gate 4 / gate 6 REVISED by M4-D):
 
       1. IDENTITY — the observed string ``resource_id`` is a non-empty str EQUAL to the
          persisted ``external_reference`` (the terminal ``succeeded`` row's ``case_id``).
       2. CORRELATION — the observed resource carried THIS execution's correlation tag.
       3. CREATION-TIME — an authoritative external ``createdAt`` was observed (a valid
          aware datetime), never a server-observation substitute.
-      4. TIME-ORDER — ``createdAt`` is not absurdly before ``dispatch_time`` (skew bound),
-         not absurdly after it (forward window), and — the AUTHORITATIVE, decisive check
-         — its RAW epoch-millis EQUALS the immutable ``dispatch_created_at_millis`` the
-         platform persisted at dispatch time. This EXACT match kills the ten-year-old
-         re-tagged-case probe (its ``createdAt`` can never equal the dispatch-time value)
-         with NO arbitrary window (Amendment §11.3 "门④更强").
-      5. INSTANCE / TENANT — the observed instance / tenant EQUAL the authenticated
-         dispatch-time bindings. For ALL real history both bindings are UNKNOWN
-         (``None``) -> FAIL CLOSED (``instance_binding_unknown`` / ``tenant_binding_unknown``,
+      4. TIME-ORDER (M4-D) — ``createdAt`` is not absurdly before the REAL dispatch START
+         (``dispatch_started_at``, from the binding — NOT the terminal ``created_at``), not
+         absurdly after the TERMINAL-RECORD time (``terminal_recorded_at``), and — the
+         AUTHORITATIVE, decisive check — its RAW epoch-millis EQUALS the immutable
+         ``dispatch_created_at_millis`` the platform persisted at dispatch time. The 300s
+         skew bounds are DEFENSE-IN-DEPTH, NEVER the authoritative creation window; the
+         EXACT match kills the ten-year-old re-tagged-case probe with NO arbitrary window.
+      5. INSTANCE / TENANT — the observed instance / tenant EQUAL the dispatch-time
+         bindings (read from the M4-A binding). For ALL real history both bindings are
+         UNKNOWN (``None`` — TheHive 4.1.24-1 records none, old history has no binding)
+         -> FAIL CLOSED (``instance_binding_unknown`` / ``tenant_binding_unknown``,
          Amendment §12); the real 4.1.24-1 reader also observes ``None`` -> a second
          fail-closed. NO confirmed_success is reachable for real history until §12 lands.
-      6. APPROVED ACTION — the immutable dispatch ``action`` is the approved
-         ``escalate_to_incident``, the linked approval status is ``approved``, and the
-         reference came from a terminal ``succeeded`` row (never a fabricated handle).
+      6. APPROVED ACTION (M4-D) — the immutable dispatch ``action`` is the approved
+         ``escalate_to_incident``; the binding's execution snapshot (approval_id / action /
+         target) EQUALS the chain's immutable approved facts; the DISPATCH-TIME approval
+         snapshot (``approval_status_at_dispatch``, NEVER the live status) is ``approved``;
+         and the reference came from a terminal ``succeeded`` row (never a fabricated handle).
 
     A missing immutable fact (``dispatch_time`` / ``dispatch_created_at_millis`` /
     ``instance_binding`` / ``tenant_binding``) is NEVER treated as a pass and NEVER
@@ -442,18 +475,29 @@ def verify_creation_effect(
         # verifier NEVER substitutes a server-observation time (Amendment §6.1).
         return CreationRefusal(GATE_CREATION_TIME, REASON_MISSING_CREATED_AT)
 
-    # -- gate 4: TIME-ORDER + bounded window + exact immutable-dispatch match --
-    dispatch_time = context.dispatch_time
-    if not isinstance(dispatch_time, datetime) or dispatch_time.tzinfo is None:
-        return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_TIME_UNKNOWN)
-    # 4a. not absurdly BEFORE dispatch (defense-in-depth skew bound; independently
-    #     kills the ten-year-old re-tagged probe).
-    if created < dispatch_time - MAX_DISPATCH_CLOCK_SKEW:
+    # -- gate 4: TIME-ORDER (M4-D: DISTINCT real-dispatch-start vs terminal-record) --
+    # The REAL dispatch START (when the platform BEGAN the POST, from the immutable
+    # pre-dispatch binding) and the TERMINAL-RECORD time (when the terminal row was
+    # stamped AFTER the response) BOUND the request lifecycle. The external createdAt
+    # must fall inside [dispatch_started_at - skew, terminal_recorded_at + skew] — NOT a
+    # symmetric window around the terminal stamp (the M3 conflation M4-D fixes: the
+    # terminal created_at is NEVER passed off as the request start).
+    dispatch_started_at = context.dispatch_started_at
+    if not isinstance(dispatch_started_at, datetime) or dispatch_started_at.tzinfo is None:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_STARTED_AT_UNKNOWN)
+    terminal_recorded_at = context.terminal_recorded_at
+    if not isinstance(terminal_recorded_at, datetime) or terminal_recorded_at.tzinfo is None:
+        return CreationRefusal(GATE_TIME_ORDER, REASON_TERMINAL_RECORDED_AT_UNKNOWN)
+    # 4a. not absurdly BEFORE the REAL dispatch start (defense-in-depth skew bound;
+    #     independently kills the ten-year-old re-tagged probe).
+    if created < dispatch_started_at - MAX_DISPATCH_CLOCK_SKEW:
         return CreationRefusal(GATE_TIME_ORDER, REASON_CREATED_BEFORE_DISPATCH)
-    # 4b. not absurdly AFTER dispatch (defense-in-depth forward window).
-    if created > dispatch_time + MAX_CREATION_WINDOW:
+    # 4b. not absurdly AFTER the terminal record (defense-in-depth forward window).
+    if created > terminal_recorded_at + MAX_CREATION_WINDOW:
         return CreationRefusal(GATE_TIME_ORDER, REASON_CREATED_OUT_OF_WINDOW)
-    # 4c. AUTHORITATIVE exact match against the immutable dispatch-time createdAt.
+    # 4c. AUTHORITATIVE exact match against the immutable dispatch-time createdAt. The
+    #     300s skew bounds above are DEFENSE-IN-DEPTH, NEVER the authoritative creation
+    #     window (Amendment §4) — this exact epoch-millis equality is decisive.
     if context.dispatch_created_at_millis is None:
         return CreationRefusal(GATE_TIME_ORDER, REASON_DISPATCH_CREATED_AT_UNKNOWN)
     if observed.external_created_at_millis != context.dispatch_created_at_millis:
@@ -469,11 +513,25 @@ def verify_creation_effect(
     if observed.observed_tenant is None or observed.observed_tenant != context.tenant_binding:
         return CreationRefusal(GATE_INSTANCE_TENANT, REASON_TENANT_MISMATCH)
 
-    # -- gate 6: APPROVED ACTION + reference provenance ----------------------
+    # -- gate 6: APPROVED ACTION + dispatch-time approval snapshot + execution-snapshot
+    #    consistency (M4-D: NEVER the live approval.status alone) ----------------------
+    # 6a. the immutable dispatch action is the approved creation action.
     if context.approved_action != APPROVED_CREATION_ACTION:
         return CreationRefusal(GATE_APPROVED_ACTION, REASON_UNAPPROVED_ACTION)
-    if context.approval_status != APPROVED_APPROVAL_STATUS:
+    # 6b. the pre-dispatch BINDING's execution snapshot (action / target / approval_id)
+    #     MUST equal the chain's immutable approved facts — the binding corresponds to
+    #     THIS approved recommendation, not a tampered / cross-execution one.
+    if context.bound_action != context.approved_action:
+        return CreationRefusal(GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT)
+    if context.bound_target != context.chain_target:
+        return CreationRefusal(GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT)
+    if context.bound_approval_id != context.chain_approval_id:
+        return CreationRefusal(GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT)
+    # 6c. the DISPATCH-TIME approval snapshot (captured BEFORE the external request) MUST
+    #     be ``approved`` — the authoritative fact, NOT the live status re-read now.
+    if context.approval_status_at_dispatch != APPROVED_APPROVAL_STATUS:
         return CreationRefusal(GATE_APPROVED_ACTION, REASON_APPROVAL_NOT_APPROVED)
+    # 6d. the reference came from a terminal succeeded row (never a fabricated handle).
     if context.reference_from_terminal_success is not True:
         return CreationRefusal(
             GATE_APPROVED_ACTION, REASON_REFERENCE_NOT_FROM_TERMINAL_SUCCESS

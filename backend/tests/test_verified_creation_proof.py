@@ -59,6 +59,7 @@ from app.models import (
     ExecutionLog,
     ExecutionOutcome,
 )
+from app.services.executions.binding import BINDING_DETAIL_KEY, build_dispatch_binding
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.thehive import THEHIVE_ACTIONS, sentinelflow_execution_tag
 from app.services.manual_reconcile import (
@@ -92,11 +93,13 @@ from app.services.read_adapters.verified import (
     MAX_DISPATCH_CLOCK_SKEW,
     PROOF_SCOPE_VERIFIED_CREATION,
     REASON_APPROVAL_NOT_APPROVED,
+    REASON_APPROVAL_SNAPSHOT_INCONSISTENT,
     REASON_CREATED_BEFORE_DISPATCH,
     REASON_CREATED_OUT_OF_WINDOW,
     REASON_DISPATCH_CREATED_AT_MISMATCH,
     REASON_DISPATCH_CREATED_AT_UNKNOWN,
-    REASON_DISPATCH_TIME_UNKNOWN,
+    REASON_DISPATCH_STARTED_AT_UNKNOWN,
+    REASON_TERMINAL_RECORDED_AT_UNKNOWN,
     REASON_INSTANCE_BINDING_UNKNOWN,
     REASON_INSTANCE_MISMATCH,
     REASON_MISSING_CREATED_AT,
@@ -128,6 +131,8 @@ OPERATOR = "recon-op"
 INSTANCE = "thehive.lab.local"
 TENANT = "organisation-1"
 EID = uuid.UUID("11111111-1111-4111-8111-111111111111")
+APPROVAL_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
+TARGET = "case"
 LAB_BASE_URL = "https://thehive.lab.local"
 LAB_API_KEY = "LAB_THEHIVE_KEY_DO_NOT_USE"
 SECRET_BODY = b'{"message":"SUPER_SECRET_BODY","x":"AKIAIOSFODNN7EXAMPLE"}'
@@ -145,8 +150,14 @@ def _context(**overrides) -> ReadCorrelationContext:
         adapter="thehive",
         external_reference=REFERENCE,
         approved_action=APPROVED_CREATION_ACTION,
-        approval_status=APPROVED_APPROVAL_STATUS,
-        dispatch_time=NOW,
+        approval_status_at_dispatch=APPROVED_APPROVAL_STATUS,
+        bound_approval_id=str(APPROVAL_ID),
+        bound_action=APPROVED_CREATION_ACTION,
+        bound_target=TARGET,
+        chain_approval_id=str(APPROVAL_ID),
+        chain_target=TARGET,
+        dispatch_started_at=NOW,
+        terminal_recorded_at=NOW,
         dispatch_created_at=NOW,
         dispatch_created_at_millis=DISPATCH_MS,
         instance_binding=INSTANCE,
@@ -269,20 +280,60 @@ def _seed_approval(db_session, *, status="approved"):
     return approval
 
 
+def _binding_detail(execution_id, approval_id, *, action="escalate_to_incident",
+                    target="case", approval_status="approved", started_at=None,
+                    target_instance=None, target_tenant=None):
+    """A faithful post-M4-A TheHive pre-dispatch binding detail — the shape the REAL write
+    path persists into the ``dispatched`` row (``build_dispatch_binding(...).to_detail()``).
+    ``target_instance`` / ``target_tenant`` default ``None``: TheHive 4.1.24-1 has no
+    authoritative dispatch-time identity source, so gate 5 stays fail-closed (Amendment §12)."""
+    binding = build_dispatch_binding(
+        execution_id=execution_id,
+        approval_id=approval_id,
+        adapter="thehive",
+        action=action,
+        target=target,
+        approval_status=approval_status,
+        dispatch_started_at=started_at or (NOW + timedelta(seconds=1)),
+        contributor_facts={
+            "endpoint": LAB_BASE_URL,
+            "version_evidence_ref": None,
+            "version_assertion_kind": "config-declaration",
+            "target_instance": target_instance,
+            "target_tenant": target_tenant,
+        },
+    )
+    return binding.to_detail()
+
+
 def _seed_chain(db_session, execution_id, *, rows, action="escalate_to_incident",
-                operator="ops-1", approval_status="approved"):
-    """One execute chain from ``[(decision, detail), ...]`` in CHRONOLOGICAL order."""
+                operator="ops-1", approval_status="approved", with_binding=True,
+                binding_approval_status=None):
+    """One execute chain from ``[(decision, detail), ...]`` in CHRONOLOGICAL order. The
+    ``dispatched`` row carries the immutable pre-dispatch binding (M4-A) unless
+    ``with_binding=False`` — the OLD-HISTORY shape (no binding) M4-D must reject fail-closed.
+    ``binding_approval_status`` overrides the binding's dispatch-time approval snapshot
+    (default: the chain's ``approval_status``) to seed an approval-inconsistency probe."""
     approval = _seed_approval(db_session, status=approval_status)
-    db_session.add_all(
-        [
+    snapshot_status = (
+        binding_approval_status if binding_approval_status is not None else approval_status
+    )
+    logs = []
+    for i, (decision, detail) in enumerate(rows):
+        row_detail = dict(detail)
+        if with_binding and decision == "dispatched":
+            row_detail[BINDING_DETAIL_KEY] = _binding_detail(
+                execution_id, approval.id, action=action, target="case",
+                approval_status=snapshot_status, started_at=NOW + timedelta(seconds=i),
+            )
+        logs.append(
             ExecutionLog(
                 execution_id=execution_id, approval_id=approval.id, decision=decision,
                 direction="execute", action=action, target="case", operator=operator,
-                detail=detail, created_at=NOW + timedelta(seconds=i),
+                detail=row_detail, created_at=NOW + timedelta(seconds=i),
             )
-            for i, (decision, detail) in enumerate(rows)
-        ]
-    )
+        )
+    db_session.add_all(logs)
     db_session.commit()
     return approval
 
@@ -425,9 +476,18 @@ class TestVerifierGate3CreationTime:
 
 
 class TestVerifierGate4TimeOrder:
-    def test_dispatch_time_unknown(self):
-        verdict = verify_creation_effect(_context(dispatch_time=None), _observed())
-        assert (verdict.gate, verdict.reason) == (GATE_TIME_ORDER, REASON_DISPATCH_TIME_UNKNOWN)
+    def test_dispatch_started_at_unknown(self):
+        # M4-D: no binding -> no REAL dispatch start -> gate 4 fails closed (old history).
+        verdict = verify_creation_effect(_context(dispatch_started_at=None), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_TIME_ORDER, REASON_DISPATCH_STARTED_AT_UNKNOWN
+        )
+
+    def test_terminal_recorded_at_unknown(self):
+        verdict = verify_creation_effect(_context(terminal_recorded_at=None), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_TIME_ORDER, REASON_TERMINAL_RECORDED_AT_UNKNOWN
+        )
 
     def test_ten_year_old_retagged_case_is_before_dispatch(self):
         # THE reviewer's probe: a case created ten years ago, re-tagged with THIS
@@ -469,7 +529,7 @@ class TestVerifierGate4TimeOrder:
         )
 
     def test_skew_bound_tolerates_sub_second_precedence(self):
-        # A legitimate createdAt precedes dispatch_time by well under the skew bound.
+        # A legitimate createdAt precedes dispatch_started_at by well under the skew bound.
         created = NOW - timedelta(seconds=1)
         verdict = verify_creation_effect(
             _context(dispatch_created_at_millis=int(created.timestamp() * 1000)),
@@ -514,9 +574,33 @@ class TestVerifierGate6ApprovedAction:
         assert (verdict.gate, verdict.reason) == (GATE_APPROVED_ACTION, REASON_UNAPPROVED_ACTION)
 
     def test_approval_not_approved(self):
-        verdict = verify_creation_effect(_context(approval_status="rejected"), _observed())
+        # M4-D: the DISPATCH-TIME snapshot (not the live status) is "rejected".
+        verdict = verify_creation_effect(
+            _context(approval_status_at_dispatch="rejected"), _observed()
+        )
         assert (verdict.gate, verdict.reason) == (
             GATE_APPROVED_ACTION, REASON_APPROVAL_NOT_APPROVED
+        )
+
+    def test_bound_action_snapshot_inconsistent(self):
+        # M4-D: the binding's action snapshot != the chain's approved action.
+        verdict = verify_creation_effect(_context(bound_action="close_case"), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
+        )
+
+    def test_bound_target_snapshot_inconsistent(self):
+        verdict = verify_creation_effect(_context(bound_target="other"), _observed())
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
+        )
+
+    def test_bound_approval_id_snapshot_inconsistent(self):
+        verdict = verify_creation_effect(
+            _context(bound_approval_id=str(uuid.uuid4())), _observed()
+        )
+        assert (verdict.gate, verdict.reason) == (
+            GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
         )
 
     def test_reference_not_from_terminal_success(self):
@@ -626,28 +710,51 @@ class TestReadCreationVerb:
 # ===========================================================================
 class TestDeriveReadCorrelationContext:
     def test_derives_the_immutable_fact_matrix(self, db_session):
-        # §2 fact-matrix proof: the derivation anchors gates 1/2/3/4/6 on immutable
-        # history and leaves gate 5 bindings UNKNOWN (never back-filled from config).
-        _seed_chain(db_session, EID, rows=_verified_rows())
+        # §2 fact-matrix proof (M4-D): the derivation anchors gates 1/2/3/4/6 on immutable
+        # history + the pre-dispatch binding, and leaves gate 5 bindings UNKNOWN.
+        approval = _seed_chain(db_session, EID, rows=_verified_rows())
         ctx = derive_read_correlation_context(db_session, EID)
         assert ctx.adapter == "thehive"
         assert ctx.external_reference == REFERENCE
         assert ctx.approved_action == APPROVED_CREATION_ACTION
-        assert ctx.approval_status == APPROVED_APPROVAL_STATUS
         assert ctx.reference_from_terminal_success is True
-        assert ctx.dispatch_time == NOW + timedelta(seconds=2)
+        # M4-D gate 4: DISTINCT times — the REAL dispatch START (the dispatched row, i=1)
+        # vs the TERMINAL RECORD (the succeeded row, i=2). NEVER conflated.
+        assert ctx.dispatch_started_at == NOW + timedelta(seconds=1)
+        assert ctx.terminal_recorded_at == NOW + timedelta(seconds=2)
         assert ctx.dispatch_created_at_millis == DISPATCH_MS
+        # M4-D gate 6: the DISPATCH-TIME approval snapshot + execution snapshot, and the
+        # chain counterparts they are cross-checked against.
+        assert ctx.approval_status_at_dispatch == APPROVED_APPROVAL_STATUS
+        assert ctx.bound_action == APPROVED_CREATION_ACTION
+        assert ctx.bound_target == "case"
+        assert ctx.bound_approval_id == str(approval.id)
+        assert ctx.chain_approval_id == str(approval.id)
+        assert ctx.chain_target == "case"
         # Amendment §12: the instance / tenant binding DOES NOT EXIST -> UNKNOWN.
         assert ctx.instance_binding is None
         assert ctx.tenant_binding is None
 
     def test_derived_context_never_backfills_from_config(self, db_session):
-        # Even though settings/config could supply a base URL + version, the derivation
-        # MUST NOT invent an instance / tenant binding (constraint #2).
+        # The binding carries a config-declared endpoint (base URL) + version, but the
+        # derivation MUST NOT invent an instance / tenant binding from them (constraint #2).
         _seed_chain(db_session, EID, rows=_verified_rows())
         ctx = derive_read_correlation_context(db_session, EID)
         assert ctx.instance_binding is None
         assert ctx.tenant_binding is None
+
+    def test_old_history_without_binding_fails_closed(self, db_session):
+        # M4-D: a pre-M4-A chain (NO binding) has NO real dispatch start and NO dispatch-time
+        # approval snapshot -> gate 4 fails closed; the derivation NEVER back-fills. The
+        # terminal-record time still exists (it is the terminal row's OWN stamp).
+        _seed_chain(db_session, EID, rows=_verified_rows(), with_binding=False)
+        ctx = derive_read_correlation_context(db_session, EID)
+        assert ctx.dispatch_started_at is None
+        assert ctx.approval_status_at_dispatch is None
+        assert ctx.bound_action is None
+        assert ctx.bound_approval_id is None
+        assert ctx.instance_binding is None
+        assert ctx.terminal_recorded_at == NOW + timedelta(seconds=2)
 
 
 class TestReconcileVerifiedExecution:
@@ -666,6 +773,20 @@ class TestReconcileVerifiedExecution:
         assert excinfo.value.reason == REASON_INSTANCE_BINDING_UNKNOWN
         assert transport.call_count == 1  # ONE read — no retry / poll
         assert _outcome_count(db_session) == 0  # ZERO fact — fail-closed
+
+    def test_old_history_without_binding_refused_at_gate4_zero_facts(self, db_session):
+        # M4-D: a pre-M4-A chain (NO binding) cannot prove the REAL dispatch start -> gate 4
+        # refuses (dispatch_started_at_unknown), ZERO fact. Old history is NEVER back-filled,
+        # and the faithful read (matching reference / tag / createdAt) STILL cannot pass.
+        _seed_chain(db_session, EID, rows=_verified_rows(), with_binding=False)
+        reader = _reader(StubTransport(body=_case_body(created_ms=DISPATCH_MS)))
+        with pytest.raises(VerifiedCreationRefused) as excinfo:
+            reconcile_verified_execution(
+                db_session, EID, OPERATOR, ReadAdapterRegistry([reader])
+            )
+        assert excinfo.value.gate == GATE_TIME_ORDER
+        assert excinfo.value.reason == REASON_DISPATCH_STARTED_AT_UNKNOWN
+        assert _outcome_count(db_session) == 0
 
     def test_refused_proof_is_never_confirmed_failure(self, db_session):
         _seed_chain(db_session, EID, rows=_verified_rows())

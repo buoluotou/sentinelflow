@@ -90,8 +90,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models.ai_response_approval import AIResponseApproval
 from app.schemas.reconcile import MANUAL_RECONCILE_SOURCE, ManualReconcileResponse
+from app.services.executions.binding import parse_dispatch_binding
 from app.services.executions.secrets import redact_detail
 from app.services.manual_reconcile import ReadTransportError, UnsupportedAdapterRead
 from app.services.manual_reconcile.read import (
@@ -164,20 +164,6 @@ def _aware_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _approval_status(session: Session, approval_id: uuid.UUID | None) -> str | None:
-    """The linked ``AIResponseApproval``'s terminal decision (``approved`` / ``rejected``),
-    or ``None`` when absent. READ-ONLY SELECT. Gate 6 requires ``approved`` — a dispatch that
-    was never approved (requested / rejected / absent) is NEVER a verified creation effect."""
-    if approval_id is None:
-        return None
-    approval = session.scalar(
-        select(AIResponseApproval).where(AIResponseApproval.id == approval_id)
-    )
-    if approval is None:
-        return None
-    return approval.status if isinstance(approval.status, str) else None
-
-
 def derive_read_correlation_context(
     session: Session, execution_id: uuid.UUID
 ) -> ReadCorrelationContext:
@@ -190,12 +176,17 @@ def derive_read_correlation_context(
     chain, the router's 404; ``_extract_adapter`` / ``_extract_reference`` ->
     ``MissingExternalReference`` for a corrupt / never-dispatched chain, the router's 422).
 
-    EVERY field is an immutable historical fact or ``None`` (UNKNOWN). Per constraint #2 a
-    missing fact is NEVER fabricated, NEVER back-filled and NEVER taken from the CURRENT
-    config:
-      - ``instance_binding`` / ``tenant_binding`` are ALWAYS ``None`` for real history — the
-        target instance / tenant DOES NOT EXIST in ``ExecutionLog`` (no column) nor in the
-        4.1.24-1 ``OutputCase`` (no organisation), so gate 5 FAILS CLOSED (Amendment §12).
+    M4-D: the immutable PRE-DISPATCH BINDING (M4-A, in the ``dispatched`` row's detail) is the
+    AUTHORITATIVE source for the real dispatch START, the dispatch-time approval snapshot and
+    the target instance / tenant. ``parse_dispatch_binding`` is FAIL-CLOSED: old history has NO
+    binding -> those facts stay ``None`` and gates 4 / 5 / 6 refuse exactly as before, NEVER
+    back-filled. EVERY field is an immutable historical fact or ``None`` (UNKNOWN). Per
+    constraint #2 a missing fact is NEVER fabricated, NEVER back-filled and NEVER taken from
+    the CURRENT config:
+      - ``instance_binding`` / ``tenant_binding`` come from the binding's ``target_instance`` /
+        ``target_tenant``; TheHive 4.1.24-1 records ``None`` (no authoritative source) and old
+        history has no binding, so they are ALWAYS ``None`` for real history -> gate 5 FAILS
+        CLOSED (Amendment §12). NEVER back-filled from the binding's config-declared endpoint.
       - ``dispatch_created_at_millis`` is the ``createdAt`` the platform PERSISTED into the
         terminal row's ``raw_response`` at dispatch time (``_terminal_outcome_detail``,
         source-verified §11.3) — the authoritative gate-4 exact-match source; ``None`` if that
@@ -213,17 +204,42 @@ def derive_read_correlation_context(
     terminal = rows[-1]
     terminal_detail = terminal.detail if isinstance(terminal.detail, dict) else {}
 
-    # gate 6 — the SERVER-SNAPSHOTTED approved action (the ``action`` column, never accepted
-    # from a request body; ``execution_log`` freezes it as a server-side snapshot).
+    # M4-D: the immutable PRE-DISPATCH BINDING (M4-A) rides in the ``dispatched`` row's
+    # detail. It is the AUTHORITATIVE source for the real dispatch START, the dispatch-time
+    # approval snapshot and the target instance / tenant. FAIL-CLOSED: old history has NO
+    # binding (``parse_dispatch_binding`` -> None), so those facts stay UNKNOWN and gates
+    # 4 / 5 / 6 refuse exactly as Amendment §12 requires — NEVER back-filled from config.
+    dispatched = next((r for r in rows if r.decision == "dispatched"), None)
+    binding = parse_dispatch_binding(dispatched.detail) if dispatched is not None else None
+    # Integrity (defense-in-depth): a binding whose execution_id is not THIS execution is
+    # not this chain's binding -> treat as absent (fail-closed, never trust a stray binding).
+    if binding is not None and binding.execution_id != str(execution_id):
+        binding = None
+
+    # gate 6 — the SERVER-SNAPSHOTTED approved action / target (the immutable ``action`` /
+    # ``target`` columns, never accepted from a request body) + the chain's approval_id.
     approved_action = (
         requested.action
         if isinstance(requested.action, str) and requested.action
         else None
     )
+    chain_target = (
+        requested.target
+        if isinstance(requested.target, str) and requested.target
+        else None
+    )
+    chain_approval_id = (
+        str(requested.approval_id) if requested.approval_id is not None else None
+    )
     # gate 6 — reference provenance: did the reference come from a TERMINAL ``succeeded`` row?
     reference_from_terminal_success = terminal.decision == "succeeded"
-    # gate 4 — the immutable dispatch SERVER time (the terminal row's ``created_at``).
-    dispatch_time = _aware_utc(terminal.created_at)
+
+    # gate 4 — DISTINCT time semantics (M4-D). The REAL dispatch START comes from the
+    # binding (recorded BEFORE the external request); the TERMINAL-RECORD time is the
+    # terminal row's ``created_at`` (stamped AFTER the response). The terminal created_at
+    # is NEVER passed off as the request start.
+    dispatch_started_at = binding.started_at() if binding is not None else None
+    terminal_recorded_at = _aware_utc(terminal.created_at)
     # gate 4 — the EXTERNAL createdAt PERSISTED at dispatch time (the exact-match source).
     dispatch_created_at_millis: int | None = None
     dispatch_created_at: datetime | None = None
@@ -232,22 +248,39 @@ def derive_read_correlation_context(
         raw_created = raw_response.get("createdAt")
         dispatch_created_at_millis = created_at_millis(raw_created)
         dispatch_created_at = created_at_to_datetime(raw_created)
-    # gate 6 — the linked approval's terminal decision.
-    approval_status = _approval_status(session, requested.approval_id)
+
+    # gate 6 — the DISPATCH-TIME approval snapshot + execution snapshot from the binding
+    # (NEVER the live approval.status re-read at reconcile time — M4-D).
+    approval_status_at_dispatch = (
+        binding.approval_status_at_dispatch if binding is not None else None
+    )
+    bound_approval_id = binding.approval_id if binding is not None else None
+    bound_action = binding.action if binding is not None else None
+    bound_target = binding.target if binding is not None else None
+    # gate 5 — the dispatch-time target instance / tenant from the binding. TheHive
+    # 4.1.24-1 records None (no authoritative source) -> gate 5 STILL fails closed; old
+    # history (no binding) -> None -> fails closed. NEVER back-filled from the binding's
+    # config-declared endpoint / version, NEVER from the current config (constraint #2).
+    instance_binding = binding.target_instance if binding is not None else None
+    tenant_binding = binding.target_tenant if binding is not None else None
 
     return ReadCorrelationContext(
         execution_id=execution_id,
         adapter=adapter,
         external_reference=external_reference,
         approved_action=approved_action,
-        approval_status=approval_status,
-        dispatch_time=dispatch_time,
+        approval_status_at_dispatch=approval_status_at_dispatch,
+        bound_approval_id=bound_approval_id,
+        bound_action=bound_action,
+        bound_target=bound_target,
+        chain_approval_id=chain_approval_id,
+        chain_target=chain_target,
+        dispatch_started_at=dispatch_started_at,
+        terminal_recorded_at=terminal_recorded_at,
         dispatch_created_at=dispatch_created_at,
         dispatch_created_at_millis=dispatch_created_at_millis,
-        # Amendment §12 / constraint #2: DO NOT EXIST in current history -> UNKNOWN, NEVER
-        # back-filled from config -> gate 5 FAILS CLOSED for every real execution.
-        instance_binding=None,
-        tenant_binding=None,
+        instance_binding=instance_binding,
+        tenant_binding=tenant_binding,
         reference_from_terminal_success=reference_from_terminal_success,
     )
 
