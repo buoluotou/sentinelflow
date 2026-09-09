@@ -287,3 +287,107 @@ webhook.py（PUSH）──────────────┘               
 本 Amendment 设计到此完成，**DESIGN ONLY**。在用户 Review 本设计并授权 Amendment Implementation Gate 之前：**不改** `normalize_external_state`/`map_external_state`/`AdapterReadRequest`/`AdapterReadResult`/DB 模型；**不建**第二张共享词表；**不加**调用者可控 `verified` 标志；**不接线** router。当前生产态保持 §3 的 **fail-closed 空词表**（`case_created` 任何路径零 fact）——这是**安全的 interim 状态**，合成成功信号在来源隔离通道获批前**不可被任何入口伪造**，亦**不被任何入口接受**。
 
 > **本设计的核心不是否定 M2 已做的工作，而是阻止一个与 G1-A/G1-C 同类的问题重新出现**：不能让「经过验证的效果信号」退化成任何入口都能提交的普通成功字符串。修复这两处证据门（来源门已 fail-closed、严格关联已设计）后，Reader 才有资格进入真实 Lab 验收。
+
+---
+
+## 11. M3 前向 Decision Record（Amendment 实现裁决 · 2026-09-09）
+
+> **性质：前向追加（forward-only）。** 本节记录 M3 授权轮（`SentinelFlow M3 — Trusted Reader Proof & Strict Correlation`）用户对本 Amendment §5.3/§6.2 的**正式裁决**与 §2 历史事实**源码核验结论**，接管 §10.3 的停止声明（M3 已授权实现）。**不倒写** §0–§10 的任何 M2/M2-R 历史裁定——§3 空词表 fail-closed、§4 四选项全违反封板、§10.1 裁定汇总均**保持原样、不修改**。基线：HEAD `8248143`（M2-R Final Report），`main` ahead 38，工作树干净，提交链完整（`8248143→2b066af→14b37e5→e8b3aab→f11b477→3b23520→beca5ab→117ab6b`），§0 核验无非预期改动。
+
+### 11.1 用户对 §5.3 / §6.2 的正式裁决（本轮采用）
+
+用户**不完全采纳**本设计原文推荐的两条捷径（§5.3 途径 1「复用 `raw_evidence` 承载证明」、§6.2 途径 2 原文表述）。总体方向正确，但**「结构化对象」与「READ 域」本身不会自动产生可信来源**——信任必须建立在**平台控制的调用链**与**不可由外部请求构造的内部上下文**上。采用的组合：
+
+| 裁决 | 内容 | 明确否决 |
+|---|---|---|
+| **§5.3 批准（强类型内部证明）** | 新增**仅供内部可信读取服务使用**的 typed `VerifiedCreationEffect` / `VerifiedReadResult`；原始 JSON 与普通 DTO **不得**自行生成可信证明 | ❌ 不将任意 `raw_evidence` Mapping 当授权凭据；❌ 不直接扩展冻结的公开 `AdapterReadResult`（其字段集被 `test_adapter_read_contract.py` 硬封为 `{external_state, observed_at, raw_evidence}`）|
+| **§6.2 批准（途径 2 经修订）** | 严格关联放在 **PULL-only 的读取编排/证明校验层**，使用**平台从不可变事实派生**的 `ReadCorrelationContext` | ❌ 不扩展冻结 `AdapterReadRequest`（字段集硬封为 `{execution_id, adapter, external_reference}`）；前提是历史数据**确实**含所需事实，缺失的实例/租户/派发时间**绝不能从当前配置倒推** |
+| **组合** | 内部强类型证明 + 平台派生 `ReadCorrelationContext` + **单一**可信证明校验器 | ❌ 不建第二张外部状态词表（G1-C「NO second mapping table」）；❌ 不恢复共享 `case_created` 映射；❌ 不增加可由 Webhook JSON 提交的 `verified`/`source`/`provenance` 授权标志 |
+
+**保留不动（§8 关系表全部沿用）**：`normalize_external_state` 两参数签名 + path-agnostic + thehive 词表 ∅；`map_external_state` 单委托封板；`AdapterReadRequest`/`AdapterReadResult` 冻结 DTO；sealed `default_read_adapter_registry()` 空；router 不接线；Wazuh G1-C / shuffle / mock 四集 ∅；独立 `THEHIVE_READ_API_KEY`、无重定向 opener、TLS/URL 校验。
+
+### 11.2 三项必须写入修订设计的约束（用户裁定，本实现遵守）
+
+1. **内部类型不是魔法安全凭据。** Python 中即使用 `frozen dataclass`，也不能阻止任意代码构造同名对象。真正的安全边界是**受控调用链**：受控 Manual Reconcile 服务 + 可信注册工厂 + 平台加载的历史事实 + 实际 Reader 调用 + 明确函数可达性。Webhook **不得**调用或反序列化内部证明，**不能仅靠「禁止 import」作为唯一防线**。→ 本实现的防线是：校验器仅从 `reconcile_verified_execution`（认证 operator 的受控编排）可达；证明数据仅来自平台受控源（真实 reader 的 `GET` + DB 不可变事实派生）；`ManualReconcileRequest` 为空且 `extra="forbid"`，客户端无法注入任何 proof/context/verified 字段；无任何路由接受客户端构造的 `VerifiedReadResult`/`VerifiedCreationEffect`/`ReadCorrelationContext`；webhook 路由是独立函数图，永不触校验器（AST + 运行时测试双证）。
+2. **历史事实不得凭空补全。** 本设计 §6.2 原文声称「派发时间/目标实例/租户已存在于历史 `ExecutionLog` 链」——**§2 源码核验部分推翻了该断言**（见 §11.3：派发时间与 reference 确实存在，但**实例/租户绑定不存在**）。缺失字段保持 `UNKNOWN`，**不得**虚构、倒填，或拿现在的 base URL / 现在的租户 / 现在的版本填充过去的派发事实。→ 门⑤对**所有真实历史** fail-closed，触发 §2 STOP（§12）。
+3. **版本配置不等于活性证明。** `THEHIVE_EXPECTED_VERSION == 4.1.24-1` 只证明**运维配置了**该预期值，**不证明**远端服务器真的运行该版本；当前工厂 `_thehive_readers` 确实**只检查字符串**、build 时零 HTTP。真正启用前必须有目标实例的版本/身份/租户/只读权限的**活性证据**（真实 Lab live probe）。→ 本轮无真实 Lab，只完成隔离实现 + 模拟验证，**不标记真实版本已认证**；registry 继续空、router 不接线。
+
+### 11.3 §2 历史事实矩阵核验结论（只读源码证据）
+
+只读核验 `ExecutionLog`（`app/models/execution_log.py`）、写适配器（`app/services/executions/thehive.py`）、派发事务（`app/services/executions/service.py`）、Manual Reconcile（`app/services/outcomes/manual_reconcile.py`）、config、权威 v0 DTO（`TheHive-main/dto/.../dto/v0/Case.scala`），形成最小事实矩阵：
+
+| 事实 | 来源（不可变历史？） | 证据 |
+|---|---|---|
+| `execution_id` / `approval_id` | ✅ 不可变列 | `execution_log.py:117/128`（append-only，无 `updated_at`）|
+| `action`（=`escalate_to_incident`）/ `target` | ✅ 不可变**服务器端快照**列 | `execution_log.py:144-145`（「never accepted from the request body」）|
+| `adapter` | ✅ 不可变（首行 `detail["executor"]`）| `manual_reconcile.py:_extract_adapter`（`rows[0].detail`）|
+| 字符串 resource `reference` | ✅ 不可变（终态 `succeeded` 行 `detail["case_id"]`）| 写适配器 `thehive.py:313-316` + `_terminal_outcome_detail` |
+| **dispatch 服务器时间** | ✅ 不可变（行 `created_at`，`server_default CURRENT_TIMESTAMP`）| `execution_log.py:167-169` |
+| **派发时持久化的外部创建时间** | ✅ 不可变（终态行 `detail["raw_response"]` = 完整 `OutputCase`，含 `createdAt`）| `service.py:_terminal_outcome_detail` 追加 `raw_response`；写适配器 `thehive.py:320-324` `raw_response=payload` |
+| **目标 instance 身份** | ❌ **不存在** | `ExecutionLog` 无 instance 列；`base_url` 仅**当前 config**（`config.py:THEHIVE_BASE_URL`），非派发时持久化 |
+| **目标 tenant / organisation** | ❌ **不存在** | 权威 v0 `OutputCase`（`Case.scala`）**无 `organisation` / 无实例身份字段**；读取侧也无法观测 tenant |
+
+**门锚定裁定（对照 §4 六道合取门）：**
+
+| 门 | 可否锚定不可变历史 | 说明 |
+|---|---|---|
+| ① IDENTITY（`resource_id == reference`）| ✅ | `reference` = 终态 `detail.case_id`（不可变）|
+| ② CORRELATION（execution 标签精确匹配）| ✅ | `execution_id` 不可变 + 读写共享单一真源 `sentinelflow_execution_tag`；标签本身是外部**可修改**标签，故仅作合取项之一 |
+| ③ CREATION-TIME（`createdAt` 存在/合法）| ✅ | 外部权威创建时间（非伪造）|
+| ④ TIME-ORDER + 有界窗口 | ✅ **更强** | 除 `createdAt >= dispatch_time` 有界窗口外，可用**派发时持久化的 `raw_response.createdAt` 精确匹配**读取侧 `createdAt`——**决定性杀死「十年前补标签」探针**（补标签的旧案件 `createdAt` ≠ 派发时持久化值）|
+| ⑥ APPROVED ACTION + reference 来源 | ✅ | `action` 列（服务器快照）+ `approval_id` + 终态 `succeeded` 行 reference |
+| **⑤ INSTANCE/TENANT 绑定** | ❌ **不可锚定** | 现有历史**根本不存在**实例/租户绑定事实；补齐须在**派发时**记录新的不可变绑定（实例身份 + 租户/org + 目标 base_url），**触碰冻结写路径**（`_terminal_outcome_detail` / 执行 DTO / 或新增 `ExecutionLog` 列）→ **触发 §2 STOP**（§12）|
+
+**结论**：门①②③④⑥ 可**立即实现**并锚定不可变历史；门⑤ 是**唯一**无法从现有历史派生的合取项。依 §2「缺失字段保持 UNKNOWN，不得虚构/倒填/用当前配置替代旧记录」+「若必须新增 DB 模型/修改冻结通用事务边界/扩大既有执行 DTO，停止该部分，提交精确最小 Amendment；其他已授权独立工作继续」——门⑤ 对**所有真实历史** fail-closed（`instance_binding=UNKNOWN` → 无 `confirmed_success`，正确且安全），其前向绑定方案作为**唯一剩余设计阻塞**列入 §12。
+
+### 11.4 M3 实现落位（遵守封板边界）
+
+| 模块 | 职责 | 封板合规 |
+|---|---|---|
+| `read_adapters/verified.py`（新）| **纯内部类型**：`VerifiedReadResult` / `ReadCorrelationContext` / `VerifiedCreationEffect` / `CreationRefusal` + `TrustedCreationReader` 协议 + 门/原因常量。无 DB、无 HTTP、无 outcomes 导入 | 不在 sealed `manual_reconcile/` 包内；仅 import stdlib + 读契约 base |
+| `read_adapters/thehive.py`（改）| `TheHiveReadAdapter` 增**内部** `read_creation(request) -> VerifiedReadResult`（单次 `GET`，返回 typed 观测；4.1.24-1 `OutputCase` 无实例/租户字段 → `observed_instance/tenant=None`）。**冻结 `read()` 保持不变** | 动词封板只查**写动词 absence**（`test_read_adapter_thehive.py:233`）+ `vars(ReadAdapter)` ABC 级（`test_adapter_read_contract.py:172`）；给具体子类加**读**方法两者均不触 |
+| `outcomes/verified_proof.py`（新）| **单一可信证明校验器** `verify_creation_effect`（6 门，纯函数）+ 平台派生 `derive_read_correlation_context`（只读 DB）+ 受控编排 `reconcile_verified_execution`（PULL-only）+ 白名单持久化（绕过空词表 mapper，直接授权 `confirmed_success` append）| 在 `outcomes/`（非 sealed 包），可拥有 DB 事务；**不修改** `manual_reconcile.py`/`manual_persist.py`（其 seal 按模块引用审计，新模块不被扫入）|
+
+**持久化白名单（§3）**：`raw_evidence` / `raw_response` **不原样写库**；仅白名单字段进 `ExecutionOutcome.detail`（经 `redact_detail`）——resource reference、proof scope、可信创建时间（ISO）、来源、certified 版本/实例标识、必要审计摘要（如 `tenant_verified: bool` 而非租户原值）。**不写**密钥、原始响应体、不必要租户敏感信息。
+
+**可信通道为何不能走 `persist_reconcile_outcome`**：该函数调用 `map_external_state`，thehive 空词表必 raise `UnrecognizedExternalState`（422）。故校验器全过后由 `verified_proof` **直接授权** append `confirmed_success`（复用 `ExecutionOutcomeFact` 别名 + `OutcomePersistenceError` + `MANUAL_RECONCILE_SOURCE`，append-only），**不经过**共享词表——这正是「来源隔离活在共享词表之外」的落地。
+
+---
+
+## 12. 门⑤ 实例/租户绑定 — 最小前向绑定 Amendment（唯一剩余设计阻塞）
+
+> **状态：§2 STOP — 设计阻塞，本轮不实现。** 依 §2「若必须新增 DB 模型、修改冻结通用事务边界或扩大既有执行 DTO，停止该部分，提交精确最小 Amendment」+ 用户「如果现有历史确实缺少实例/租户绑定，才需要停在那一处提供最小 schema 方案，而不是继续凭猜测写成功逻辑」。§11.3 已用源码证实门⑤ 绑定事实**不存在**，故停在此处，给出**针对未来执行**的最小不可变绑定方案，**不给历史记录补造事实**。
+
+### 12.1 缺口精确定位
+
+门⑤ 要求「读取命中的目标实例/租户身份 == 派发时认证的可信目标绑定」。两侧均缺：
+
+1. **派发侧（写入时无不可变绑定事实）**：`ExecutionLog` 无 instance/tenant 列；终态 `detail.raw_response`（完整 `OutputCase`）无 `organisation`/实例身份；`base_url` 仅当前 config，**不是**派发时持久化事实。→ 无法从历史派生「这次派发打到了哪个实例/租户」。
+2. **读取侧（4.1.24-1 无法观测实例/租户）**：权威 v0 `OutputCase`（`Case.scala`）无 `organisation`/实例字段，`GET /api/case/{id}` 响应不含可信实例/租户身份。→ 即使有派发侧绑定，真实 reader 也**无法观测**读取命中的实例/租户来做等值校验。
+
+### 12.2 最小前向绑定方案（仅对**未来**执行生效，需另行授权）
+
+**A. 派发侧最小不可变绑定（触碰冻结写路径 → 须独立 Gate 批准）：** 在派发事务写入终态行时，追加**派发时认证的目标绑定**为不可变事实。最小改动面（择一，按侵入度升序）：
+
+| 方案 | 改动 | 侵入度 | 备注 |
+|---|---|---|---|
+| **A1（推荐，最小）** | 终态 `succeeded` 行 `detail` 增 `dispatch_binding = {instance_id, tenant_id, base_url_host, certified_version}`（写入时从**认证后的** reader/executor 目标派生，非当前 config 倒推）| 仅扩 `detail` JSON（无新列、无迁移）| 仍是**扩大既有执行 detail 契约**，依 §2 须停下批准 |
+| A2 | 新增 `ExecutionLog` 列 `instance_id`/`tenant_id` | DB 迁移（新列）| 侵入度更高，触碰冻结模型 |
+
+**B. 读取侧实例/租户观测机制（触碰 reader 能力 → 须独立 Gate 批准）：** 门⑤ 等值校验需 reader 能**观测**读取命中的实例/租户。4.1.24-1 `OutputCase` 不提供，故须：
+- B1：接线前对目标实例做一次**版本/身份 live probe**（如 `GET /api/system` 或认证端点），把实例身份/版本作为可信观测；**和/或**
+- B2：若目标 TheHive 版本 `OutputCase` 含 `organisation`，在**该版本的 Evidence Audit** 后启用（换版本须重做审计，不解冻本设计，继承 §1 版本边界纪律）。
+
+**C. 绑定认证语义（§7 扩展）：** `instance_id`/`tenant_id` 必须是**派发时认证**的可信目标身份（live probe / 凭据范围实证），**不是** config 声明的字符串；`certified_version` 须经真实 Lab 活性证明（约束 #3）。
+
+### 12.3 本轮处置（fail-closed，不补造历史）
+
+- `derive_read_correlation_context` 对**所有现有历史**设 `instance_binding=None`、`tenant_binding=None`（`UNKNOWN`）。
+- `verify_creation_effect` 门⑤：`instance_binding`/`tenant_binding` 为 `UNKNOWN` → **fail-closed**（`instance_binding_unknown`/`tenant_binding_unknown`），**绝不** `confirmed_success`。→ 真实历史**无** `confirmed_success`（正确且安全）。
+- 真实 `TheHiveReadAdapter.read_creation` 恒返回 `observed_instance=None`/`observed_tenant=None`（4.1.24-1 不可观测）→ 门⑤ 双重 fail-closed。
+- **正向 `confirmed_success` 隔离测试**用**平台构造的完整 context**（含模拟未来前向绑定的 `instance_binding`/`tenant_binding`）+ **测试替身 trusted reader**（返回匹配的 `observed_instance/tenant`）经测试注入验证校验器逻辑，**明确标注**：非真实历史链、非真实 reader 能力，门⑤ 前向绑定落地前真实路径不可达 `confirmed_success`。
+- **不修改**历史 Outcome、**不**伪造旧执行证明、**不**给历史记录补造实例/租户事实。
+
+### 12.4 解除条件
+
+门⑤ 解除需**全部**：(1) A 方案（派发侧不可变绑定）经独立 Gate 批准并落地；(2) B 方案（读取侧实例/租户观测）经独立 Gate 批准并落地；(3) 真实 Lab 对目标实例完成版本/身份/租户/只读权限活性认证（§7 + 约束 #3）；(4) 全量回归 + 真实外部 E2E（`external` marker）。在此之前，M3 只标记 **ISOLATED PROOF**（来源隔离 + 门①②③④⑥ 严格关联 + 隔离回归），**真实本地联调与生产认证单独列示，不自动升级为通过**。
