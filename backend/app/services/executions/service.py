@@ -59,6 +59,12 @@ from app.models.ai_response_recommendation import AIResponseRecommendation
 from app.models.event_risk import EventRisk
 from app.models.execution_log import ExecutionLog
 from app.services.executions.base import ResponseExecutor
+from app.services.executions.binding import (
+    BINDING_DETAIL_KEY,
+    TERMINAL_REFERENCE_KEY,
+    DispatchBindingContributor,
+    build_dispatch_binding,
+)
 from app.services.executions.exceptions import ExecutorOutcomeViolation
 from app.services.executions.guard import (
     ApprovalAlreadyExecuted,
@@ -489,8 +495,41 @@ def execute_response(
         session.flush()
         return _result(_rows_for_execution(session, execution_id))
 
-    # Guards + Policy passed -> dispatched, then the adapter, then the
-    # terminal row.
+    # Guards + Policy passed -> build the dispatch DTO FIRST, persist the immutable
+    # pre-dispatch BINDING in the dispatched row (M4-A: recorded BEFORE the external
+    # request so it survives EVERY outcome), then the adapter, then the terminal row
+    # (which REFERENCES the same binding, never re-writes it).
+    dispatch = ExecutionDispatch(
+        execution_id=execution_id,
+        action=action,
+        target=target,
+        approval_id=approval_id,
+    )
+    # M4-A forward dispatch binding (Amendment §12.2 A1-revised). dispatch_started_at
+    # is a SERVER-CLOCK fact recorded in the detail — the SAME precedent as the
+    # policy-evaluation time computed above — NOT the audit-row timestamp column,
+    # which _append still stamps exclusively through the high-water mark (the frozen
+    # stamping clause stays intact). Contributor facts come ONLY from an adapter that
+    # opts into the DispatchBindingContributor protocol (the offline mock does not)
+    # and are merged through binding.py's explicit whitelist.
+    dispatch_started_at = datetime.now(timezone.utc)
+    contributor_facts = (
+        executor.dispatch_binding_facts(dispatch)
+        if isinstance(executor, DispatchBindingContributor)
+        else None
+    )
+    binding = build_dispatch_binding(
+        execution_id=execution_id,
+        approval_id=approval_id,
+        adapter=executor.name,
+        action=action,
+        target=target,
+        approval_status=(
+            approval.status if isinstance(approval.status, str) else None
+        ),
+        dispatch_started_at=dispatch_started_at,
+        contributor_facts=contributor_facts,
+    )
     _append(
         session,
         execution_id=execution_id,
@@ -500,16 +539,13 @@ def execute_response(
         action=action,
         target=target,
         operator=operator,
-        detail={"executor": executor.name},
+        detail={
+            "executor": executor.name,
+            BINDING_DETAIL_KEY: binding.to_detail(),
+        },
     )
     session.flush()
 
-    dispatch = ExecutionDispatch(
-        execution_id=execution_id,
-        action=action,
-        target=target,
-        approval_id=approval_id,
-    )
     violation_message: str | None = None
     try:
         outcome = parse_execution_outcome(executor.execute(dispatch))
@@ -527,6 +563,10 @@ def execute_response(
             "violation": violation_message,
             "raw_response": None,
         }
+    # M4-A: the terminal row REFERENCES the ONE pre-dispatch binding (attempt_id) so
+    # success / timeout / connection failure / HTTP error / response loss all stay
+    # bound to the same immutable attempt identity — the binding is never re-written.
+    detail[TERMINAL_REFERENCE_KEY] = binding.attempt_id
     _append(
         session,
         execution_id=execution_id,

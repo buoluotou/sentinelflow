@@ -65,7 +65,9 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
+from app.core.config import settings
 from app.services.executions.base import ResponseExecutor
+from app.services.executions.binding import VERSION_ASSERTION_CONFIG
 from app.services.executions.exceptions import (
     ExecutorConfigError,
     ExecutorOutcomeViolation,
@@ -171,6 +173,44 @@ class TheHiveExecutor(ResponseExecutor):
         # lifecycle belongs to human investigation, so no action has a
         # machine reversal here.
         return False
+
+    # -- M4-A forward dispatch binding contributor -------------------------
+
+    def dispatch_binding_facts(self, dispatch: ExecutionDispatch) -> dict:
+        """Contribute the adapter-specific target identity to the pre-dispatch
+        binding (M4-A, Amendment §12.2 A1-revised) — HONESTLY, never as a verified
+        identity (constraint #2 / #3, M4-B):
+
+          endpoint -- the validated, secret-free base URL the ``POST /api/case``
+              targets: a CONFIG DECLARATION of WHERE the request was sent, NOT a
+              certified instance identity (a base URL is never passed off as one).
+          version_evidence_ref / version_assertion_kind -- the operator's CONFIGURED
+              ``THEHIVE_EXPECTED_VERSION`` marked ``config-declaration``: a version
+              CONFIG is NOT a liveness proof (constraint #3), so nothing here claims
+              the remote server actually runs it.
+          target_instance / target_tenant -- ``None`` (UNKNOWN). TheHive 4.1.24-1 has
+              NO authoritative dispatch-time instance / tenant source (the write
+              config carries a base URL, not a certified instance identity, and the
+              ``OutputCase`` has no organisation), so these stay ``None`` and gate 5
+              STILL fails closed — M4-A makes the binding FORWARD-READY, it does not
+              manufacture an identity that does not exist.
+
+        NO secret: the base URL is validated secret-free (``validate_base_url``) and
+        every field still passes the ``redact_detail`` gate at the single ``_append``
+        write point. ``dispatch`` is accepted for protocol generality (a multi-action
+        adapter's endpoint may depend on it); TheHive's single ``escalate_to_incident``
+        action always targets ``{base_url}/api/case``, so the endpoint is the base URL.
+        """
+        expected_version = str(
+            getattr(settings, "THEHIVE_EXPECTED_VERSION", "") or ""
+        ).strip()
+        return {
+            "endpoint": self._credentials.base_url,
+            "version_evidence_ref": expected_version or None,
+            "version_assertion_kind": VERSION_ASSERTION_CONFIG,
+            "target_instance": None,
+            "target_tenant": None,
+        }
 
     # -- execute -----------------------------------------------------------
 

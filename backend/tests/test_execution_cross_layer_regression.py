@@ -49,6 +49,11 @@ from app.models import (
     ExecutionLog,
     Incident,
 )
+from app.services.executions.binding import (
+    BINDING_DETAIL_KEY,
+    BINDING_SCHEMA,
+    TERMINAL_REFERENCE_KEY,
+)
 from app.services.executions.mock import MockExecutor
 from app.services.executions.models import ExecutionOutcome
 
@@ -249,7 +254,25 @@ class TestSuccessChain:
             assert row.target == SNAPSHOT_TARGET
             assert row.direction == "execute"
         # the real mock adapter ran (DryRun echo + raw response present)
-        assert rows[1].detail == {"executor": "mock"}
+        # M4-A: the dispatched row now ALSO carries the immutable pre-dispatch
+        # binding. The mock is NOT a DispatchBindingContributor, so its binding
+        # holds the platform facts alone — NO adapter-specific target identity
+        # (endpoint / instance / tenant stay an honest None, never fabricated).
+        assert rows[1].detail["executor"] == "mock"
+        binding = rows[1].detail[BINDING_DETAIL_KEY]
+        assert binding["schema"] == BINDING_SCHEMA
+        assert binding["adapter"] == "mock"
+        assert binding["execution_id"] == str(execution_id)
+        assert binding["approval_id"] == str(approval.id)
+        assert binding["action"] == SNAPSHOT_ACTION
+        assert binding["target"] == SNAPSHOT_TARGET
+        assert binding["approval_status_at_dispatch"] == "approved"
+        assert binding["dispatch_started_at"]  # a non-empty server-clock ISO fact
+        assert binding["endpoint"] is None
+        assert binding["target_instance"] is None
+        assert binding["target_tenant"] is None
+        # the terminal row REFERENCES the same binding attempt (never re-writes it)
+        assert rows[2].detail[TERMINAL_REFERENCE_KEY] == binding["attempt_id"]
         assert rows[2].detail["raw_response"] == {"mock": "ok", "operation": "execute"}
         assert rows[2].detail["dry_run"]["executor"] == "mock"
 
