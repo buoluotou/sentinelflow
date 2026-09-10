@@ -68,7 +68,9 @@ app.include_router(v1_router, prefix=settings.API_V1_PREFIX)
 def health_check(db: Session = Depends(get_db)):
     """Liveness: 200 whenever the process is up (DB state is reported in
     the body, never in the status code). Orchestrators should probe
-    /ready for dependency readiness."""
+    /ready for dependency readiness. ``database_driver`` is the non-sensitive
+    URL scheme (e.g. ``postgresql`` / ``sqlite``) so doctor / smoke can detect
+    the platform without ever reading the credential-bearing URL."""
     db_status = "connected"
     try:
         db.execute(text("SELECT 1"))
@@ -78,6 +80,7 @@ def health_check(db: Session = Depends(get_db)):
         "status": "ok",
         "service": "sentinelflow-backend",
         "database": db_status,
+        "database_driver": settings.DATABASE_URL.split("://", 1)[0] or "unknown",
     }
 
 
