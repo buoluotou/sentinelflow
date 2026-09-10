@@ -1,0 +1,18 @@
+# SentinelFlow line-ending policy.
+#
+# Every text blob is stored in the repo with LF. This file pins the *checkout*
+# ending per script type so a fresh clone behaves identically on every OS,
+# independent of the cloner's core.autocrlf setting. Windows defaults to
+# core.autocrlf=true, which would otherwise hand out CRLF for the bash scripts
+# and break `bash scripts/quickstart.sh` (a `#!/bin/bash\r` shebang and a
+# trailing CR on every line make bash fail with `$'\r': command not found`).
+
+# Bash scripts (Linux / macOS quickstart, setup-dev, doctor, smoke) MUST be LF
+# on checkout -- bash reads a trailing CR as part of the command.
+*.sh    text eol=lf
+
+# PowerShell / Windows batch are Windows-native: keep CRLF for editors and the
+# console. (PowerShell also tolerates LF; CRLF is simply the convention here.)
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
