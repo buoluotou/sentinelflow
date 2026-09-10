@@ -2,9 +2,9 @@
 
 > 范围：真实全仓 `D:\edge\github\sentinelflow`（后端 `backend/app` 130 个 .py + 迁移 + 前端 `frontend/src` 49 个 ts/tsx + 配置/依赖/构建），**非**仅 M4 文件。
 > 方法：入口→Outcome 全链只读追踪 + 三份并行子代理证据（后端链/前端/配置依赖）+ 本人对将修改项的逐条 `文件:行` 复核。
-> 基线：HEAD `5545de0`（main，ahead 63），Alembic head `0012`。
+> 基线（审计时）：HEAD `5545de0`（main，ahead 63），Alembic head `0012`。M5 后续本地前向提交：`34799e2`(audit) → `f0085df`(logic-refactor)，现 HEAD `f0085df`（ahead 65）；quickstart/docker/docs/tests 阶段提交见 §20。
 > 原则（§3）：**删重复 > 抽小函数 > 明确边界 > 最后才考虑架构重构**；**不为代码漂亮大规模重写稳定模块**；所有优化保持 §2 安全不变量。
-> 回归：全量后端 `pytest tests -q` → **2869 passed / 14 deselected / 0 failed**（external 默认 deselect）。
+> 回归：全量后端 `pytest tests -q` → **2869 passed / 14 deselected / 0 failed**（external 默认 deselect）。native smoke（Windows，SQLite，Demo mock）→ **exit 0**，业务链 12/17 步过真实 HTTP，执行步 fail-closed（见 H-3）。
 
 **处置图例**：`FIXED(M5)`=本轮已修并回归 · `FIX(M5 §x)`=本轮后续阶段修（见对应交付） · `DEFERRED`=有意推迟并给出理由与修复方向（不属本轮 release-readiness 范围或触碰冻结安全架构）。
 
@@ -74,6 +74,14 @@ POST /api/v1/normalize ─┤→ normalization → deduplication/engine.process
 - **位置**：`services/executions/service.py`（`_LAST_AUDIT_STAMP` / `_next_audit_timestamp`）。
 - **是否修复**：**否**（并发问题，需多 worker + PG 验证；单进程演示不触发）。
 - **回归/建议**：改为 per-session 高水位或依赖 DB 序列，去 `global` 竞态；补并发派生序测试。
+
+### H-3 SQLite 下 durable-dispatch 执行步 fail-closed（**平台边界，非缺陷**） — `DOCUMENTED`（Demo Mode 数据库须 PostgreSQL）
+- **问题**：`services/executions/durable_dispatch.py` 的 `DurableDispatchAttemptStore.record()`（63-99）**故意**开独立 `Session`/连接，并在发起外部调用**之前**独立 `commit()`（M4-F 冻结的「flush ≠ durable commit」契约：预约记录必须先于外呼落盘，才能跨调用方 rollback / 终端写失败 / 崩溃存活）。PostgreSQL（MVCC）下，调用方开放的写事务与该独立连接的提交可并存；**SQLite 数据库级单一写锁**下形成同线程自死锁（调用方事务不提交直到 `record()` 返回，`record()` 的独立连接又拿不到写锁）→ `sqlalchemy.exc.OperationalError: database is locked`（`INSERT INTO dispatch_attempt`）→ `POST /api/v1/executions` 返回 500。
+- **影响**：**仅 SQLite**。Demo 业务链在 human approval 之前（alert→event→risk→incident→AI mock→approval）全部正常；执行步 fail-closed（500，无 `dispatch_attempt` 提交、无外部调用、无伪造 outcome）。**PostgreSQL 不受影响**——这正是 §1「SQLite 与 PostgreSQL 行为差异」的实质发现，也是 **Demo Mode 数据库必须是 PostgreSQL** 的根本原因。
+- **位置**：`services/executions/durable_dispatch.py:63-99`（`record()` 独立 Session/commit）· 属平台并发语义边界，非某一处可点修的 bug。
+- **是否修复**：**否（不改冻结契约）**。`StaticPool`/单连接共享会让 `record()` 的 `commit()` 顺带提前提交调用方事务，**破坏 durability 契约**（M4-F 核心不变量）；`busy_timeout` / WAL 无法解决同线程自死锁。正确处置 = **Demo Mode 用 PostgreSQL(MVCC)**（`docker-compose.yml` 默认即 `postgres:16-alpine`），SQLite 仅用于「到审批为止」的零依赖核心链开发。
+- **回归/证据**：native smoke（Windows，SQLite，Demo mock）实测——业务链 12 步 PASS，执行步 fail-closed；`GET /api/v1/executions/metrics` 断言 `total_chains == 0 and succeeded == 0`（无伪造链），`scripts/smoke.py` 以 driver-aware 分支将其如实报告为 `SentinelFlow core smoke test (SQLite): PASS`（**不**冒充 full-demo PASS）。全量 `pytest 2869 passed`：测试用自有 `StaticPool` 单连接 in-memory engine（`conftest.py`），从不构造「调用方开放事务 + 独立连接提交」的真实并发形态 → 测试从未捕获此边界，故本轮以 native smoke 补齐运行期证据。
+- **§2 不变量**：DB 写锁失败下 fail-closed 成立——Dispatch Fact ≠ External Outcome Fact 未混淆、Outcome 未被伪造、无自动 retry/compensation。**安全不变量在该平台边界下未退化**（详见 `docs/TROUBLESHOOTING.md` 与 `docs/audit/M5-FEASIBILITY-MATRIX.md`）。
 
 ---
 
@@ -246,7 +254,7 @@ Dispatch Fact ≠ External Outcome Fact · Outcome append-only · Outcome 五态
 | 严重度 | 计数 | FIXED(M5) | FIX(M5 后续阶段) | DEFERRED |
 | --- | --- | --- | --- | --- |
 | CRITICAL | 1 | 0 | 0 | 1（C-1，post-M5 安全 #1） |
-| HIGH | 2 | 0 | 0 | 2 |
+| HIGH | 3 | 0 | 0 | 2 + 1（H-3 = SQLite 平台边界，`DOCUMENTED`，Demo 须 PostgreSQL） |
 | MEDIUM | 7 | 0（M-7 部分） | 1（M-7 §14） | 6 |
 | LOW | 7 | 3（L-1/L-2/L-3） | 2（L-4/L-5 §13） | 2（L-6；L-7 本地卫生） |
 | TECH-DEBT | 5 | 0 | 0 | 5（记录/防回退） |

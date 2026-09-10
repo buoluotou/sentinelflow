@@ -8,10 +8,21 @@ A 15-minute end-to-end walkthrough: from an empty database to a fully triaged in
 
 ## 0. Prerequisites
 
-Backend on port 8000 and frontend on port 5173 (see the [README Quick Start](../README.md#quick-start)). Use a **fresh** database for a clean demo:
+Backend on port 8000 and frontend on port 5173. The fastest route is the
+**[Docker Quickstart](QUICKSTART.md)** (`scripts/quickstart.ps1` / `.sh`), which
+provisions **PostgreSQL** and runs this whole demo — including Step 8 execution —
+end to end.
+
+> **Database note.** Steps 1–7 (alert → incident → AI → approval) run on either
+> PostgreSQL or SQLite. **Step 8 (response execution) requires PostgreSQL**: the
+> durable-dispatch attempt is committed on an independent MVCC connection, which
+> SQLite's single write lock cannot satisfy — on SQLite that step **fails closed**
+> (HTTP 500, no dispatch, no external call, no fabricated outcome). See
+> [Troubleshooting §3](TROUBLESHOOTING.md). For a PostgreSQL-free trial of Steps
+> 1–7 only:
 
 ```powershell
-# Windows PowerShell example (SQLite — no Docker needed)
+# Windows PowerShell — SQLite, core chain through approval (Step 8 fails closed)
 cd backend
 $env:DATABASE_URL="sqlite:///demo.db"
 python -m alembic upgrade head

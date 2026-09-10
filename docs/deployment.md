@@ -18,7 +18,7 @@ docker compose up -d postgres
 
 The compose file uses env-var substitution only — no secrets are baked into the repository. Data persists in the `sentinelflow-pg-data` volume. Healthcheck: `pg_isready`.
 
-**SQLite alternative** (evaluation / CI): set `DATABASE_URL="sqlite:///sentinelflow.db"` and skip Docker entirely. JSON columns are dual-compatible by design.
+**SQLite alternative** (core-chain development / CI): set `DATABASE_URL="sqlite:///sentinelflow.db"` and skip Docker entirely. JSON columns are dual-compatible by design. **Caveat:** the durable-dispatch **execution** step needs PostgreSQL/MVCC — on SQLite it fails **closed** (`database is locked`, no dispatch, no fabricated outcome). SQLite is for the chain up to human approval; use PostgreSQL for the full demo/production.
 
 ## 2. Backend
 
@@ -26,7 +26,7 @@ The compose file uses env-var substitution only — no secrets are baked into th
 cd backend
 python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements/base.txt
-python -m alembic upgrade head                        # migrations 0001–0009
+python -m alembic upgrade head                        # migrations 0001–0012
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -67,7 +67,8 @@ In development, `npm run dev` handles the proxy automatically (Vite).
 ## 4. Verification
 
 ```bash
-curl http://localhost:8000/health                       # {"status":"ok","database":"connected"}
+curl http://localhost:8000/health                       # {"status":"ok","database":"connected","database_driver":"..."}
+curl http://localhost:8000/ready                        # 200 only when the DB answers SELECT 1, else 503
 python simulator/runner/run.py --repeat 5               # 25 alerts → 5 events
 curl http://localhost:8000/api/v1/dashboard/summary     # metrics reflect the run
 ```
@@ -100,4 +101,4 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 3. `python -m alembic upgrade head`
 4. Restart the backend
 
-Migrations are additive and reversible (full downgrade support) through Phase 3 (0001–0009).
+Migrations are additive and reversible (full downgrade support), `0001–0012`.
