@@ -52,6 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cross-process coordination; no caller ever passes or fabricates a
   timestamp.
 
+### Added
+- **RC2 / §7 + §20 — `DEPLOYMENT_MODE` (demo | production) with an approval
+  auth boundary and a fail-closed production startup gate**. Production mode
+  refuses to boot (ONE sanitized error, key names only) on any unsafe
+  setting: missing `OPERATORS_JSON` auth, SQLite, the mock execution adapter,
+  compensation / reverse workflows, or a non-loopback `BIND_HOST`. Approval
+  write paths gain an explicit boundary — demo mode keeps the tokenless
+  display-only UX; production mode forbids tokenless approval (401), enforces
+  the SEPARATE approval permission (viewer / executor get 403) and records
+  the Bearer token's principal while ignoring the request-body identity
+  (`OperatorRole.can_approve` / `can_reconcile` / `can_admin` name the
+  permissions explicitly).
+
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and
   the global volume names from `docker-compose.yml`; `docker compose -p <project>`

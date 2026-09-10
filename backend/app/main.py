@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 
 from app.api.v1.router import router as v1_router
 from app.core.config import settings
+from app.core.runtime_mode import (
+    deployment_mode,
+    validate_production_mode,
+)
 from app.core.database import get_db
 from app.services.executions.registry import validate_adapter_config
 
@@ -30,6 +34,7 @@ def _safe_config_summary() -> str:
     booleans are emitted; credentials / tokens / URLs are never printed."""
     db_backend = settings.DATABASE_URL.split("://", 1)[0] or "unknown"
     return (
+        f"mode={deployment_mode(settings)} "
         f"db={db_backend} "
         f"ai_provider={settings.AI_PROVIDER} "
         f"execution_adapter={settings.EXECUTION_ADAPTER} "
@@ -47,6 +52,11 @@ def _safe_config_summary() -> str:
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     _configure_logging()
+    # RC2 §7 + §20: PRODUCTION MODE IS FAIL-CLOSED BEFORE ANYTHING ELSE — an
+    # unsafe deployment (missing OPERATORS_JSON auth / SQLite / mock adapter /
+    # compensation / non-loopback BIND_HOST) refuses to boot with ONE
+    # sanitized error naming keys only. Demo mode returns immediately.
+    validate_production_mode(settings)
     # Startup fail-closed: a misconfigured execution adapter (unknown /
     # multi-value selection, or a real adapter missing its credentials)
     # refuses to BOOT — the platform never pretends to run and then fails

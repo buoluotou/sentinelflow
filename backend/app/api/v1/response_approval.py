@@ -15,13 +15,23 @@ never re-sorts.
 Approve != Execute: POST .../approve and .../reject record one decision
 row each. They never block an IP, create an Incident, touch EventRisk or
 call any orchestrator — response execution belongs to Step 14.
+
+RC2 §7 — the approval auth boundary: DEMO MODE (default) keeps the simple
+local UX (tokenless; the body ``reviewer`` stays DISPLAY-ONLY, exactly as
+before). PRODUCTION mode forbids tokenless approval: the recorded reviewer
+is ALWAYS the Bearer token's server-side principal (viewer / executor roles
+get 403 — the approval permission is separate); the body identity field is
+ignored, so impersonation is impossible.
 """
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
+from app.api.v1.response_execution import _extract_bearer
+from app.core.config import settings
 from app.core.database import get_db
+from app.core.runtime_mode import is_production
 from app.models import AIResponseRecommendation
 from app.schemas.response_approval import (
     AIResponseApprovalRead,
@@ -34,6 +44,7 @@ from app.services.ai import (
     AIResponseApprovalNotFound,
     AIResponseApprovalService,
 )
+from app.services.executions.operators import Operator, get_operator_registry
 
 router = APIRouter(tags=["approval-queue"])
 
@@ -42,6 +53,38 @@ def get_ai_response_approval_service() -> AIResponseApprovalService:
     """Deployment seam: tests override this dependency, mirroring the
     Step 10/11/12 AI APIs."""
     return AIResponseApprovalService()
+
+
+def authenticate_approval_principal(
+    authorization: str | None = Header(default=None),
+) -> Operator | None:
+    """RC2 §7 — the approval write-path auth boundary.
+
+    DEMO MODE (default): returns ``None`` — the simple local Approval UX
+    stays tokenless; the request-body ``reviewer`` remains DISPLAY-ONLY
+    (loopback binding is the exposure control).
+
+    PRODUCTION MODE: tokenless / unknown tokens are 401; an authenticated
+    operator WITHOUT the approval permission (viewer / executor) is 403.
+    The recorded reviewer is the TOKEN's principal — never the body field.
+    """
+    if not is_production(settings):
+        return None
+    token = _extract_bearer(authorization)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Approval credentials required")
+    operator = get_operator_registry().lookup(
+        token, legacy_token=settings.EXECUTION_TOKEN
+    )
+    if operator is None:
+        raise HTTPException(status_code=401, detail="Invalid approval credentials")
+    if not operator.role.can_approve:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Operator '{operator.name}' (role={operator.role.value}) "
+            "may not approve or reject recommendations",
+        )
+    return operator
 
 
 @router.get("/approvals", response_model=list[PendingApprovalRead])
@@ -79,9 +122,13 @@ def approve_recommendation(
     payload: ApprovalDecisionRequest,
     db: Session = Depends(get_db),
     service: AIResponseApprovalService = Depends(get_ai_response_approval_service),
+    principal: Operator | None = Depends(authenticate_approval_principal),
 ) -> AIResponseApprovalRead:
-    """Record a human APPROVE decision. Records only — executes nothing."""
-    approval = _decide(db, service, recommendation_id, payload, service.approve)
+    """Record a human APPROVE decision. Records only — executes nothing.
+
+    RC2 §7: in production the reviewer is the authenticated principal; in
+    demo mode the endpoint stays tokenless (display-only reviewer)."""
+    approval = _decide(db, service, recommendation_id, payload, service.approve, principal)
     db.commit()
     db.refresh(approval)
     return AIResponseApprovalRead.model_validate(approval)
@@ -97,22 +144,31 @@ def reject_recommendation(
     payload: ApprovalDecisionRequest,
     db: Session = Depends(get_db),
     service: AIResponseApprovalService = Depends(get_ai_response_approval_service),
+    principal: Operator | None = Depends(authenticate_approval_principal),
 ) -> AIResponseApprovalRead:
-    """Record a human REJECT decision. Records only — executes nothing."""
-    approval = _decide(db, service, recommendation_id, payload, service.reject)
+    """Record a human REJECT decision. Records only — executes nothing.
+
+    RC2 §7: same reviewer rule as approve (production principal / demo
+    display-only)."""
+    approval = _decide(db, service, recommendation_id, payload, service.reject, principal)
     db.commit()
     db.refresh(approval)
     return AIResponseApprovalRead.model_validate(approval)
 
 
-def _decide(db, service, recommendation_id: str, payload: ApprovalDecisionRequest, decide):
+def _decide(db, service, recommendation_id: str, payload: ApprovalDecisionRequest, decide, principal):
     """Call approve/reject and translate the frozen error taxonomy to HTTP.
-    A raised error aborts before commit(), so nothing is ever persisted."""
+    A raised error aborts before commit(), so nothing is ever persisted.
+
+    RC2 §7: the recorded reviewer is the AUTHENTICATED principal in
+    production; only in demo mode does the display-only body reviewer apply.
+    """
+    reviewer = principal.name if principal is not None else payload.reviewer
     try:
         return decide(
             db,
             _to_uuid(recommendation_id, "Recommendation not found"),
-            reviewer=payload.reviewer,
+            reviewer=reviewer,
             review_comment=payload.review_comment,
         )
     except AIEventNotFound as exc:

@@ -48,6 +48,29 @@ class OperatorRole(str, Enum):
         """Whether this role may dispatch executions / compensations."""
         return self in (OperatorRole.EXECUTOR, OperatorRole.ADMIN)
 
+    @property
+    def can_approve(self) -> bool:
+        """Whether this role may record APPROVE / REJECT decisions (RC2 §7).
+
+        The approval permission is DELIBERATELY separate from execution:
+        a reviewer decides, an executor dispatches, and neither reaches the
+        other's write path with the same token."""
+        return self in (OperatorRole.REVIEWER, OperatorRole.ADMIN)
+
+    @property
+    def can_reconcile(self) -> bool:
+        """Whether this role may run the manual reconciliation write path.
+
+        Reconciliation confirms external outcomes; it shares the execution
+        trust tier (executor / admin) but stays a NAMED permission so the
+        boundary is explicit, never implied."""
+        return self in (OperatorRole.EXECUTOR, OperatorRole.ADMIN)
+
+    @property
+    def can_admin(self) -> bool:
+        """Whether this role carries the administrative permission."""
+        return self is OperatorRole.ADMIN
+
 
 #: All valid role string values (for validation error messages).
 VALID_ROLES = frozenset(role.value for role in OperatorRole)
@@ -114,6 +137,11 @@ class OperatorRegistry:
 
     def get_by_name(self, name: str) -> Operator | None:
         return self._by_name.get(name)
+
+    @property
+    def operators(self) -> list[Operator]:
+        """Every registered operator (identity + role only — never tokens)."""
+        return list(self._by_name.values())
 
     def __repr__(self) -> str:
         names = list(self._by_name.keys())

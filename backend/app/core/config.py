@@ -29,10 +29,25 @@ class Settings(BaseSettings):
     # a host-run backend (put it behind SSO / a reverse proxy first).
     BACKEND_HOST: str = "127.0.0.1"
     BACKEND_PORT: int = 8000
+    # Compose-level host-port bind address (published ports use
+    # ${BIND_HOST:-127.0.0.1} in docker-compose.yml). The API reads it too so
+    # the production startup gate (RC2 §20) can refuse a non-loopback default
+    # — TLS + authentication terminate at a reverse proxy, never the API port.
+    BIND_HOST: str = "127.0.0.1"
     # Verbose logging + debug diagnostics. Defaults to False (safe for
     # production / quickstart); wired to the backend log level (DEBUG when
     # true, INFO otherwise). Exception stack traces stay debug-only.
     DEBUG: bool = False
+
+    # RC2 §7 + §20: explicit deployment mode ("demo" | "production").
+    # DEMO (default) keeps the simple local UX: loopback binding is the
+    # exposure control, approval is tokenless-but-display-only, the offline
+    # mock adapter is allowed. PRODUCTION is FAIL-CLOSED at startup — see
+    # app.core.runtime_mode.validate_production_mode: OPERATORS_JSON auth is
+    # required, PostgreSQL only, a real execution adapter required,
+    # compensation / reverse workflows refused (not certified) and BIND_HOST
+    # pinned to loopback (terminate TLS + auth at a reverse proxy).
+    DEPLOYMENT_MODE: str = "demo"
 
     # Phase 1 Step 4: deduplication aggregation window (seconds)
     DEDUP_WINDOW_SECONDS: int = 300
