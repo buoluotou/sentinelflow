@@ -19,7 +19,12 @@ WORKDIR /app
 # (compiled from base.txt via `uv pip compile`) so a build today and a build in
 # six months install the identical dependency set.
 COPY requirements/base.lock ./requirements/base.lock
-RUN pip install --no-cache-dir -r requirements/base.lock
+# Optional build-time package index override for localized mirrors (China /
+# restricted networks). The default stays the official PyPI — nothing changes
+# unless you explicitly opt in: set PIP_INDEX_URL in .env and rebuild, or:
+#   docker compose build --build-arg PIP_INDEX_URL=https://<trusted-mirror>/simple/
+ARG PIP_INDEX_URL="https://pypi.org/simple"
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r requirements/base.lock
 
 # Application code + migrations. COPY is selective on purpose: tests and the
 # dev venv never enter the image.

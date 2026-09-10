@@ -15,7 +15,7 @@ installed.
 
 ---
 
-## 5-Minute Quickstart (Docker — recommended)
+## Quickstart (Docker — recommended)
 
 You need **Docker only** (no host Python or Node). From a fresh clone:
 
@@ -41,6 +41,17 @@ end-to-end smoke test, and prints the URLs:
 | **Frontend (start here)** | **http://localhost:5173** |
 | Backend API | http://localhost:8000/api/v1 |
 | Interactive API docs | http://localhost:8000/docs |
+
+> **First run timing** — the first run is dominated by base-image downloads and
+> the two image builds, so it mostly tracks your network: seconds once images
+> are cached, minutes on a fresh machine or a slow link. Later starts are fast.
+>
+> **China / restricted networks** — if PyPI downloads stall, opt in to a trusted
+> mirror of your choice (the default stays the official PyPI): set
+> `PIP_INDEX_URL=https://<trusted-mirror>/simple/` in `.env` and rebuild with
+> `./scripts/quickstart.sh --rebuild`, or build explicitly with
+> `docker compose build --build-arg PIP_INDEX_URL=https://<trusted-mirror>/simple/`.
+> Details: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 **Generate a realistic alert storm** (one command; needs Python 3.10+ on the
 host, or POST alerts from the `/docs` UI if you have none):

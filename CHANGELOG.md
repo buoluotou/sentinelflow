@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Compose project isolation** — removed the fixed `container_name:` values and
+  the global volume names from `docker-compose.yml`; `docker compose -p <project>`
+  (or `COMPOSE_PROJECT_NAME`) now yields independent containers / networks /
+  volumes with no extra overrides. Default single-instance behaviour is
+  unchanged (project `sentinelflow`, data volume `sentinelflow_pg-data`; the
+  one-time copy from a pre-RC2 `sentinelflow-pg-data` volume is documented in
+  docs/TROUBLESHOOTING.md).
+- **Quickstart health wait** resolves the backend through
+  `docker compose ps -q backend` instead of the fixed name `sf-backend`
+  (bash + PowerShell), so any project name works.
+- **Backend image build**: opt-in `PIP_INDEX_URL` build arg (default stays the
+  official `https://pypi.org/simple`) for China / restricted networks — set it
+  in `.env` and rebuild, or `docker compose build --build-arg PIP_INDEX_URL=...`.
+- **Docs**: mirror guidance in README / QUICKSTART / TROUBLESHOOTING; fixed
+  container-name references; dependency wording clarified — `base.lock` is
+  exact version pins (no pip `--hash` verification), recorded by lockfile
+  artifact SHA-256 separately.
+
 ## [1.3.0] - 2026-09-01
 
 Phase 3.3: **Governance & Observability** — the governance triangle around the v1.2.0 execution layer: Who can execute (**Operator Identity & RBAC**) + When execution is allowed (**Execution Policy**) + How execution performs (**Execution Metrics** + **Observed Adapter Health**) surfaced in the **Execution Observability UI**. Governance and observability, not automation: no automatic approval, no automatic retry, no adapter fan-out, no hidden execution — every verdict is derived read-only from frozen execution facts. The v1.2.0 safety model stays frozen: no new tables, no new migrations, no new execution states, no new adapters, and zero production-code changes in the final verification steps.

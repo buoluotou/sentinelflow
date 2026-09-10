@@ -174,7 +174,13 @@ step "Waiting for the backend to become healthy (up to ${WAIT_SECONDS}s)"
 deadline=$(( $(date +%s) + WAIT_SECONDS ))
 healthy=0
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    status="$(docker inspect -f '{{.State.Health.Status}}' sf-backend 2>/dev/null || true)"
+    # Resolve the container via compose SERVICE (never a fixed container_name)
+    # so any COMPOSE_PROJECT_NAME / `-p <project>` works unchanged.
+    cid="$(docker compose ps -q backend 2>/dev/null || true)"
+    status=""
+    if [ -n "$cid" ]; then
+        status="$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null || true)"
+    fi
     if [ "$status" = "healthy" ]; then healthy=1; break; fi
     printf '.'
     sleep 3

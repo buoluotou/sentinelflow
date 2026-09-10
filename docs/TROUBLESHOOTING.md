@@ -52,13 +52,21 @@ stack trace on boot, set `DEBUG=false` first and re-read the last real ERROR.
 | `port 5432 / 8000 / 5173 is already bound` | Another service holds the port | Set `POSTGRES_PORT` / `BACKEND_PORT` / `FRONTEND_PORT` in `.env` to free ports and re-run |
 | compose refuses: `POSTGRES_PASSWORD ... required` | Empty DB password (fail-closed by design) | Run `scripts/quickstart` (it generates a random local password), or set `POSTGRES_PASSWORD` in `.env` manually |
 | `docker compose config failed` | Malformed `.env` / compose override | Fix `.env` (doctor shows the offending key); ensure you copied `.env.example` |
+| PyPI downloads slow / time out during the backend image build | The default index is the official `pypi.org`; some networks (e.g. in China) throttle it | Opt in to a trusted mirror: set `PIP_INDEX_URL=https://<mirror>/simple/` in `.env` and re-run `./scripts/quickstart.sh --rebuild` (or `docker compose build --build-arg PIP_INDEX_URL=...`). Default stays official PyPI |
 | backend never becomes `healthy` | Migration failed, or DB unreachable | `docker compose logs migrate` then `docker compose logs backend`; confirm `migrate` exited `0` and `postgres` is `healthy` |
 | frontend shows but API calls fail | backend not up yet, or port changed | `docker compose ps`; open `http://localhost:<BACKEND_PORT>/ready` — must be `200` |
 
-**Data persistence:** the PostgreSQL data lives in the named volume
-`sentinelflow-pg-data`. `docker compose down` (or `scripts/quickstart -Down` /
-`--down`) **keeps** it — restart without losing data. `docker compose down -v`
-**erases** it.
+**Data persistence:** the PostgreSQL data lives in a compose project-scoped
+named volume — for the default project `sentinelflow` that is
+`sentinelflow_pg-data` (`docker volume ls | grep pg-data` lists it).
+`docker compose down` (or `scripts/quickstart -Down` / `--down`) **keeps** it —
+restart without losing data. `docker compose down -v` **erases** it.
+
+> **Upgrading a pre-RC2 checkout?** Older versions pinned the fixed volume name
+> `sentinelflow-pg-data`. Your data is not lost — copy it once into the
+> project-scoped volume, then start the stack and confirm the Dashboard
+> counters:
+> `docker run --rm -v sentinelflow-pg-data:/from -v sentinelflow_pg-data:/to alpine sh -c 'cp -a /from/. /to/'`
 
 ---
 
@@ -140,9 +148,10 @@ Demo Mode.
 - `VITE_API_BASE_URL` is a **build-time** value. After changing it you must
   **rebuild** the frontend (`npm run build`, or re-run the Docker Quickstart with
   `-Rebuild` / `--rebuild`). The backend ignores it.
-- **Blank page:** confirm the frontend is actually served (Docker: `sf-frontend`
-  healthy on `http://localhost:<FRONTEND_PORT>`; native: `npm run dev` running on
-  `:5173`). The nginx config has an SPA fallback (`try_files $uri /index.html`).
+- **Blank page:** confirm the frontend is actually served (Docker: the
+  `frontend` service shows `healthy` in `docker compose ps`, answering on
+  `http://localhost:<FRONTEND_PORT>`; native: `npm run dev` running on `:5173`).
+  The nginx config has an SPA fallback (`try_files $uri /index.html`).
 
 ---
 

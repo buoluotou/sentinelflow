@@ -61,6 +61,14 @@ fails:
 > Node build, nginx). That one-time cost is counted separately from the app's own
 > startup; on a warm machine the app itself is up in seconds.
 
+> **China / restricted networks:** if the backend image build stalls downloading
+> PyPI packages, opt in to a trusted mirror (the default stays the official
+> PyPI). Either set `PIP_INDEX_URL=https://<trusted-mirror>/simple/` in `.env`
+> and rebuild (`./scripts/quickstart.sh --rebuild`), or build once with
+> `docker compose build --build-arg PIP_INDEX_URL=https://<trusted-mirror>/simple/`
+> then `docker compose up -d`. Mirror choice is always yours — the project never
+> pins a third-party mirror by default.
+
 ### Access URLs
 
 | What | URL |

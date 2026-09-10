@@ -144,7 +144,10 @@ Step "Waiting for the backend to become healthy (up to ${WaitSeconds}s)"
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
 $healthy = $false
 while ((Get-Date) -lt $deadline) {
-    $status = (docker inspect -f "{{.State.Health.Status}}" sf-backend 2>$null)
+    # Resolve the container via compose SERVICE (never a fixed container_name)
+    # so any COMPOSE_PROJECT_NAME / -p <project> works unchanged.
+    $cid = (docker compose ps -q backend 2>$null)
+    $status = if ($cid) { (docker inspect -f "{{.State.Health.Status}}" $cid 2>$null) } else { $null }
     if ($status -eq "healthy") { $healthy = $true; break }
     Write-Host "." -NoNewline -ForegroundColor DarkGray
     Start-Sleep -Seconds 3

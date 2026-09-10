@@ -39,7 +39,6 @@ name: sentinelflow
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: sf-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sentinelflow}
@@ -61,9 +60,12 @@ services:
   # exits. A single migrate job means multiple backend replicas can never race
   # on schema creation, and Base.metadata.create_all() is never used in prod.
   migrate:
-    build: ./backend
+    build:
+      context: ./backend
+      # Optional PyPI mirror for restricted networks; default = official PyPI.
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     image: sentinelflow-backend:local
-    container_name: sf-migrate
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
@@ -74,9 +76,12 @@ services:
     restart: "no"
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      # Optional PyPI mirror for restricted networks; default = official PyPI.
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
     image: sentinelflow-backend:local
-    container_name: sf-backend
     restart: unless-stopped
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
@@ -105,7 +110,6 @@ services:
   frontend:
     build: ./frontend
     image: sentinelflow-frontend:local
-    container_name: sf-frontend
     restart: unless-stopped
     depends_on:
       backend:
@@ -121,7 +125,6 @@ services:
   # still boots and the rest of the chain works (doctor reports it as WARN).
   ollama:
     image: ollama/ollama:latest
-    container_name: sf-ollama
     profiles: ["ollama"]
     restart: unless-stopped
     ports:
@@ -129,10 +132,15 @@ services:
     volumes:
       - ollama-data:/root/.ollama
 
+# Project-scoped volume names on purpose: with no fixed global names,
+# `docker compose -p <project>` (or COMPOSE_PROJECT_NAME) yields fully
+# independent containers / networks / volumes with no extra overrides.
+# Default project `sentinelflow` (top-level `name:` above) keeps the same
+# single-instance behaviour; its data volume is `sentinelflow_pg-data`.
+# Upgrading a pre-RC2 checkout? Copy your old data once — see
+# docs/TROUBLESHOOTING.md ("Data persistence").
 volumes:
   pg-data:
     driver: local
-    name: sentinelflow-pg-data
   ollama-data:
     driver: local
-    name: sentinelflow-ollama-data

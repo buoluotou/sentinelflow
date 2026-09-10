@@ -75,7 +75,7 @@ curl http://localhost:8000/api/v1/dashboard/summary     # metrics reflect the ru
 
 ## 5. Backup
 
-- PostgreSQL: `docker exec sf-postgres pg_dump -U <user> <db> > backup.sql`
+- PostgreSQL: `docker compose exec -T postgres pg_dump -U <user> <db> > backup.sql`
 - SQLite: copy the `.db` file while the backend is stopped.
 
 ## Security Hardening Checklist
