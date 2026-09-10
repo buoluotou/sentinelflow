@@ -13,6 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.core.ids import uuid7
 from app.models.types import JSONVariant
 
 # Execution vocabulary (Phase 3.1, frozen — design doc
@@ -109,7 +110,11 @@ class ExecutionLog(Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # RC2 / H-2: insert-ordered UUIDv7 — the deterministic tie-break of the
+    # frozen (created_at DESC, id DESC) derived-state ordering. Strictly
+    # increasing within the writing process (one writer per chain), so a
+    # created_at tie resolves to the true insertion order.
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
     # Caller-supplied idempotency key AND execution identity (design §4):
     # the first request binds it to approval_id / direction / server-side
@@ -164,6 +169,10 @@ class ExecutionLog(Base):
     # Server clock only (constraint 8 + design precedent of reviewed_at):
     # the audit trail cannot be backdated from the client. Append-only rows
     # never update, so there is deliberately no updated_at.
+    # RC2 / H-2: stamped by the DATABASE at INSERT — never by a Python
+    # process. SQLite keeps CURRENT_TIMESTAMP; PostgreSQL production uses
+    # clock_timestamp() (migration 0014). Ties are broken by the insert-ordered
+    # uuid7 id, so chain ordering is deterministic on every dialect.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )

@@ -305,9 +305,14 @@ class TestExecuteEndpoint:
         assert body["target"] == "203.0.113.10"
         assert len(body["history"]) == 3
         assert body["history"][0]["detail"]["comment"] == "contain the brute force"
-        # timestamps strictly increasing within the chain (frozen clause)
+        # H-2 frozen clause: database-stamped times are non-decreasing (ties
+        # allowed) and the chain order is deterministic — resolved by the
+        # insert-ordered uuid7 id, never a random uuid4 lottery.
         stamps = [row["created_at"] for row in body["history"]]
-        assert stamps == sorted(stamps) and len(set(stamps)) == 3
+        assert stamps == sorted(stamps)
+        ids = [row["id"] for row in body["history"]]
+        assert len(set(ids)) == 3
+        assert ids == sorted(ids)  # uuid7: ascending history == insertion order
         assert len(all_rows(db_session)) == 3
 
     def test_201_guard_rejected_rejected_approval(self, client, db_session, auth):
@@ -731,13 +736,13 @@ class TestTokenSecurityAndCommit:
 
 
 # --------------------------------------------------------------------------
-# Frozen clause (3.1.6 acceptance): high-water mark encapsulation
+# Frozen clause (3.1.6 acceptance; RC2 / H-2 re-implementation): audit stamping
 # --------------------------------------------------------------------------
-class TestHighWaterMarkDiscipline:
+class TestAuditStampingDiscipline:
     def test_append_never_accepts_client_created_at(self):
-        """_append() is the ONLY stamping site: no created_at parameter,
-        so no caller — today or future — can supply or roll back the
-        audit clock."""
+        """_append() has no created_at parameter — no caller — today or
+        future — can supply or roll back the audit clock (the DATABASE
+        stamps it at INSERT since RC2 / H-2)."""
         from app.services.executions.service import _append
 
         assert "created_at" not in inspect.signature(_append).parameters
@@ -750,3 +755,12 @@ class TestHighWaterMarkDiscipline:
         for entrypoint in ("execute_response", "compensate_response"):
             source = inspect.getsource(getattr(service_module, entrypoint))
             assert "created_at" not in source
+
+    def test_no_process_global_audit_clock_state_remains(self):
+        """RC2 / H-2 structural guard: the process-global high-water stamp and
+        its helper are GONE — audit ordering is database-level (created_at
+        from the DB + the insert-ordered uuid7 id)."""
+        from app.services.executions import service as service_module
+
+        assert not hasattr(service_module, "_LAST_AUDIT_STAMP")
+        assert not hasattr(service_module, "_next_audit_timestamp")

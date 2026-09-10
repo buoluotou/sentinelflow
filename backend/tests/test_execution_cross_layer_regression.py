@@ -197,12 +197,17 @@ def detail(client, execution_id):
 
 
 def assert_chain_rows(db_session, execution_id, decisions):
-    """DB rows == exactly the expected chain, in order, with strictly
-    increasing audit stamps (the high-water mark clause)."""
+    """DB rows == exactly the expected chain, in order, with non-decreasing
+    database-stamped audit times and strictly increasing insert-ordered ids
+    (RC2 / H-2: the DATABASE stamps created_at; the uuid7 id is the
+    deterministic tie-break, so a same-timestamp tie can never reorder a
+    chain)."""
     rows = rows_for(db_session, execution_id)
     assert [row.decision for row in rows] == decisions
     stamps = [row.created_at for row in rows]
-    assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
+    assert stamps == sorted(stamps)
+    ids = [row.id for row in rows]
+    assert ids == sorted(ids) and len(set(ids)) == len(ids)
     return rows
 
 

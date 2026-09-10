@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   keeps its transaction valid — never a duplicate case, never a poisoned
   transaction). Frozen rules preserved: score ≥ 70 auto-creates; the case
   snapshot copies the risk score.
+- **RC2 / H-2 — audit ordering without process-global clock state**: the audit
+  timestamp no longer comes from a process-global high-water mark
+  (`_LAST_AUDIT_STAMP` was neither thread-safe nor multi-worker correct, and
+  the frozen `(created_at DESC, id DESC)` tie-break degraded to a random
+  uuid4 lottery on ties). `created_at` is now stamped by the DATABASE at
+  INSERT (PostgreSQL production: `clock_timestamp()` via migration 0014 —
+  the statement's real time, never transaction-start `now()`; SQLite keeps
+  `CURRENT_TIMESTAMP`) and `execution_log.id` is minted by an insert-ordered
+  UUIDv7 generator (`app.core.ids.uuid7`), so the sanctioned
+  `(created_at, id)` tie-break reproduces the true insertion order — through
+  same-millisecond bursts and clamped backward clock steps. One chain is
+  written by exactly one process, so per-chain ordering never needs
+  cross-process coordination; no caller ever passes or fabricates a
+  timestamp.
 
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and

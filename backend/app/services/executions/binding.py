@@ -51,8 +51,9 @@ contributor capability is a SEPARATE ``runtime_checkable`` Protocol
 platform log state, never an adapter product (D8). The ``created_at`` audit-stamp
 frozen clause is UNTOUCHED: ``dispatch_started_at`` is a server-clock FACT recorded
 in ``detail`` (the same precedent as the policy-evaluation time ``service.py``
-already computes with ``datetime.now(timezone.utc)``), NOT the ``created_at`` column,
-which ``_append`` still stamps exclusively through the high-water mark.
+already computes with ``datetime.now(timezone.utc)``), NOT the ``created_at`` column —
+which is stamped by the DATABASE at INSERT since RC2 / H-2 (see ``service.py``'s
+frozen-clause note).
 """
 from __future__ import annotations
 

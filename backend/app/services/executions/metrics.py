@@ -37,8 +37,8 @@ Rate definitions (frozen):
 Rates are None (undefined) whenever their denominator is zero — the
 empty dataset is explicit, never a fake 0% or 100%.
 
-Latency is derived from the log's frozen server-stamped created_at
-(high-water mark clause): for chains that reached a terminal executor
+Latency is derived from the log's frozen database-stamped created_at (the
+frozen-clause note in service.py): for chains that reached a terminal executor
 outcome it is ``terminal.created_at - dispatched.created_at`` — the
 time the adapter actually spent. Chains rejected before dispatch have
 no adapter time and are excluded.

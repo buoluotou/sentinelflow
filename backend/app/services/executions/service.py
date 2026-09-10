@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Sequence
 
 from sqlalchemy import select
@@ -103,32 +103,33 @@ HTTP_CONFLICT = 409
 HTTP_NOT_FOUND = 404
 HTTP_SERVICE_UNAVAILABLE = 503
 
-#: High-water mark for audit timestamps. One business transaction writes
-#: the whole chain, and (a) SQLite's CURRENT_TIMESTAMP is second-precision
-#: while PostgreSQL's now() is transaction-time — both would leave every
-#: row of a chain on the SAME timestamp; (b) the OS clock itself can tie
-#: (Windows ~15ms resolution) or even regress. Either effect would reduce
-#: the frozen derived-state rule (created_at DESC, id DESC) to a RANDOM
-#: uuid4 tie-break. The high-water mark guarantees strictly increasing
-#: server-clock stamps row by row — still server time only, never client
-#: input (constraint 8; same precedent as approval reviewed_at).
+#: FROZEN CLAUSE (3.1.6 acceptance review; RC2 / H-2 re-implementation):
+#: created_at must be a SERVER/database-generated timestamp — the client may
+#: never supply or roll it back — and the frozen derived-state ordering
+#: ``created_at DESC, id DESC`` must stay deterministic on every write path.
 #:
-#: FROZEN CLAUSE (3.1.6 acceptance review): created_at must be a
-#: server-generated, strictly monotonically increasing timestamp within a
-#: single execution chain; the client may never supply or roll it back.
-#: Implementation discipline: the stamping lives ENTIRELY inside _append()
-#: — no caller passes created_at and no caller manufactures timestamps;
-#: every future Execution Service writes rows exclusively via _append().
-_LAST_AUDIT_STAMP: datetime | None = None
-
-
-def _next_audit_timestamp() -> datetime:
-    global _LAST_AUDIT_STAMP
-    candidate = datetime.now(timezone.utc)
-    if _LAST_AUDIT_STAMP is not None and candidate <= _LAST_AUDIT_STAMP:
-        candidate = _LAST_AUDIT_STAMP + timedelta(microseconds=1)
-    _LAST_AUDIT_STAMP = candidate
-    return candidate
+#: RC2 / H-2: the pre-RC2 process-global high-water stamp is GONE. It was
+#: neither thread-safe (a read-modify-write race could hand two rows the SAME
+#: stamp) nor correct across workers (each process saw only its own history),
+#: so ordering correctness silently depended on "one process, no concurrency".
+#: Ordering is now DATABASE-LEVEL:
+#:   * ``created_at`` comes from the DATABASE at INSERT (SQLite:
+#:     CURRENT_TIMESTAMP; PostgreSQL production: ``clock_timestamp()`` —
+#:     per-statement real time set by migration 0014, never transaction-start
+#:     ``now()``), so no caller and no process manufactures timestamps;
+#:   * ``id`` is minted by :func:`app.core.ids.uuid7` — a time-ordered UUIDv7
+#:     that is strictly increasing within the writing process even for a
+#:     same-millisecond burst (and clamps a backward wall-clock step), so the
+#:     sanctioned ``(created_at, id)`` tie-break IS the true insertion order,
+#:     never a random-uuid lottery.
+#: A chain is written by exactly one process (one request owns the one
+#: execution_id transaction; duplicates are refused by the frozen unique
+#: indexes), so per-chain ordering never needs cross-process coordination;
+#: created_at ties — ubiquitous on SQLite's second-precision timestamps — are
+#: resolved by the insert-ordered id.
+#: Implementation discipline is UNCHANGED: every Execution Service row is
+#: written exclusively via _append(); no caller passes or fabricates a
+#: timestamp.
 
 
 #: Original states eligible for compensation — a compensation undoes an
@@ -299,10 +300,10 @@ def _append(
 ) -> ExecutionLog:
     """Append one audit row and flush (add-only, never commit).
 
-    ``created_at`` is stamped HERE with the server clock through the
-    high-water mark above instead of the CURRENT_TIMESTAMP server default
-    — see _next_audit_timestamp for why chain rows need strictly
-    increasing stamps.
+    ``created_at`` is NOT passed: the DATABASE stamps it at INSERT (RC2 / H-2
+    — see the frozen-clause note above). Chain ordering is guaranteed by the
+    database timestamp plus the insert-ordered uuid7 ``id`` (the sanctioned
+    (created_at, id) tie-break), never by process-global clock state.
 
     3.2.2 audit gate: EVERY detail passes the secret-boundary *** gate
     at this single write point — a credential can never reach
@@ -317,7 +318,6 @@ def _append(
         operator=operator,
         detail=redact_detail(detail),
         compensates_execution_id=compensates_execution_id,
-        created_at=_next_audit_timestamp(),
     )
     session.add(row)
     return row
@@ -590,8 +590,9 @@ def execute_response(
     # M4-A forward dispatch binding (Amendment §12.2 A1-revised). dispatch_started_at
     # is a SERVER-CLOCK fact recorded in the detail — the SAME precedent as the
     # policy-evaluation time computed above — NOT the audit-row timestamp column,
-    # which _append still stamps exclusively through the high-water mark (the frozen
-    # stamping clause stays intact). Contributor facts come ONLY from an adapter that
+    # which the DATABASE stamps at INSERT since RC2 / H-2 (the frozen stamping
+    # clause now lives in the frozen-clause note above). Contributor facts come
+    # ONLY from an adapter that
     # opts into the DispatchBindingContributor protocol (the offline mock does not)
     # and are merged through binding.py's explicit whitelist.
     dispatch_started_at = datetime.now(timezone.utc)
