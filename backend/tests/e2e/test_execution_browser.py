@@ -1061,8 +1061,40 @@ def _migration_facts(db_url: str) -> dict:
         if "execution_log" in tables
         else set()
     )
+    dispatch_indexes = (
+        {ix["name"] for ix in inspector.get_indexes("dispatch_attempt")}
+        if "dispatch_attempt" in tables
+        else set()
+    )
     engine.dispose()
-    return {"tables": tables, "versions": versions, "indexes": indexes}
+    return {
+        "tables": tables,
+        "versions": versions,
+        "indexes": indexes,
+        "dispatch_attempt_indexes": dispatch_indexes,
+    }
+
+
+def _alembic_current_head() -> str:
+    """The CURRENT Alembic head revision, read DYNAMICALLY from the migration script
+    directory. M4-GR: this E2E must NEVER hardcode a version literal (0009 / 0011 /
+    0012 / ...) — it rots the moment a new migration lands, which is exactly how the
+    pre-existing ``assert facts["versions"] == ["0009"]`` broke once head advanced to
+    0012 (the Final Review's disclosed e2e failure). ``script_location`` is pinned to
+    the absolute backend migrations dir so the read is independent of the caller's cwd."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    # Alembic emits a benign DeprecationWarning about a missing ``path_separator`` when a
+    # legacy alembic.ini is read in-process; it does not affect the head revision, so
+    # silence it to keep this explicit e2e run's warning summary clean.
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return ScriptDirectory.from_config(cfg).get_current_head()
 
 
 PARTIAL_UNIQUE_INDEXES = {
@@ -1071,10 +1103,23 @@ PARTIAL_UNIQUE_INDEXES = {
     "ux_execution_log_compensates_requested",
 }
 
+#: The head schema is the DURABLE dispatch schema (M4-F 0011 + M4-G 0012): the
+#: append-only ``dispatch_attempt`` table carries THREE unique reservations — one per
+#: attempt_id, one per execution_id, and (M4-G §1) one per approval_id. Asserting these
+#: at ``upgrade head`` verifies the FINAL schema/index invariant instead of a version
+#: string that silently rots on the next migration.
+DURABLE_DISPATCH_UNIQUE_INDEXES = {
+    "ux_dispatch_attempt_attempt_id",
+    "ux_dispatch_attempt_execution_id",
+    "ux_dispatch_attempt_approval_id",
+}
+
 
 def test_k_migration_up_down_base_up(tmp_path):
-    """0009 applies cleanly, downgrades to 0008 and base without residue,
-    and upgrade head rebuilds the exact same execution_log shape."""
+    """0009 applies cleanly, downgrades to 0008 and base without residue, and
+    ``upgrade head`` rebuilds the FINAL schema — verified against the CURRENT Alembic
+    head (read dynamically, never a hardcoded version literal) plus the durable
+    execution_log + dispatch_attempt index invariants (M4-GR)."""
     db_path = tmp_path / "migration_e2e.db"
     db_url = f"sqlite:///{db_path.as_posix()}"
     env = _clean_env(
@@ -1111,6 +1156,13 @@ def test_k_migration_up_down_base_up(tmp_path):
 
     alembic("upgrade", "head")
     facts = _migration_facts(db_url)
-    assert facts["versions"] == ["0009"]
+    # M4-GR: compare against the DYNAMICALLY-read current head, never a hardcoded
+    # ["0009"] / ["0012"] literal that rots on the next migration.
+    assert facts["versions"] == [_alembic_current_head()]
+    # Verify the FINAL schema/index INVARIANTS, not a version number: the durable
+    # execution_log partial-unique indexes AND the M4-F/M4-G dispatch_attempt unique
+    # reservations (attempt_id / execution_id / approval_id) all exist at head.
     assert "execution_log" in facts["tables"]
     assert PARTIAL_UNIQUE_INDEXES <= facts["indexes"]
+    assert "dispatch_attempt" in facts["tables"]
+    assert DURABLE_DISPATCH_UNIQUE_INDEXES <= facts["dispatch_attempt_indexes"]
