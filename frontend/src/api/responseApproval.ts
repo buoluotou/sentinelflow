@@ -6,7 +6,11 @@
  * never sent (the server stamps it; extra fields are rejected upstream).
  */
 import { api } from './client'
-import type { ApprovalDecision, PendingApproval } from '../types/responseApproval'
+import type {
+  AIResponseApproval,
+  ApprovalDecision,
+  PendingApproval,
+} from '../types/responseApproval'
 
 /** The Approval Queue: pending recommendations, oldest first (backend
  * ordering). 200 + [] is the normal "nothing to review" state. */
@@ -14,18 +18,26 @@ export function getApprovalQueue(): Promise<PendingApproval[]> {
   return api.get<PendingApproval[]>('/approvals')
 }
 
-/** Record a human APPROVE decision (201). Records only — executes nothing. */
+/** Record a human APPROVE decision (201). Records only — executes nothing.
+ * Resolves to the persisted decision (backend AIResponseApprovalRead). */
 export function approveRecommendation(
   recommendationId: string,
   decision: ApprovalDecision,
-): Promise<unknown> {
-  return api.post(`/response-recommendations/${recommendationId}/approve`, decision)
+): Promise<AIResponseApproval> {
+  return api.post<AIResponseApproval>(
+    `/response-recommendations/${recommendationId}/approve`,
+    decision,
+  )
 }
 
-/** Record a human REJECT decision (201). Records only — executes nothing. */
+/** Record a human REJECT decision (201). Records only — executes nothing.
+ * Resolves to the persisted decision (backend AIResponseApprovalRead). */
 export function rejectRecommendation(
   recommendationId: string,
   decision: ApprovalDecision,
-): Promise<unknown> {
-  return api.post(`/response-recommendations/${recommendationId}/reject`, decision)
+): Promise<AIResponseApproval> {
+  return api.post<AIResponseApproval>(
+    `/response-recommendations/${recommendationId}/reject`,
+    decision,
+  )
 }

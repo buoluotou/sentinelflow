@@ -189,9 +189,10 @@ function ExecuteModal({ approvalId, onCancel, onExecuted }: ExecuteModalProps) {
       </div>
       {error && <ErrorBanner message={error} />}
       <p className="muted" style={{ marginTop: 4, marginBottom: 8 }}>
-        The token is held in memory only and discarded when this dialog closes.
-        The server decides whether execution is allowed — Token, Guard, Approval,
-        Policy and Executor.
+        The Operator name is display-only — the recorded identity is bound to the
+        token server-side (RBAC), never to this field. The token is held in memory
+        only and discarded when this dialog closes. The server decides whether
+        execution is allowed — Token, Guard, Approval, Policy and Executor.
       </p>
       <div className="toolbar" style={{ marginBottom: 0 }}>
         <button className="btn" onClick={onCancel} disabled={submitting}>

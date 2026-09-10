@@ -16,9 +16,16 @@ export class ApiError extends Error {
   }
 }
 
+/** Single authoritative API base URL. Empty (the default) yields same-origin
+ * relative calls: dev uses the vite proxy, prod uses a reverse proxy (see the
+ * compose nginx conf). Set VITE_API_BASE_URL to an absolute origin (e.g.
+ * http://localhost:8000) ONLY when the frontend is served from a different
+ * host than the backend. This is the one and only place the variable is read. */
+const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? ''
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const { headers, ...rest } = init ?? {}
-  const res = await fetch(`/api/v1${path}`, {
+  const res = await fetch(`${API_BASE_URL}/api/v1${path}`, {
     headers: { 'Content-Type': 'application/json', ...(headers ?? {}) },
     ...rest,
   })
