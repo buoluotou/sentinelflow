@@ -92,6 +92,7 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 - [ ] Keep PostgreSQL unexposed (no public port mapping; the compose file binds to the host for local use only).
 - [ ] Set `EXECUTION_TOKEN` to a strong random value before enabling any real execution adapter; an empty token rejects every write with `401` (fail-closed). Prefer `OPERATORS_JSON` (v1.3.0) to bind distinct operators and roles — only `executor` / `admin` can dispatch (`403` otherwise); keep operator tokens out of logs, tickets and screenshots.
 - [ ] Keep `EXECUTION_ADAPTER=mock` unless you have explicitly configured adapter credentials and workflow mappings. Real adapters require explicit `.env` configuration — the platform never falls back to a real adapter silently.
+- [ ] **RC2 hardening (shipped by default)**: the compose stack runs `postgres` / `migrate` / `backend` / `frontend` with `read_only: true`, scoped `tmpfs` mounts and `no-new-privileges:true`; the backend image runs as a non-root user (uid 10001). Keep these settings when you copy the compose into a production overlay. `DEPLOYMENT_MODE=production` additionally refuses to BOOT on unsafe settings (see README "Run modes").
 - [ ] If you enable `EXECUTION_POLICY_ENABLED=true`, verify the window and per-action risk thresholds match your change-management hours; a malformed policy configuration refuses with `503` and rolls back — never a silent allow.
 
 ## Upgrading
@@ -102,3 +103,30 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 4. Restart the backend
 
 Migrations are additive and reversible (full downgrade support), `0001–0013`.
+
+## Resource guidance (RC2 §18)
+
+The full Demo stack (PostgreSQL + one-shot migrate + backend + frontend)
+validated on a 6.2 GiB Kali host runs comfortably below ~1.5 GiB RSS during
+demo traffic. Recommended minimums for an evaluation host:
+
+- **CPU**: 2 cores (a cold image build benefits from 4+)
+- **RAM**: 4 GiB (PostgreSQL ≈512 MiB, backend ≈300 MiB, frontend ≈32 MiB,
+  plus build headroom)
+- **Disk**: ≈5 GiB (images + BuildKit cache + the `pg-data` volume)
+
+For production sizing, set explicit limits in YOUR overlay — the shipped
+compose deliberately keeps the demo unrestricted so a small machine can run
+it too:
+
+```yaml
+services:
+  backend:
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 1g }
+  postgres:
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2g }
+```

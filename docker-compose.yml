@@ -55,6 +55,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # RC2 §18 production hardening: immutable root filesystem + tmpfs for
+    # exactly the paths the entrypoint legitimately needs (socket dir, /tmp)
+    # + no privilege escalation. Data lives in the pg-data volume only.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+    security_opt:
+      - no-new-privileges:true
 
   # One-shot migration: runs alembic to head against the healthy database, then
   # exits. A single migrate job means multiple backend replicas can never race
@@ -74,6 +83,12 @@ services:
       # Service-name host (postgres), built from the same creds as the DB.
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinelflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinelflow}
     restart: "no"
+    # RC2 §18: one-shot alembic runner — immutable rootfs, tmpfs /tmp only.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
 
   backend:
     build:
@@ -106,6 +121,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    # RC2 §18 production hardening: the backend is stateless (all state lives
+    # in Postgres), so the root filesystem is immutable; /tmp rides tmpfs.
+    # The image already runs as a non-root user (uid 10001); no privileged
+    # mode, no host docker socket, no host mounts.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
 
   frontend:
     build: ./frontend
@@ -116,6 +140,16 @@ services:
         condition: service_healthy
     ports:
       - "${BIND_HOST:-127.0.0.1}:${FRONTEND_PORT:-5173}:80"
+    # RC2 §18 production hardening: static content is baked into the image, so
+    # the root filesystem is immutable; nginx's runtime dirs (pid + caches)
+    # ride tmpfs. No privileged mode, no host mounts.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
 
   # --- AI Local Mode (OPTIONAL; enable with `--profile ollama`) --------------
   # Ollama is never required for Demo Mode. To use it: start this profile, then

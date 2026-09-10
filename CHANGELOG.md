@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`OperatorRole.can_approve` / `can_reconcile` / `can_admin` name the
   permissions explicitly).
 
+### Security
+- **RC2 / §18 — Docker hardening shipped by default**: `postgres` / `migrate`
+  / `backend` / `frontend` now run with `read_only: true`, scoped `tmpfs`
+  mounts and `no-new-privileges:true` (the backend image was already
+  non-root, uid 10001); no privileged mode, no host docker socket, no host
+  mounts. Verified end-to-end on a throwaway project: all four containers
+  harden-on (`ReadonlyRootfs=true`) and the full 18-step smoke passes 18/18.
+  Resource guidance (recommended minimums + optional production limits) is
+  documented in docs/deployment.md.
+
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and
   the global volume names from `docker-compose.yml`; `docker compose -p <project>`
