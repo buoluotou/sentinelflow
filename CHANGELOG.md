@@ -6,6 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **RC2 / C-1 — Durable Compensation (production debt fix)**: the reverse
+  (compensation) dispatch now receives the same durable protection as forward
+  dispatch. A new append-only `compensation_attempt` table (migration 0013)
+  commits the immutable reverse binding on its OWN transaction BEFORE the
+  external compensation request — with a UNIQUE reservation on
+  `original_execution_id` (one durable compensation per original execution), a
+  UNIQUE `execution_id` replay guard, and `compensation_attempt_id` as the
+  terminal row's correlation handle (`detail["compensation_attempt_id"]`).
+  Persistence failure means ZERO external call; timeout / lost response /
+  crash / caller rollback / terminal-write failure keep the attempt and NEVER
+  auto-retry (manual read-only reconciliation only, via
+  `find_unreconciled_compensations` / `classify_compensation_recovery`).
+  Recognized real adapters now fail closed (503) without a durable
+  compensation store — the reverse mirror of the M4-G §2 gate (the offline
+  mock stays exempt). `EXECUTION_COMPENSATION_EXPERIMENTAL` is RETAINED by
+  design pending real-lab validation of the reverse path.
+
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and
   the global volume names from `docker-compose.yml`; `docker compose -p <project>`

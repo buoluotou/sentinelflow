@@ -88,6 +88,13 @@ from app.services.executions.state import derive_execution_state
 
 if TYPE_CHECKING:  # annotation-only: the Service depends on record(), not the class
     from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
+from app.services.executions.compensation_binding import (
+    COMPENSATION_REFERENCE_KEY,
+    build_compensation_binding,
+)
+from app.services.executions.durable_compensation import (
+    DurableCompensationAttemptStore,
+)
 
 #: Conflict family -> HTTP status the future API layer maps (frozen here
 #: so 3.1.7 never re-shapes the Service exceptions). 401/422 stay in the
@@ -215,6 +222,16 @@ _CONFLICT_MARKERS = {
     # the SAME typed 409 the G3 pre-check raises (D14 last line, ahead of the wire).
     "dispatch_attempt.approval_id": ApprovalAlreadyExecuted,
     "ux_dispatch_attempt_approval_id": ApprovalAlreadyExecuted,
+    # RC2 / C-1: the durable pre-compensation attempt carries its OWN unique
+    # indexes — a duplicate/concurrent compensation for the SAME original
+    # execution is refused at the independent commit BEFORE the reverse adapter
+    # runs (the C-1 reservation), and a duplicate compensation execution_id is
+    # refused the same way; both map to the SAME typed 409 the pre-check raises
+    # (D14 last line, ahead of the wire).
+    "compensation_attempt.original_execution_id": ExecutionAlreadyCompensated,
+    "ux_compensation_attempt_original_execution_id": ExecutionAlreadyCompensated,
+    "compensation_attempt.execution_id": ExecutionIdAlreadyBound,
+    "ux_compensation_attempt_execution_id": ExecutionIdAlreadyBound,
 }
 
 
@@ -328,6 +345,32 @@ def _rows_for_approval(session: Session, approval_id: uuid.UUID) -> list[Executi
             .order_by(ExecutionLog.created_at.asc(), ExecutionLog.id.asc())
         )
     )
+
+
+def _original_dispatch_attempt_id(
+    original_rows: Sequence[ExecutionLog],
+) -> uuid.UUID | None:
+    """The compensated chain's forward durable-attempt reference, or ``None``.
+
+    ``_rows_for_execution`` returns the chain NEWEST-FIRST; the first
+    succeeded/failed row is the chain's terminal, which carries the forward
+    binding reference (``detail[TERMINAL_REFERENCE_KEY]``) when the original
+    ran through a durable store. Old history / store-less mock runs carry no
+    reference and yield ``None`` — an honest UNKNOWN, never back-filled. A
+    malformed reference is treated exactly like an absent one (fail-closed).
+    """
+    for row in original_rows:
+        if row.decision not in ("succeeded", "failed"):
+            continue
+        detail = row.detail if isinstance(row.detail, dict) else {}
+        reference = detail.get(TERMINAL_REFERENCE_KEY)
+        if not isinstance(reference, str):
+            return None
+        try:
+            return uuid.UUID(reference)
+        except (ValueError, AttributeError, TypeError):
+            return None
+    return None
 
 
 def _resolve_snapshot(recommendation) -> tuple[str, str]:
@@ -661,11 +704,23 @@ def compensate_response(
     operator: str,
     executor: ResponseExecutor,
     comment: str | None = None,
+    compensation_attempt_store: DurableCompensationAttemptStore | None = None,
 ) -> ExecutionResult:
     """Run one complete compensation chain (design §9): a FRESH
     execution_id undoing a settled forward execution; approval_id, action
     and target are inherited SERVER-SIDE from the original rows — the
-    client supplies nothing but Intent identity."""
+    client supplies nothing but Intent identity.
+
+    RC2 / C-1: ``compensation_attempt_store``, when provided, durably commits
+    the immutable reverse binding on an INDEPENDENT transaction BEFORE the
+    external compensation request (surviving a caller rollback / terminal-write
+    failure / crash — the reverse mirror of the M4-F §1 fix). It does NOT
+    breach the frozen "the Service NEVER calls commit()" clause — that protects
+    the CALLER's business transaction; the store owns a SEPARATE session. A
+    persistence failure or a duplicate original_execution_id means the adapter
+    is NEVER called. A recognized real adapter WITHOUT a store refuses
+    fail-closed before the wire call (the reverse mirror of the M4-G §2 gate);
+    the offline mock stays exempt (no external call)."""
     original_rows = _rows_for_execution(session, compensates_execution_id)
     if not original_rows:
         raise ExecutionNotFound(
@@ -744,12 +799,68 @@ def compensate_response(
         session.flush()
         return _result(_rows_for_execution(session, execution_id))
 
+    # RC2 / C-1 — FAIL-CLOSED DURABLE-STORE GATE (the reverse mirror of M4-G §2).
+    # A recognized real external adapter (shuffle / wazuh) whose compensation is
+    # actually dispatchable MUST NOT degrade to the flush-only pre-C-1 path:
+    # refuse BEFORE the reverse external request rather than fire a compensation
+    # whose intent was never durably committed. This is a server-side wiring
+    # fault (503), not a business rejection — no dispatch fact is produced and
+    # the adapter is never called. The offline mock is exempt (DryRun, no
+    # external call); TheHive never reaches this point (supports_compensation()
+    # is False -> the capability check above already ended the chain).
+    if (
+        executor.name in RECOGNIZED_ADAPTER_NAMES
+        and compensation_attempt_store is None
+    ):
+        raise DurableStoreRequired(
+            f"Executor '{executor.name}' is a recognized external adapter and "
+            "requires a durable compensation-attempt store before any external "
+            "reverse request; none was provided (store=None). Refusing to "
+            "degrade to the flush-only compensation path (RC2 C-1 fail-closed)."
+        )
+
     dispatch = ExecutionDispatch(
         execution_id=execution_id,
         action=action,
         target=target,
         approval_id=approval_id,
     )
+    # RC2 / C-1 — DURABLE PRE-COMPENSATION COMMIT (the reverse mirror of M4-F §1).
+    # Before ANY external reverse request, commit the compensation intent +
+    # reverse binding on an INDEPENDENT transaction (a separate Session /
+    # connection) so it SURVIVES a caller rollback, a terminal-write failure or
+    # a process crash. A persistence failure — or a duplicate
+    # original_execution_id (the durable one-compensation-per-original
+    # reservation) — means the adapter is NEVER called: the duplicate maps to
+    # the SAME typed 409 the pre-check raises; any other failure propagates and
+    # aborts before the wire call.
+    prepared_at = datetime.now(timezone.utc)
+    dispatch_started_at = datetime.now(timezone.utc)
+    contributor_facts = (
+        executor.dispatch_binding_facts(dispatch)
+        if isinstance(executor, DispatchBindingContributor)
+        else None
+    )
+    binding = build_compensation_binding(
+        execution_id=execution_id,
+        original_execution_id=compensates_execution_id,
+        original_dispatch_attempt_id=_original_dispatch_attempt_id(original_rows),
+        approval_id=approval_id,
+        adapter=executor.name,
+        action=action,
+        target=target,
+        operator=operator,
+        reason=comment,
+        original_outcome_state=derived,
+        prepared_at=prepared_at,
+        dispatch_started_at=dispatch_started_at,
+        contributor_facts=contributor_facts,
+    )
+    if compensation_attempt_store is not None:
+        try:
+            compensation_attempt_store.record(binding)
+        except IntegrityError as exc:
+            _translate_integrity_error(exc, session)
     violation_message: str | None = None
     try:
         outcome = parse_execution_outcome(executor.compensate(dispatch))
@@ -771,6 +882,12 @@ def compensate_response(
             "violation": violation_message,
             "raw_response": None,
         }
+    # RC2 / C-1: the terminal compensation row REFERENCES the ONE durable
+    # pre-compensation attempt (compensation_attempt_id) so success / timeout /
+    # connection failure / HTTP error / response loss all stay bound to the
+    # same immutable attempt identity — the binding is never re-written (the
+    # reverse mirror of M4-A's terminal reference).
+    detail[COMPENSATION_REFERENCE_KEY] = binding.compensation_attempt_id
     _append(
         session,
         execution_id=execution_id,

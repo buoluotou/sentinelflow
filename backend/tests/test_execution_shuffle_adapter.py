@@ -537,13 +537,18 @@ class TestServiceChain:
         )
         from app.services.executions.service import compensate_response
 
+        store = FakeStore()
         compensate_response(
             db_session,
             compensates_execution_id=forward.execution_id,
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            compensation_attempt_store=store,
         )
+        # RC2 / C-1: the durable pre-compensation binding was recorded.
+        assert len(store.recorded) == 1
+        assert store.recorded[0].original_execution_id == str(forward.execution_id)
         assert stub.calls[-1]["url"].endswith("/wf-reverse-block/execute")
         assert stub.calls[-1]["body"]["operation"] == "compensate"
 

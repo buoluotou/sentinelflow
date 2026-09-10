@@ -12,7 +12,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.api.v1.response_execution import get_dispatch_attempt_store
+from app.api.v1.response_execution import (
+    get_compensation_attempt_store,
+    get_dispatch_attempt_store,
+)
 from app.core.database import Base, get_db
 from app.main import app
 from app.services.executions.operators import reset_operator_registry
@@ -99,6 +102,11 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
     # so the existing endpoint journeys stay byte-identical; dedicated file-backed
     # tests (test_dispatch_endpoint_durability) re-override with the REAL store.
     app.dependency_overrides[get_dispatch_attempt_store] = lambda: None
+    # RC2 / C-1: the reverse seam follows the same rule — the in-memory
+    # StaticPool harness shares ONE connection, so the client fixture keeps the
+    # pre-C-1 endpoint journeys byte-identical; dedicated file-backed tests
+    # drive the REAL compensation store.
+    app.dependency_overrides[get_compensation_attempt_store] = lambda: None
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

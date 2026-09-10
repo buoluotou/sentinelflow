@@ -645,13 +645,19 @@ class TestEndToEnd:
         assert forward.final_decision == "succeeded"
         from app.services.executions.service import compensate_response
 
+        store = FakeStore()
         compensation = compensate_response(
             db_session,
             compensates_execution_id=forward.execution_id,
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            compensation_attempt_store=store,
         )
+        # RC2 / C-1: the durable pre-compensation binding was recorded and
+        # REFERENCES the compensated execution.
+        assert len(store.recorded) == 1
+        assert store.recorded[0].original_execution_id == str(forward.execution_id)
         assert compensation.final_decision == "compensation_succeeded"
         assert stub.calls[-1]["url"] == (
             "http://stub/api/v1/agents/agent001/active-response"
@@ -679,13 +685,19 @@ class TestEndToEnd:
         assert forward.final_decision == "succeeded"
         from app.services.executions.service import compensate_response
 
+        store = FakeStore()
         compensation = compensate_response(
             db_session,
             compensates_execution_id=forward.execution_id,
             execution_id=uuid.uuid4(),
             operator="ops-1",
             executor=executor,
+            compensation_attempt_store=store,
         )
+        # RC2 / C-1: the durable pre-compensation binding was recorded and
+        # REFERENCES the compensated execution.
+        assert len(store.recorded) == 1
+        assert store.recorded[0].original_execution_id == str(forward.execution_id)
         assert compensation.final_decision == "compensation_succeeded"
         assert stub.calls[-1]["body"]["command"] == "unblock-source-ip"
 

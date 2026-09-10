@@ -9,6 +9,7 @@ from app.models.ai_risk_summary import AIRiskSummary
 from app.models.alert import Alert
 from app.models.alert_event import AlertEvent
 from app.models.alert_group import AlertGroup
+from app.models.compensation_attempt import CompensationAttempt
 from app.models.dispatch_attempt import DispatchAttempt
 from app.models.event_risk import EventRisk
 from app.models.execution_log import (
@@ -38,6 +39,7 @@ __all__ = [
     "AlertEvent",
     "AlertGroup",
     "COMPENSATE_DECISIONS",
+    "CompensationAttempt",
     "DispatchAttempt",
     "EXECUTE_DECISIONS",
     "EXECUTION_DECISIONS",

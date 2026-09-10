@@ -141,13 +141,18 @@ def validate_adapter_config(settings: Settings) -> None:
         if key.endswith("_BASE_URL"):
             validate_base_url(name, str(getattr(settings, key, "") or ""))
     # RC1 / C-1 fail-closed gate: REAL-adapter compensation is EXPERIMENTAL and
-    # NOT production-certified — the reverse (compensation) dispatch lacks the
-    # forward path's durable pre-dispatch reservation (M4-F §1 / M4-G §2). A
-    # configured reverse workflow therefore requires the explicit
+    # NOT production-certified. The original C-1 debt — the reverse dispatch
+    # lacked the forward path's durable pre-dispatch reservation — is FIXED in
+    # RC2 (``compensation_attempt``, migration 0013: the reverse binding
+    # commits on its OWN transaction BEFORE the external request, with a
+    # durable one-compensation-per-original reservation). This gate is
+    # RETAINED by design: real-adapter compensation still requires end-to-end
+    # lab validation and a broader safety review before it leaves EXPERIMENTAL,
+    # so a configured reverse workflow still requires the explicit
     # EXECUTION_COMPENSATION_EXPERIMENTAL acknowledgment; without it we refuse
-    # to BOOT rather than later fire an unprotected external reverse call. Only
-    # shuffle has reverse slots today; the offline mock is exempt (DryRun) so
-    # Demo compensation stays available regardless of the flag.
+    # to BOOT rather than silently enable a path that is not yet certified.
+    # Only shuffle has reverse slots today; the offline mock is exempt (DryRun)
+    # so Demo compensation stays available regardless of the flag.
     if (
         name == "shuffle"
         and not settings.EXECUTION_COMPENSATION_EXPERIMENTAL
@@ -156,9 +161,11 @@ def validate_adapter_config(settings: Settings) -> None:
         raise ExecutorConfigError(
             "EXECUTION_ADAPTER 'shuffle' has a REVERSE (compensation) workflow "
             "configured, but real-adapter compensation is EXPERIMENTAL / NOT "
-            "PRODUCTION-CERTIFIED: the reverse dispatch has no durable "
-            "pre-dispatch reservation (C-1). Refusing to start fail-closed. For "
-            "a lab only, acknowledge with EXECUTION_COMPENSATION_EXPERIMENTAL="
+            "PRODUCTION-CERTIFIED: the C-1 durable compensation reservation is "
+            "implemented (migration 0013), but the reverse path still requires "
+            "end-to-end lab validation before certification. Refusing to start "
+            "fail-closed. For a lab only, acknowledge with "
+            "EXECUTION_COMPENSATION_EXPERIMENTAL="
             "true; otherwise leave SHUFFLE_WORKFLOW_REVERSE_* empty (key names "
             "only — values are never reported)."
         )

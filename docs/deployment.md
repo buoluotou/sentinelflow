@@ -101,4 +101,4 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 3. `python -m alembic upgrade head`
 4. Restart the backend
 
-Migrations are additive and reversible (full downgrade support), `0001–0012`.
+Migrations are additive and reversible (full downgrade support), `0001–0013`.

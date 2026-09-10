@@ -70,6 +70,9 @@ from app.services.executions import (
     execute_response,
 )
 from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
+from app.services.executions.durable_compensation import (
+    DurableCompensationAttemptStore,
+)
 from app.services.executions.operators import (
     Operator,
     get_operator_registry,
@@ -175,6 +178,22 @@ def get_dispatch_attempt_store(
     return DurableDispatchAttemptStore(db.get_bind())
 
 
+def get_compensation_attempt_store(
+    db: Session = Depends(get_db),
+) -> DurableCompensationAttemptStore | None:
+    """Dependency seam for the durable pre-compensation attempt store (RC2 / C-1).
+
+    Production returns a store bound to the caller's engine so
+    ``compensate_response`` commits the immutable reverse binding on an
+    INDEPENDENT transaction BEFORE the external compensation request —
+    surviving a caller rollback / terminal-write failure / crash (the reverse
+    mirror of the M4-F §1 fix). Tests override this seam to ``None`` exactly
+    like the dispatch store: the in-memory ``StaticPool`` harness shares ONE
+    connection, so dedicated file-backed tests drive the REAL store.
+    """
+    return DurableCompensationAttemptStore(db.get_bind())
+
+
 # --------------------------------------------------------------------------
 # Write endpoints (token required)
 # --------------------------------------------------------------------------
@@ -263,6 +282,9 @@ def compensate_execution(
     db: Session = Depends(get_db),
     executor: ResponseExecutor = Depends(get_response_executor),
     authenticated: Operator = Depends(authenticate_operator),
+    compensation_attempt_store: DurableCompensationAttemptStore | None = Depends(
+        get_compensation_attempt_store
+    ),
 ) -> ExecutionRead:
     """Run one Compensation Intent: a FRESH execution_id undoing a
     settled forward execution. approval_id / action / target are
@@ -278,6 +300,22 @@ def compensate_execution(
             operator=authenticated.name,
             executor=executor,
             comment=payload.comment,
+            compensation_attempt_store=compensation_attempt_store,
+        )
+    except DurableStoreRequired:
+        # RC2 / C-1 (the reverse mirror of M4-G §2): a recognized external
+        # adapter reached the reverse dispatch point with NO durable
+        # compensation store (a DI gap / config fault). The
+        # compensation_requested row was already flushed inside the aborted
+        # transaction — roll it back so a refused-before-dispatch compensation
+        # leaves NO half-written chain, then fail closed with ONE static 503
+        # (the sanitized precedent; the internal message never reaches the
+        # client). The adapter was NEVER called, so no external reverse effect
+        # needs reconciling.
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Execution adapter requires a durable compensation store",
         )
     except (ExecutionServiceError, ExecutionGuardError) as exc:
         raise _to_http_error(exc) from exc

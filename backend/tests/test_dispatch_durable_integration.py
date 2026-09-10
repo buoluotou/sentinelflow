@@ -80,6 +80,7 @@ class CountingExecutor(ResponseExecutor):
     def __init__(self, events=None, fail_with=None, name="mock"):
         self._inner = MockExecutor(fail_with=fail_with)
         self.calls = 0
+        self.compensate_calls = 0
         self._events = events
         self._name = name
 
@@ -104,6 +105,9 @@ class CountingExecutor(ResponseExecutor):
         return self._inner.execute(dispatch)
 
     def compensate(self, dispatch):
+        self.compensate_calls += 1
+        if self._events is not None:
+            self._events.append("compensate")
         return self._inner.compensate(dispatch)
 
 
