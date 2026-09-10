@@ -623,3 +623,44 @@ class TestPostgresAttemptIdCorrelation:
         finally:
             _cleanup(engine, execution_ids=[execution_id], approval_group_ids=[group_id])
             engine.dispose()
+
+    def test_cross_execution_terminal_referencing_the_attempt_does_not_settle(self):
+        # M4-GR (req 7 extension): a terminal belonging to a DIFFERENT execution B (its own
+        # REAL seeded approval — execution_log.approval_id is FK-enforced on PostgreSQL) that
+        # merely REFERENCES attempt X's attempt_id must NOT settle attempt X (execution A /
+        # approval A). attempt_id alone is NOT enough — the immutable execution_id AND
+        # approval_id must ALSO agree, else a corrupted / mis-ordered / cross-linked terminal
+        # from another execution could erase a still-pending attempt from the recovery view.
+        # This is the SQLite ``TestImmutableFactCorrelation`` scenario re-proved under
+        # PostgreSQL MVCC + enforced FKs.
+        engine = _pg_engine()
+        approval_a, group_a = _seed_approval_chain(engine)
+        approval_b, group_b = _seed_approval_chain(engine)
+        binding_a = _pg_binding(approval_id=approval_a)  # execution A / attempt X
+        binding_b = _pg_binding(approval_id=approval_b)  # execution B — a DIFFERENT chain
+        exec_a = uuid.UUID(binding_a.execution_id)
+        exec_b = uuid.UUID(binding_b.execution_id)
+        try:
+            DurableDispatchAttemptStore(engine).record(binding_a)  # the real pending attempt X
+            # A 'failed' terminal on execution B / approval B that WRONGLY references attempt X.
+            _pg_terminal_row(
+                engine, binding_b, approval_b, "failed", attempt_id=binding_a.attempt_id
+            )
+            with Session(engine) as reader:
+                # attempt X is STILL unreconciled — the cross-execution reference is inert.
+                assert exec_a in {
+                    a.execution_id for a in find_unreconciled_attempts(reader)
+                }
+                classified = {r.attempt_id: r for r in classify_attempt_recovery(reader)}
+                rec = classified[uuid.UUID(binding_a.attempt_id)]
+                assert rec.disposition is RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+                assert rec.audit_decision is None
+                # and it is NEVER promoted to a confirmed external effect.
+                assert rec.disposition is not RecoveryDisposition.EXTERNAL_EFFECT_CONFIRMED
+        finally:
+            _cleanup(
+                engine,
+                execution_ids=[exec_a, exec_b],
+                approval_group_ids=[group_a, group_b],
+            )
+            engine.dispose()

@@ -535,3 +535,163 @@ class TestRecoveryClassification:
             logs_after = len(session.scalars(select(ExecutionLog)).all())
         assert attempts_after == attempts_before == 1
         assert logs_after == logs_before == 0
+
+
+class TestImmutableFactCorrelation:
+    """M4-GR: a terminal SETTLES an attempt ONLY when ALL THREE immutable durable facts
+    agree — ``execution_id`` AND the referenced ``attempt_id`` AND (because a committed
+    ``execution_log`` row ALWAYS carries a non-null ``approval_id``) ``approval_id``.
+
+    M4-G correlated on ``attempt_id`` ALONE, so a terminal belonging to a DIFFERENT
+    execution that merely referenced this attempt's ``attempt_id`` could wrongly erase a
+    still-pending attempt from the recovery view (Final Review finding: "有跨 execution
+    误关联缺口"). Recovery exists precisely to survive crashed / corrupted / mis-ordered /
+    cross-linked history, so ANY missing, malformed, cross-execution, cross-approval or
+    wrong-attempt_id reference is fail-closed -> DISPATCH_STATUS_UNKNOWN, never a settle.
+    The correlation is by the attempt's IMMUTABLE facts only — NEVER back-filled from the
+    current config or another log."""
+
+    def test_cross_execution_terminal_referencing_the_attempt_does_not_settle(
+        self, durable_engine
+    ):
+        # The reviewer's EXACT scenario: a durable attempt on execution A / attempt X, and
+        # a 'failed' terminal that BELONGS TO a different execution B (its own approval) yet
+        # references X's attempt_id. attempt_id alone must NOT settle — execution_id must
+        # ALSO agree — so the pending attempt X stays unreconciled and DISPATCH_STATUS_UNKNOWN.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        foreign_execution_id = uuid.uuid4()  # execution B
+        foreign_approval_id = uuid.uuid4()  # approval B
+        assert foreign_execution_id != uuid.UUID(binding.execution_id)
+        _seed_terminal(
+            durable_engine,
+            foreign_execution_id,           # a DIFFERENT execution ...
+            foreign_approval_id,            # ... a DIFFERENT approval ...
+            decision="failed",
+            attempt_id=binding.attempt_id,  # ... but it references THIS attempt X
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        # the attempt is STILL pending — the cross-execution reference is inert.
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+        assert rec.disposition is RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+        assert rec.audit_decision is None
+        # and it is NEVER promoted to a confirmed external effect.
+        assert rec.disposition is not RecoveryDisposition.EXTERNAL_EFFECT_CONFIRMED
+
+    def test_same_execution_wrong_approval_id_does_not_settle(self, durable_engine):
+        # execution_id AND attempt_id agree, but the terminal carries a DIFFERENT
+        # approval_id -> a cross-approval mis-reference -> fail-closed UNKNOWN.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        wrong_approval_id = uuid.uuid4()
+        assert wrong_approval_id != uuid.UUID(binding.approval_id)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),  # the SAME execution
+            wrong_approval_id,                # a WRONG approval
+            decision="succeeded",
+            attempt_id=binding.attempt_id,    # the correct attempt_id
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+        assert rec.disposition is RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+        assert rec.audit_decision is None
+
+    def test_same_execution_wrong_attempt_id_does_not_settle(self, durable_engine):
+        # execution_id AND approval_id agree, but the terminal references a DIFFERENT
+        # attempt_id -> a wrong-attempt mis-reference -> fail-closed UNKNOWN (the
+        # classification view; the unreconciled view is TestAttemptIdCorrelation's).
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="succeeded",
+            attempt_id=uuid.uuid4(),  # a WRONG / unrelated attempt id
+        )
+        with _independent_session(durable_engine) as session:
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        assert rec.disposition is RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+        assert rec.audit_decision is None
+
+    def test_malformed_attempt_id_reference_does_not_settle(self, durable_engine):
+        # A terminal whose attempt_id reference is NOT a valid UUID settles NOTHING
+        # (fail-closed), even though it sits on the SAME execution_id + approval_id.
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="succeeded",
+            attempt_id="not-a-valid-uuid",  # malformed reference
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        assert [a.attempt_id for a in unreconciled] == [uuid.UUID(binding.attempt_id)]
+        assert rec.disposition is RecoveryDisposition.DISPATCH_STATUS_UNKNOWN
+        assert rec.audit_decision is None
+
+    def test_all_three_immutable_facts_agree_settles_the_attempt(self, durable_engine):
+        # POSITIVE control: execution_id + approval_id + attempt_id ALL agree -> the
+        # terminal settles the attempt as TERMINAL_AUDIT_PRESENT (a succeeded audit).
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="succeeded",
+            attempt_id=binding.attempt_id,
+        )
+        with _independent_session(durable_engine) as session:
+            unreconciled = find_unreconciled_attempts(session)
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        assert unreconciled == []
+        assert rec.disposition is RecoveryDisposition.TERMINAL_AUDIT_PRESENT
+        assert rec.audit_decision == "succeeded"
+
+    def test_failed_with_all_facts_agreeing_is_audit_present_not_confirmed(
+        self, durable_engine
+    ):
+        # A CORRECTLY correlated 'failed' terminal (all three facts agree) is STILL only a
+        # TERMINAL_AUDIT_PRESENT audit fact — NEVER confirmed_failure / EXTERNAL_EFFECT_
+        # CONFIRMED (the external action may have landed before the failure was recorded).
+        store = DurableDispatchAttemptStore(durable_engine)
+        binding = _binding()
+        store.record(binding)
+        _seed_terminal(
+            durable_engine,
+            uuid.UUID(binding.execution_id),
+            uuid.UUID(binding.approval_id),
+            decision="failed",
+            attempt_id=binding.attempt_id,
+        )
+        with _independent_session(durable_engine) as session:
+            rec = {r.attempt_id: r for r in classify_attempt_recovery(session)}[
+                uuid.UUID(binding.attempt_id)
+            ]
+        assert rec.disposition is RecoveryDisposition.TERMINAL_AUDIT_PRESENT
+        assert rec.audit_decision == "failed"
+        assert rec.disposition is not RecoveryDisposition.EXTERNAL_EFFECT_CONFIRMED

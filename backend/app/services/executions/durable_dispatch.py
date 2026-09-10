@@ -100,11 +100,14 @@ class DurableDispatchAttemptStore:
 
 
 #: execution_log decisions that carry a TERMINAL audit for an attempt's dispatch.
-#: M4-G §3: a terminal SETTLES an attempt ONLY when its ``detail`` REFERENCES that
-#: attempt's immutable ``attempt_id`` (``TERMINAL_REFERENCE_KEY``) — NEVER by
-#: ``execution_id`` alone, so a stale / mis-attributed terminal on the same
-#: execution_id cannot mask a still-pending attempt. ``requested`` / ``dispatched``
-#: rows are NOT terminal and never settle an attempt.
+#: M4-G §3 / M4-GR: a terminal SETTLES an attempt ONLY when ALL of the attempt's
+#: IMMUTABLE durable facts agree — its ``detail`` REFERENCES that attempt's
+#: ``attempt_id`` (``TERMINAL_REFERENCE_KEY``) AND the terminal row's ``execution_id``
+#: equals the attempt's AND (a committed ``execution_log`` row always carries a
+#: non-null ``approval_id``) its ``approval_id`` equals the attempt's. NEVER by
+#: ``attempt_id`` or ``execution_id`` alone, so a stale / mis-attributed / cross-execution
+#: / cross-approval terminal cannot mask a still-pending attempt. ``requested`` /
+#: ``dispatched`` rows are NOT terminal and never settle an attempt.
 _TERMINAL_DECISIONS = ("succeeded", "failed")
 
 
@@ -114,16 +117,17 @@ class RecoveryDisposition(str, Enum):
     collapsed into one another:
 
     * ``TERMINAL_AUDIT_PRESENT`` — a committed terminal execution_log row REFERENCES
-      this attempt's ``attempt_id``. The dispatch AUDIT is settled (``succeeded`` /
-      ``failed``), but this is an AUDIT fact about what the SERVICE recorded, NOT a
-      confirmation of the external world's effect. A ``failed`` terminal is NEVER
-      ``confirmed_failure``: the external action may still have landed (a timeout
-      AFTER the effect applied, a lost response).
-    * ``DISPATCH_STATUS_UNKNOWN`` — a committed attempt with NO terminal row
-      referencing its ``attempt_id`` ("emitted but no reliable terminal"). The
-      external effect is UNKNOWN; this is a MANUAL, read-only human-reconciliation
-      candidate, NEVER an auto-retry / re-dispatch / compensation, and NEVER a
-      fabricated ``succeeded`` row.
+      this attempt's ``attempt_id`` AND shares its ``execution_id`` + ``approval_id``
+      (M4-GR: all three immutable facts must agree). The dispatch AUDIT is settled
+      (``succeeded`` / ``failed``), but this is an AUDIT fact about what the SERVICE
+      recorded, NOT a confirmation of the external world's effect. A ``failed`` terminal
+      is NEVER ``confirmed_failure``: the external action may still have landed (a
+      timeout AFTER the effect applied, a lost response).
+    * ``DISPATCH_STATUS_UNKNOWN`` — a committed attempt with NO terminal row that
+      agrees on ALL its immutable facts (execution_id + attempt_id + approval_id):
+      "emitted but no reliable terminal". The external effect is UNKNOWN; this is a
+      MANUAL, read-only human-reconciliation candidate, NEVER an auto-retry /
+      re-dispatch / compensation, and NEVER a fabricated ``succeeded`` row.
     * ``EXTERNAL_EFFECT_CONFIRMED`` — the external effect was authoritatively
       confirmed. This state lives ONLY in the Outcome layer (``confirmed_success`` /
       ``confirmed_failure``), produced ONLY by the authoritative Manual Reconcile /
@@ -157,26 +161,41 @@ class AttemptRecovery:
     action: str
     target: str
     disposition: RecoveryDisposition
-    #: The terminal AUDIT decision (``succeeded`` / ``failed``) when a terminal
-    #: REFERENCES this attempt_id, else ``None``. An AUDIT fact only — NEVER an
-    #: external-effect confirmation (a ``failed`` audit is NOT ``confirmed_failure``).
+    #: The terminal AUDIT decision (``succeeded`` / ``failed``) when a terminal agrees
+    #: on ALL this attempt's immutable facts (execution_id + attempt_id + approval_id),
+    #: else ``None``. An AUDIT fact only — NEVER an external-effect confirmation (a
+    #: ``failed`` audit is NOT ``confirmed_failure``).
     audit_decision: str | None
 
 
-def _terminal_audit_by_attempt(session: Session) -> dict[str, str]:
-    """Map canonical ``attempt_id`` (str) -> the terminal AUDIT decision, for every
-    committed terminal execution_log row that REFERENCES an attempt via
-    ``TERMINAL_REFERENCE_KEY``.
+@dataclass(frozen=True, slots=True)
+class _TerminalRef:
+    """One committed terminal execution_log row's IMMUTABLE correlation facts, as read
+    for recovery: the ``execution_id`` / ``approval_id`` the row was written under and its
+    terminal ``decision``. The referenced ``attempt_id`` (the dict key carrying this ref)
+    is validated at parse time; whether the ref actually SETTLES a given
+    ``DispatchAttempt`` is decided by :func:`_settling_decision`, which ALSO requires the
+    ``execution_id`` + ``approval_id`` to equal the attempt's own immutable facts."""
 
-    READ-ONLY. Correlation is BY the immutable attempt_id the REAL service stamps on
-    the terminal row (``detail["dispatch_attempt_id"] = binding.attempt_id``), so a
-    terminal on the same execution_id but a DIFFERENT / absent attempt reference does
-    NOT settle the attempt. A malformed reference settles NOTHING (fail-closed — the
-    attempt stays UNKNOWN, the safe direction). Rows scan oldest-first; the latest
-    terminal reference for an attempt wins (an attempt carries at most one terminal in
-    practice — the service writes exactly one).
+    execution_id: uuid.UUID
+    approval_id: uuid.UUID | None
+    decision: str
+
+
+def _terminal_refs_by_attempt(session: Session) -> dict[str, list[_TerminalRef]]:
+    """Group every committed terminal execution_log row that REFERENCES an attempt (via
+    ``TERMINAL_REFERENCE_KEY``) by its canonical referenced ``attempt_id`` (str).
+
+    READ-ONLY. The dict key is ONLY the referenced attempt_id the REAL service stamps on
+    the terminal row (``detail["dispatch_attempt_id"] = binding.attempt_id``); whether
+    that reference actually SETTLES a given ``DispatchAttempt`` is decided by
+    :func:`_settling_decision`, which ALSO requires the terminal's ``execution_id`` (and
+    ``approval_id``) to equal the attempt's IMMUTABLE facts. A non-str / malformed
+    reference is skipped (fail-closed — settles nothing). Rows scan oldest-first so the
+    latest matching terminal wins (an attempt carries at most one terminal in practice —
+    the service writes exactly one — but a corrupted history may carry several).
     """
-    audit: dict[str, str] = {}
+    refs: dict[str, list[_TerminalRef]] = {}
     terminals = session.scalars(
         select(ExecutionLog)
         .where(ExecutionLog.decision.in_(_TERMINAL_DECISIONS))
@@ -191,8 +210,47 @@ def _terminal_audit_by_attempt(session: Session) -> dict[str, str]:
             key = str(uuid.UUID(reference))  # canonicalize the reference
         except (ValueError, AttributeError, TypeError):
             continue  # a malformed reference settles nothing (fail-closed)
-        audit[key] = row.decision
-    return audit
+        refs.setdefault(key, []).append(
+            _TerminalRef(
+                execution_id=row.execution_id,
+                approval_id=row.approval_id,
+                decision=row.decision,
+            )
+        )
+    return refs
+
+
+def _settling_decision(
+    attempt: DispatchAttempt, refs: dict[str, list[_TerminalRef]]
+) -> str | None:
+    """The terminal AUDIT decision that SETTLES ``attempt``, else ``None`` (M4-GR).
+
+    A terminal settles the attempt ONLY when ALL of the attempt's IMMUTABLE durable facts
+    agree with the terminal row:
+
+    * ``terminal.execution_id == attempt.execution_id`` — a cross-execution terminal that
+      merely references this ``attempt_id`` CANNOT settle it (the Final Review gap);
+    * the referenced ``attempt_id`` equals ``attempt.attempt_id`` (the dict key); AND
+    * when the terminal carries an ``approval_id`` (a committed ``execution_log`` row
+      always does — it is non-nullable), ``terminal.approval_id == attempt.approval_id``.
+
+    Any missing / malformed / cross-execution / cross-approval / wrong-attempt_id
+    reference is fail-closed -> ``None`` -> DISPATCH_STATUS_UNKNOWN (the safe direction).
+    The facts come from the immutable durable attempt and the committed terminal row ONLY
+    — NEVER back-filled from the current config or another log. Oldest-first scan, so the
+    latest fully-matching terminal's decision wins.
+    """
+    candidates = refs.get(str(attempt.attempt_id))
+    if not candidates:
+        return None
+    decision: str | None = None
+    for ref in candidates:
+        if ref.execution_id != attempt.execution_id:
+            continue  # cross-execution mis-reference cannot settle (M4-GR)
+        if ref.approval_id is not None and ref.approval_id != attempt.approval_id:
+            continue  # cross-approval mis-reference cannot settle (M4-GR)
+        decision = ref.decision  # all immutable facts agree; latest match wins
+    return decision
 
 
 def _committed_attempts(session: Session) -> Sequence[DispatchAttempt]:
@@ -205,27 +263,28 @@ def _committed_attempts(session: Session) -> Sequence[DispatchAttempt]:
 
 
 def find_unreconciled_attempts(session: Session) -> Sequence[DispatchAttempt]:
-    """Committed pre-dispatch attempts with NO committed terminal execution_log row
-    REFERENCING THEIR ``attempt_id`` (M4-G §3).
+    """Committed pre-dispatch attempts with NO committed terminal execution_log row that
+    agrees on ALL their immutable facts — ``execution_id`` + ``attempt_id`` +
+    ``approval_id`` (M4-G §3 / M4-GR).
 
     RECOVERY READ. After a crash / lost response / terminal-write failure / caller
     rollback, the durably committed ``DispatchAttempt`` SURVIVES while the caller's
     execution_log terminal (``succeeded`` / ``failed``) may never have committed. A
-    terminal SETTLES an attempt ONLY by referencing THAT attempt's immutable
-    ``attempt_id`` — never by ``execution_id`` alone — so a stale / wrong-attempt
-    terminal on the same execution_id cannot mask a still-pending attempt. An attempt
-    with no such terminal is "emitted but no reliable terminal" -> DISPATCH_STATUS
-    _UNKNOWN, surfaced for MANUAL human reconciliation.
+    terminal SETTLES an attempt ONLY when every immutable fact agrees (see
+    :func:`_settling_decision`) — never by ``attempt_id`` or ``execution_id`` alone — so a
+    stale / wrong-attempt / cross-execution / cross-approval terminal cannot mask a
+    still-pending attempt. An attempt with no such terminal is "emitted but no reliable
+    terminal" -> DISPATCH_STATUS_UNKNOWN, surfaced for MANUAL human reconciliation.
 
     It NEVER re-dispatches, retries or compensates (constraint 5): the external effect
     of such an attempt is UNKNOWN, and an absent terminal is NOT proof the external
     call failed. Pure read of committed data on the caller's session.
     """
-    settled = _terminal_audit_by_attempt(session)
+    refs = _terminal_refs_by_attempt(session)
     return [
         attempt
         for attempt in _committed_attempts(session)
-        if str(attempt.attempt_id) not in settled
+        if _settling_decision(attempt, refs) is None
     ]
 
 
@@ -233,21 +292,22 @@ def classify_attempt_recovery(session: Session) -> Sequence[AttemptRecovery]:
     """Classify EVERY committed dispatch attempt (READ-ONLY) into its §3 disposition.
 
     Surfaces the controlled, read-only manual-recovery view: each attempt is
-    TERMINAL_AUDIT_PRESENT (a terminal references its attempt_id; ``audit_decision``
-    carries the succeeded/failed AUDIT) or DISPATCH_STATUS_UNKNOWN (no terminal
-    references it -> a human-check candidate). It NEVER yields
-    EXTERNAL_EFFECT_CONFIRMED and NEVER interprets a ``failed`` audit as
-    ``confirmed_failure`` — external-effect confirmation is the Outcome layer's,
-    reachable ONLY through the authoritative reconcile / trusted-reader proof path.
+    TERMINAL_AUDIT_PRESENT (a terminal agrees on ALL its immutable facts —
+    execution_id + attempt_id + approval_id; ``audit_decision`` carries the
+    succeeded/failed AUDIT) or DISPATCH_STATUS_UNKNOWN (no terminal agrees on all of
+    them -> a human-check candidate). It NEVER yields EXTERNAL_EFFECT_CONFIRMED and
+    NEVER interprets a ``failed`` audit as ``confirmed_failure`` — external-effect
+    confirmation is the Outcome layer's, reachable ONLY through the authoritative
+    reconcile / trusted-reader proof path.
 
     Pure read: NO write, NO re-dispatch, NO retry, NO compensation, NO Outcome fact,
     NO fabricated ``succeeded`` row. Recovery identity comes from the immutable
     durable attempt, never back-filled from the current config.
     """
-    audit = _terminal_audit_by_attempt(session)
+    refs = _terminal_refs_by_attempt(session)
     classified: list[AttemptRecovery] = []
     for attempt in _committed_attempts(session):
-        decision = audit.get(str(attempt.attempt_id))
+        decision = _settling_decision(attempt, refs)
         disposition = (
             RecoveryDisposition.TERMINAL_AUDIT_PRESENT
             if decision is not None
