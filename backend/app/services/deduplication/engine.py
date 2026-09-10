@@ -46,7 +46,11 @@ class DeduplicationEngine:
         alert_create: AlertCreate,
     ) -> DeduplicationResult:
         """Process one normalized alert: link it to an active group or open
-        a new one, persist the alert as evidence and commit."""
+        a new one, persist the alert as evidence, refresh the risk snapshot
+        and auto-open the SOC case when the policy threshold is crossed —
+        all in ONE transaction committed HERE (RC2 / H-1: the deduplication
+        engine is the pipeline transaction boundary; no participant commits
+        on its own, so alert + risk + incident land or roll back together)."""
         fingerprint = FingerprintGenerator.generate(normalized)
         event_time = _ensure_aware(
             alert_create.timestamp or datetime.now(timezone.utc)
@@ -72,14 +76,19 @@ class DeduplicationEngine:
 
         alert = self._build_alert(alert_create, event_time, group)
         db.add(alert)
-        # Step 5.3: the event changed (new evidence / count++), so refresh
-        # its current risk snapshot in the same transaction. Reading the
-        # lazy alerts relationship flushes the pending alert first.
+        # Step 5.3 / RC2 H-1: the event changed (new evidence / count++), so
+        # refresh its current risk snapshot — flush-only, INSIDE this one
+        # pipeline transaction. Reading the lazy alerts relationship flushes
+        # the pending alert first.
         risk_service.recalculate(db, group)
-        # Step 7.4: the creation policy runs on the fresh snapshot; opens
-        # the SOC case automatically when the threshold is crossed (no-op
-        # otherwise; idempotent — one current incident per event).
+        # Step 7.4: the creation policy runs on the fresh snapshot; opens the
+        # SOC case when the threshold is crossed (no-op otherwise; idempotent —
+        # one current incident per event, also under a true concurrent race
+        # via the unique constraint + nested savepoint).
         auto_create_from_risk(db, group)
+        # RC2 / H-1 — THE pipeline transaction boundary: the alert evidence,
+        # the EventRisk update and the automatic Incident commit TOGETHER (or
+        # roll back together on any failure). No participant above commits.
         db.commit()
         db.refresh(group)
         db.refresh(alert)

@@ -28,9 +28,13 @@ class RiskService:
     def recalculate(self, db: Session, group: AlertGroup) -> EventRisk:
         """Recompute the group's risk and persist it (create or update).
 
-        Meant to run inside the caller's transaction (the deduplication
-        engine calls this right before its own commit); commits on its own
-        only when invoked standalone.
+        RC2 / H-1: runs INSIDE the caller's transaction — flushes but NEVER
+        commits. The pipeline boundary (``DeduplicationEngine.process``) owns
+        the ONE commit so the EventRisk update and the automatic Incident
+        creation commit or roll back TOGETHER; a case can never be missing
+        while the risk update that should have produced it is already durable
+        (pre-RC2 this method committed internally, durably SPLITTING the
+        pipeline at exactly that point).
         """
         result = self._engine.calculate(group, list(group.alerts))
 
@@ -39,8 +43,7 @@ class RiskService:
             risk = EventRisk(alert_group=group)
             db.add(risk)
         self._apply(risk, result)
-        db.commit()
-        db.refresh(risk)
+        db.flush()
         return risk
 
     @staticmethod

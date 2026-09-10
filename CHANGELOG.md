@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mock stays exempt). `EXECUTION_COMPENSATION_EXPERIMENTAL` is RETAINED by
   design pending real-lab validation of the reverse path.
 
+### Fixed
+- **RC2 / H-1 — Risk → Incident transaction atomicity**: `RiskService.recalculate`
+  committed internally, durably SPLITTING the ingestion pipeline — a failure
+  while auto-opening the SOC case left "risk updated / case missing" (and a
+  caller rollback could never take the risk update back). The deduplication
+  engine is now the ONE pipeline transaction boundary: alert evidence +
+  EventRisk snapshot + automatic Incident commit or roll back together. The
+  one-case-per-event invariant stays enforced under a TRUE concurrent race via
+  `uq_incidents_alert_group_id` + a nested SAVEPOINT in
+  `auto_create_from_risk` (the loser's unique violation is a benign no-op that
+  keeps its transaction valid — never a duplicate case, never a poisoned
+  transaction). Frozen rules preserved: score ≥ 70 auto-creates; the case
+  snapshot copies the risk score.
+
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and
   the global volume names from `docker-compose.yml`; `docker compose -p <project>`

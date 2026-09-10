@@ -21,6 +21,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import AlertGroup, EventRisk, Incident
@@ -73,21 +74,52 @@ def create_incident(db: Session, alert_group_id: uuid.UUID) -> Incident:
     return incident
 
 
+#: Unique-constraint markers of "one current incident per event"
+#: (PostgreSQL reports the constraint/index name, SQLite the column list) —
+#: the concurrent-race detector for the auto-creation savepoint below.
+_GROUP_INCIDENT_CONFLICT_MARKERS = (
+    "uq_incidents_alert_group_id",
+    "incidents.alert_group_id",
+)
+
+
+def _is_group_incident_conflict(exc: IntegrityError) -> bool:
+    """True when the IntegrityError is the one-case-per-event unique violation."""
+    text = str(exc.orig or exc)
+    return any(marker in text for marker in _GROUP_INCIDENT_CONFLICT_MARKERS)
+
+
 def auto_create_from_risk(db: Session, group: AlertGroup) -> Incident | None:
     """Pipeline hook (Step 7.4): open the case when the event's CURRENT
     risk crosses the policy threshold; no-op otherwise.
 
-    Called by the deduplication engine right after risk recalculation,
-    inside the same transaction as the alert write. Idempotent by design:
-    an event that already has a case is skipped, so repeated alerts never
-    spawn duplicate incidents.
+    Called by the deduplication engine right after risk recalculation, inside
+    the SAME transaction as the alert + risk writes (RC2 / H-1: this function
+    never commits — the pipeline boundary owns the ONE commit, so a case and
+    the risk update that produced it commit or roll back TOGETHER).
+
+    Idempotent by design, in TWO layers:
+    - the pre-check skips an event that already has a case (the common path);
+    - ``uq_incidents_alert_group_id`` adjudicates a TRUE concurrent race: the
+      loser's nested SAVEPOINT rolls back to a benign no-op (the winner's case
+      stands; a duplicate is refused) WITHOUT poisoning the caller's
+      transaction, so its alert + risk update still commit normally.
     """
     if group.incident is not None:
         return None
     risk = group.risk
     if risk is None or not should_create_incident(risk.score):
         return None
-    return create_incident(db, group.id)
+    try:
+        with db.begin_nested():
+            return create_incident(db, group.id)
+    except IntegrityError as exc:
+        if not _is_group_incident_conflict(exc):
+            raise
+        # A concurrent worker opened the case first — the event HAS its one
+        # case (the constraint guarantees exactly one); this pipeline pass
+        # treats it as a benign no-op and keeps its transaction valid.
+        return None
 
 
 def transition_status(
