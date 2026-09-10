@@ -1,6 +1,7 @@
+import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -9,20 +10,54 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.services.executions.registry import validate_adapter_config
 
+logger = logging.getLogger("sentinelflow")
+
+
+def _configure_logging() -> None:
+    """Level from DEBUG (DEBUG when true, else INFO). Adds a handler only
+    when neither this logger nor the root has one, so uvicorn/pytest keep
+    their own config (no duplicate lines). Stack traces stay debug-only."""
+    logger.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
+    if not logger.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(handler)
+
+
+def _safe_config_summary() -> str:
+    """Startup config summary — WHAT is enabled/disabled, never a secret
+    value. Only the DB driver scheme, enums and configured/unconfigured
+    booleans are emitted; credentials / tokens / URLs are never printed."""
+    db_backend = settings.DATABASE_URL.split("://", 1)[0] or "unknown"
+    return (
+        f"db={db_backend} "
+        f"ai_provider={settings.AI_PROVIDER} "
+        f"execution_adapter={settings.EXECUTION_ADAPTER} "
+        f"policy={'enabled' if settings.EXECUTION_POLICY_ENABLED else 'disabled'} "
+        f"operators={'configured' if settings.OPERATORS_JSON else 'none'} "
+        f"execution_token={'set' if settings.EXECUTION_TOKEN else 'unset'} "
+        f"shuffle={'configured' if settings.SHUFFLE_BASE_URL else 'disabled'} "
+        f"wazuh={'configured' if settings.WAZUH_BASE_URL else 'disabled'} "
+        f"thehive={'configured' if settings.THEHIVE_BASE_URL else 'disabled'} "
+        f"debug={'on' if settings.DEBUG else 'off'}"
+    )
+
 
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
-    # 3.2.1 startup fail-closed: a misconfigured execution adapter
-    # (unknown / multi-value selection, or a real adapter missing its
-    # credentials) refuses to BOOT — the platform never pretends to run
-    # and then fails at the first Execute. mock needs no credentials.
+    _configure_logging()
+    # Startup fail-closed: a misconfigured execution adapter (unknown /
+    # multi-value selection, or a real adapter missing its credentials)
+    # refuses to BOOT — the platform never pretends to run and then fails
+    # at the first Execute. mock needs no credentials.
     validate_adapter_config(settings)
+    logger.info("SentinelFlow backend starting | %s", _safe_config_summary())
     yield
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="1.0.0-phase1",
+    version="1.3.0",
     lifespan=_lifespan,
 )
 
@@ -31,6 +66,9 @@ app.include_router(v1_router, prefix=settings.API_V1_PREFIX)
 
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
+    """Liveness: 200 whenever the process is up (DB state is reported in
+    the body, never in the status code). Orchestrators should probe
+    /ready for dependency readiness."""
     db_status = "connected"
     try:
         db.execute(text("SELECT 1"))
@@ -40,4 +78,20 @@ def health_check(db: Session = Depends(get_db)):
         "status": "ok",
         "service": "sentinelflow-backend",
         "database": db_status,
+    }
+
+
+@app.get("/ready")
+def readiness_check(db: Session = Depends(get_db)):
+    """Readiness: 200 only when the database answers SELECT 1, else 503.
+    This is the probe compose / orchestrators gate backend traffic on."""
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="database not ready")
+    return {
+        "status": "ready",
+        "service": "sentinelflow-backend",
+        "database": "connected",
     }

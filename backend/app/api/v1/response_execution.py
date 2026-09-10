@@ -109,34 +109,6 @@ def _extract_bearer(authorization: str | None) -> str | None:
     return candidate if candidate else None
 
 
-def require_execution_token(
-    authorization: str | None = Header(default=None),
-) -> None:
-    """Write-path gate (backwards-compatible void form). Validates the
-    Bearer token against the operator registry OR the legacy
-    EXECUTION_TOKEN. Returns None — use ``authenticate_operator`` when
-    the endpoint needs the resolved Operator identity (3.3.1).
-
-    Three failure shapes, ONE uniform 401: header missing / malformed,
-    secret mismatch, nothing configured. The presented credential is
-    never echoed — detail strings are static, so the token cannot leak
-    into a response or an exception string."""
-    token = _extract_bearer(authorization)
-    if token is None:
-        raise HTTPException(status_code=401, detail="Invalid execution credentials")
-    registry = get_operator_registry()
-    operator = registry.lookup(token, legacy_token=settings.EXECUTION_TOKEN)
-    if operator is None:
-        # Distinguish "nothing configured" from "wrong credentials" —
-        # both are 401, but the detail helps the operator debug.
-        if not settings.EXECUTION_TOKEN and registry.operator_count == 0:
-            raise HTTPException(
-                status_code=401,
-                detail="Execution credentials not configured",
-            )
-        raise HTTPException(status_code=401, detail="Invalid execution credentials")
-
-
 def authenticate_operator(
     authorization: str | None = Header(default=None),
 ) -> Operator:

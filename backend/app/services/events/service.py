@@ -28,6 +28,7 @@ def list_events(
     With ``level`` set, only events whose current risk matches that level are
     returned (events without a risk record are excluded).
     """
+    size = min(size, MAX_PAGE_SIZE)
     total_stmt = select(func.count()).select_from(AlertGroup)
     stmt = select(AlertGroup).options(selectinload(AlertGroup.risk))
     if level is not None:

@@ -23,7 +23,10 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     BACKEND_HOST: str = "0.0.0.0"
     BACKEND_PORT: int = 8000
-    DEBUG: bool = True
+    # Verbose logging + debug diagnostics. Defaults to False (safe for
+    # production / quickstart); wired to the backend log level (DEBUG when
+    # true, INFO otherwise). Exception stack traces stay debug-only.
+    DEBUG: bool = False
 
     # Phase 1 Step 4: deduplication aggregation window (seconds)
     DEDUP_WINDOW_SECONDS: int = 300
