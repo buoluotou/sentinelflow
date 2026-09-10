@@ -1,0 +1,18 @@
+# Build context excludes for the backend image (keeps the context small and
+# the image free of local dev artifacts). The Dockerfile COPYs only
+# requirements/base.txt, alembic.ini, migrations/ and app/ — everything below
+# is excluded from the context so it can never leak into a layer.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/
+*.db
+*.sqlite
+*.sqlite3
+.env
+.env.*

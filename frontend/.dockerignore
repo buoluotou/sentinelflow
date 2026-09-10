@@ -1,0 +1,9 @@
+# Build context excludes for the frontend image. node_modules is rebuilt inside
+# the image via `npm ci` (host modules may be a different platform), and dist is
+# produced by the in-image `npm run build` — neither should enter the context.
+node_modules/
+dist/
+*.log
+.env
+.env.*
+.env.local

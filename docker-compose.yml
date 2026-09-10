@@ -1,4 +1,30 @@
-version: "3.8"
+# SentinelFlow — Docker Compose Quickstart.
+#
+# Boot order (each gate is enforced by depends_on conditions):
+#
+#   postgres (healthy)
+#     -> migrate   (one-shot: alembic upgrade head, then exits 0)
+#       -> backend (uvicorn; compose gates traffic on /ready)
+#         -> frontend (nginx SPA + same-origin /api reverse proxy)
+#
+# DEFAULT = Demo Mode: AI_PROVIDER=mock, EXECUTION_ADAPTER=mock, every external
+# system disabled. After `scripts/quickstart`, open http://localhost:5173.
+#
+# Optional profiles:
+#   docker compose --profile ollama up -d     # AI Local Mode (adds Ollama)
+#
+# Integration Lab Mode (Wazuh / Shuffle / TheHive) is CONFIG-gated through .env,
+# NOT a bundled profile: this stack deliberately never auto-deploys those
+# systems (see README "Integration Lab" + SECURITY.md). They remain
+# LAB / EXPERIMENTAL / NOT PRODUCTION-CERTIFIED and require credentials you
+# provide for a lab you run yourself.
+#
+# NOTE: `docker compose config` and `up` require a .env file. Run
+# scripts/quickstart (or copy .env.example -> .env and set POSTGRES_PASSWORD)
+# first — the stack fails closed rather than boot Postgres with an empty
+# password.
+
+name: sentinelflow
 
 services:
   postgres:
@@ -6,21 +32,97 @@ services:
     container_name: sf-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-sentinelflow}
+      POSTGRES_USER: ${POSTGRES_USER:-sentinelflow}
+      # Mandatory: no empty database password. quickstart generates a random one.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (quickstart does this for you)}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinelflow} -d ${POSTGRES_DB:-sentinelflow}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
+  # One-shot migration: runs alembic to head against the healthy database, then
+  # exits. A single migrate job means multiple backend replicas can never race
+  # on schema creation, and Base.metadata.create_all() is never used in prod.
+  migrate:
+    build: ./backend
+    image: sentinelflow-backend:local
+    container_name: sf-migrate
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Service-name host (postgres), built from the same creds as the DB.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinelflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinelflow}
+    restart: "no"
+
+  backend:
+    build: ./backend
+    image: sentinelflow-backend:local
+    container_name: sf-backend
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # .env carries the Demo/AI/Lab settings (AI_PROVIDER, EXECUTION_ADAPTER,
+    # EXECUTION_TOKEN, OPERATORS_JSON, external *_BASE_URL ...). environment
+    # below overrides only DATABASE_URL so the host points at the postgres
+    # SERVICE, not localhost.
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinelflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinelflow}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      # /ready returns 200 only when the DB answers SELECT 1, else 503.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build: ./frontend
+    image: sentinelflow-frontend:local
+    container_name: sf-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
+  # --- AI Local Mode (OPTIONAL; enable with `--profile ollama`) --------------
+  # Ollama is never required for Demo Mode. To use it: start this profile, then
+  # set AI_PROVIDER=ollama, AI_MODEL=<model> and AI_BASE_URL=http://ollama:11434
+  # in .env (the backend reaches it by the service name `ollama`, not localhost).
+  # A missing/unreachable Ollama degrades only the AI endpoints — the platform
+  # still boots and the rest of the chain works (doctor reports it as WARN).
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sf-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
 volumes:
   pg-data:
     driver: local
     name: sentinelflow-pg-data
+  ollama-data:
+    driver: local
+    name: sentinelflow-ollama-data
