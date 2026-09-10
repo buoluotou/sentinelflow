@@ -89,8 +89,8 @@ if ($pyCmd) {
 $node = Get-Command node -ErrorAction SilentlyContinue
 if ($node) {
     $nv = (& node --version 2>&1) -replace "^v", ""
-    $nmaj = [int]$nv.Split(".")[0]
-    if ($nmaj -ge 20) { OK "Node" "v$nv - >=20.19 required by Vite 8; 22 LTS recommended" }
+    $nver = ([int]$nv.Split(".")[0]) * 100 + ([int]$nv.Split(".")[1])  # Vite 8: ^20.19 || >=22.12 (Node 21 unsupported)
+    if ((($nver -ge 2019) -and ($nver -lt 2100)) -or ($nver -ge 2212)) { OK "Node" "v$nv - satisfies Vite 8 (^20.19 || >=22.12); 22 LTS recommended" }
     else { Fail "Node" "v$nv is too old - Vite 8 needs Node ^20.19 || >=22.12" }
 } else { Warn "Node" "not found - only needed for Native dev / frontend build (Docker quickstart builds it in-container)" }
 

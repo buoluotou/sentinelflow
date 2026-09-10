@@ -59,8 +59,9 @@ if [ "$SKIP_FRONTEND" != "1" ]; then
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         bad "Node/npm not found. Install Node 22 LTS or re-run with SKIP_FRONTEND=1."; exit 1
     fi
-    NV="$(node --version 2>&1 | sed 's/^v//')"; NMAJ="$(printf '%s' "$NV" | cut -d. -f1)"
-    if [ "${NMAJ:-0}" -lt 20 ]; then bad "Node v$NV is too old (Vite 8 needs >=20.19; 22 LTS recommended)."; exit 1; fi
+    NV="$(node --version 2>&1 | sed 's/^v//')"; NMAJ="$(printf '%s' "$NV" | cut -d. -f1)"; NMIN="$(printf '%s' "$NV" | cut -d. -f2)"
+    NVER=$(( ${NMAJ:-0} * 100 + ${NMIN:-0} ))  # Vite 8 engines: ^20.19 || >=22.12 (Node 21 unsupported)
+    if ! { { [ "$NVER" -ge 2019 ] && [ "$NVER" -lt 2100 ]; } || [ "$NVER" -ge 2212 ]; }; then bad "Node v$NV is too old (Vite 8 needs Node ^20.19 || >=22.12; 22 LTS recommended)."; exit 1; fi
     good "Node v$NV, npm $(npm --version 2>&1)"
 fi
 
@@ -72,8 +73,8 @@ if [ ! -x "$VENV_PY" ]; then
     good "created backend/.venv"
 else good "backend/.venv already exists"; fi
 "$VENV_PY" -m pip install --upgrade pip --quiet
-REQS=("requirements/base.txt")
-[ "$WITH_DEV_DEPS" = "1" ] && REQS+=("requirements/dev.txt")
+REQS=("requirements/base.lock")
+[ "$WITH_DEV_DEPS" = "1" ] && REQS+=("requirements/dev.lock")
 ( cd "$BACKEND" && for r in "${REQS[@]}"; do "$VENV_PY" -m pip install -r "$r" --quiet && good "installed $r"; done )
 
 # --- 3. .env ------------------------------------------------------------------

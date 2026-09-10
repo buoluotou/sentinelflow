@@ -39,6 +39,7 @@ def _safe_config_summary() -> str:
         f"shuffle={'configured' if settings.SHUFFLE_BASE_URL else 'disabled'} "
         f"wazuh={'configured' if settings.WAZUH_BASE_URL else 'disabled'} "
         f"thehive={'configured' if settings.THEHIVE_BASE_URL else 'disabled'} "
+        f"compensation_experimental={'on' if settings.EXECUTION_COMPENSATION_EXPERIMENTAL else 'off'} "
         f"debug={'on' if settings.DEBUG else 'off'}"
     )
 

@@ -2,7 +2,7 @@
 #
 # Serves the FastAPI app (uvicorn) and is reused by the one-shot `migrate`
 # service (alembic upgrade head) in docker-compose.yml. Runtime dependencies
-# only (requirements/base.txt) — pytest / playwright are dev-only and stay out
+# only (requirements/base.lock) — pytest / playwright are dev-only and stay out
 # of the shipped image. Python 3.12 matches the version this project targets.
 FROM python:3.12-slim
 
@@ -15,9 +15,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Install dependencies first for better layer caching (code changes rarely
-# invalidate the dependency layer).
-COPY requirements/base.txt ./requirements/base.txt
-RUN pip install --no-cache-dir -r requirements/base.txt
+# invalidate the dependency layer). base.lock pins the exact, tested versions
+# (compiled from base.txt via `uv pip compile`) so a build today and a build in
+# six months install the identical dependency set.
+COPY requirements/base.lock ./requirements/base.lock
+RUN pip install --no-cache-dir -r requirements/base.lock
 
 # Application code + migrations. COPY is selective on purpose: tests and the
 # dev venv never enter the image.

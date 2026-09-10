@@ -21,7 +21,13 @@ def _is_sensitive_field(name: str) -> bool:
 class Settings(BaseSettings):
     PROJECT_NAME: str = "SentinelFlow"
     API_V1_PREFIX: str = "/api/v1"
-    BACKEND_HOST: str = "0.0.0.0"
+    # Address a NATIVE / host-run backend binds to. Loopback by default so a
+    # host-run backend is local-only (native uvicorn already defaults to
+    # 127.0.0.1). The Docker container binds 0.0.0.0 INTERNALLY via the compose
+    # command — independent of this value; its HOST exposure is controlled by
+    # BIND_HOST in docker-compose.yml. Set 0.0.0.0 only to deliberately expose
+    # a host-run backend (put it behind SSO / a reverse proxy first).
+    BACKEND_HOST: str = "127.0.0.1"
     BACKEND_PORT: int = 8000
     # Verbose logging + debug diagnostics. Defaults to False (safe for
     # production / quickstart); wired to the backend log level (DEBUG when
@@ -118,13 +124,23 @@ class Settings(BaseSettings):
     # Phase 3.2.3: Shuffle action -> workflow mapping (frozen §4 column).
     # Each executable action triggers EXACTLY ONE pre-configured workflow;
     # empty ids stay fail-closed (ConfigError at construction). Reverse
-    # workflows are OPTIONAL — configured = compensation supported.
+    # workflows are OPTIONAL — configured = compensation supported, BUT
+    # compensation is EXPERIMENTAL / NOT PRODUCTION-CERTIFIED (RC1 / C-1):
+    # the reverse dispatch lacks the forward path's durable pre-dispatch
+    # reservation, so configuring a SHUFFLE_WORKFLOW_REVERSE_* id ALSO
+    # requires EXECUTION_COMPENSATION_EXPERIMENTAL=true (below) or
+    # validate_adapter_config() refuses to BOOT. The offline mock is exempt
+    # (DryRun) — Demo compensation always works.
     SHUFFLE_WORKFLOW_BLOCK_SOURCE_IP: str = ""
     SHUFFLE_WORKFLOW_ISOLATE_HOST: str = ""
     SHUFFLE_WORKFLOW_DISABLE_ACCOUNT: str = ""
     SHUFFLE_WORKFLOW_ESCALATE_TO_INCIDENT: str = ""
     SHUFFLE_WORKFLOW_REVERSE_BLOCK_SOURCE_IP: str = ""
     SHUFFLE_WORKFLOW_REVERSE_ISOLATE_HOST: str = ""
+    # Deliberate, default-OFF acknowledgment that REAL-adapter compensation is
+    # EXPERIMENTAL / LAB-only (C-1 above). false (default) + a configured
+    # reverse workflow = refuse to boot. Never required for the mock Demo.
+    EXECUTION_COMPENSATION_EXPERIMENTAL: bool = False
     # Adapter-level HTTP timeout; must never exceed the global sync
     # dispatch budget (frozen §6; default stays 30s).
     SHUFFLE_TIMEOUT_SECONDS: float = 30.0

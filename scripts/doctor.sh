@@ -76,8 +76,9 @@ if [ -n "$PY" ]; then
 else fail "Python" "not found - install Python 3.12 or run scripts/setup-dev.sh"; fi
 
 if command -v node >/dev/null 2>&1; then
-    NV="$(node --version 2>&1 | sed 's/^v//')"; NMAJ="$(printf '%s' "$NV" | cut -d. -f1)"
-    if [ "${NMAJ:-0}" -ge 20 ]; then ok "Node" "v$NV - >=20.19 required by Vite 8; 22 LTS recommended"
+    NV="$(node --version 2>&1 | sed 's/^v//')"; NMAJ="$(printf '%s' "$NV" | cut -d. -f1)"; NMIN="$(printf '%s' "$NV" | cut -d. -f2)"
+    NVER=$(( ${NMAJ:-0} * 100 + ${NMIN:-0} ))  # Vite 8 engines: ^20.19 || >=22.12 (Node 21 unsupported)
+    if { [ "$NVER" -ge 2019 ] && [ "$NVER" -lt 2100 ]; } || [ "$NVER" -ge 2212 ]; then ok "Node" "v$NV - satisfies Vite 8 (^20.19 || >=22.12); 22 LTS recommended"
     else fail "Node" "v$NV is too old - Vite 8 needs Node ^20.19 || >=22.12"; fi
 else warn "Node" "not found - only needed for Native dev / frontend build (Docker quickstart builds it in-container)"; fi
 

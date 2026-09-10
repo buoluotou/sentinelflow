@@ -275,8 +275,12 @@ SentinelFlow is designed around a small set of non-negotiable invariants:
   outbound call, so a crash never loses track of an action.
 - **Fail closed.** Empty/missing configuration (tokens, adapters, TheHive reader
   authorization) is refused, never silently allowed or half-run.
-- **Identity from the token only.** Client-supplied identity fields are ignored;
-  impersonation is impossible.
+- **Execution identity from the token only.** The execution operator is derived
+  from authenticated execution credentials and never from request-body identity
+  fields. The approval *reviewer* name is display-only and is **not**
+  production-authenticated in this evaluation build — expose the service only
+  behind trusted-network / SSO controls (see the caveat below and
+  [SECURITY.md](SECURITY.md)).
 - **No auto-retry, no auto-compensation, no approval bypass.**
 
 > The platform ships **without edge authentication** and is intended for

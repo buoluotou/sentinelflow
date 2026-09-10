@@ -82,7 +82,7 @@ cd backend
 python -m venv .venv
 # Windows PowerShell: .\.venv\Scripts\Activate.ps1
 # Linux/macOS:        source .venv/bin/activate
-pip install -r requirements/base.txt
+pip install -r requirements/base.lock
 
 # 方案 A — PostgreSQL（贴近生产）
 cp ../.env.example ../.env          # 然后修改凭据

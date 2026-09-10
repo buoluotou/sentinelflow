@@ -99,13 +99,19 @@ PostgreSQL (`postgresql+psycopg://user:pass@localhost:5432/sentinelflow`), then
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| **401** on every write path (approve/reject/execute/compensate/reconcile) | `EXECUTION_TOKEN` **and** `OPERATORS_JSON` are both empty → fail-closed by design | `scripts/quickstart` / `setup-dev` generate a random local `EXECUTION_TOKEN`. Natively, set `EXECUTION_TOKEN` in `.env` (or export it) and pass the same value to `smoke.py --token` |
+| **401** on the execution write path (execute / compensate / reconcile) | `EXECUTION_TOKEN` **and** `OPERATORS_JSON` are both empty → fail-closed by design | `scripts/quickstart` / `setup-dev` generate a random local `EXECUTION_TOKEN`. Natively, set `EXECUTION_TOKEN` in `.env` (or export it) and pass the same value to `smoke.py --token` |
 | **403** on execute/dispatch | The operator's role is not `executor` / `admin` | In `OPERATORS_JSON`, give the dispatching operator `"role":"executor"` (or `admin`). `viewer` / `reviewer` may not dispatch |
 | smoke says `no EXECUTION_TOKEN available` | Token not passed and not in `.env` | `--token <value>`, or `$env:EXECUTION_TOKEN` / `export EXECUTION_TOKEN`, or put it in `.env` |
 
-Identity comes **only** from the Bearer token — any `operator` field in a request
-body is ignored (impersonation is impossible). Read-only endpoints (dashboard,
-events, incidents, metrics, health) need no token.
+On the **token-authenticated execution path** (execute / compensate / reconcile)
+identity comes **only** from the Bearer token — any `operator` field in a request
+body is ignored, so the execution operator cannot be impersonated. The
+**approval reviewer** name (`POST /response-recommendations/{id}/approve|reject`)
+carries **no token by design** ("Approve ≠ Execute") and is a display-only field
+that is **not** production-authenticated in this evaluation build — expose the
+service only behind trusted-network / SSO controls (see the README security
+model). Read-only endpoints (dashboard, events, incidents, metrics, health) and
+the approve/reject decision path need no token.
 
 ---
 

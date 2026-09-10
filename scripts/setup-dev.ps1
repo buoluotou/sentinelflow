@@ -72,7 +72,8 @@ if (-not $SkipFrontend) {
     $npm = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $node -or -not $npm) { Bad "Node/npm not found. Install Node 22 LTS (nodejs.org) or re-run with -SkipFrontend."; exit 1 }
     $nv = (& node --version 2>&1) -replace "^v", ""
-    if ([int]$nv.Split(".")[0] -lt 20) { Bad "Node v$nv is too old (Vite 8 needs >=20.19; 22 LTS recommended)."; exit 1 }
+    $nver = ([int]$nv.Split(".")[0]) * 100 + ([int]$nv.Split(".")[1])  # Vite 8: ^20.19 || >=22.12 (Node 21 unsupported)
+    if (-not ((($nver -ge 2019) -and ($nver -lt 2100)) -or ($nver -ge 2212))) { Bad "Node v$nv is too old (Vite 8 needs Node ^20.19 || >=22.12; 22 LTS recommended)."; exit 1 }
     Good "Node v$nv, npm $(& npm --version 2>&1)"
 }
 
@@ -85,8 +86,8 @@ if (-not (Test-Path $venvPy)) {
     Good "created backend\.venv"
 } else { Good "backend\.venv already exists" }
 & $venvPy -m pip install --upgrade pip --quiet
-$reqs = @("requirements\base.txt")
-if ($WithDevDeps) { $reqs += "requirements\dev.txt" }
+$reqs = @("requirements\base.lock")
+if ($WithDevDeps) { $reqs += "requirements\dev.lock" }
 Push-Location $backend
 foreach ($r in $reqs) {
     & $venvPy -m pip install -r $r --quiet

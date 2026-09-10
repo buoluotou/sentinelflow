@@ -44,7 +44,7 @@ docs: add quick start for docker compose
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements/dev.txt
+pip install -r requirements/dev.lock
 
 # database
 docker compose up -d postgres
@@ -56,6 +56,30 @@ pytest
 # start the dev server
 uvicorn app.main:app --reload
 ```
+
+### Dependency locking
+
+`requirements/base.txt` (runtime) and `requirements/dev.txt` (dev/test) are the
+abstract inputs: they declare direct dependencies with `>=` floors. Their
+`*.lock` siblings pin the exact transitive-resolved versions, and every install
+path — the Docker image, `scripts/setup-dev.*`, and the manual commands above —
+installs from the lock, so a build today and a build in six months are identical
+(this mirrors the frontend's `package-lock.json`).
+
+After editing a `.txt`, regenerate the lock with [uv](https://docs.astral.sh/uv/)
+and re-run the full test suite before committing:
+
+```bash
+uv pip compile backend/requirements/base.txt --universal --python-version 3.12 -o backend/requirements/base.lock
+uv pip compile backend/requirements/dev.txt  --universal --python-version 3.12 -o backend/requirements/dev.lock
+```
+
+By default `uv` keeps the versions already in the `.lock` and only resolves what
+your `.txt` change requires; pass `--upgrade` (or `--upgrade-package <name>`) to
+intentionally bump. `--universal` emits cross-platform markers (`uvloop` on
+Linux, `colorama`/`tzdata` on Windows) so one lock serves the Linux Docker image
+and native Windows/macOS dev alike. Never hand-edit a `.lock`, and never bump it
+without a green `pytest` run.
 
 ### Frontend
 

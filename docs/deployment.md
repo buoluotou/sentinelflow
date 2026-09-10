@@ -25,7 +25,7 @@ The compose file uses env-var substitution only — no secrets are baked into th
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
-pip install -r requirements/base.txt
+pip install -r requirements/base.lock
 python -m alembic upgrade head                        # migrations 0001–0012
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
@@ -97,7 +97,7 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 ## Upgrading
 
 1. `git pull`
-2. `pip install -r requirements/base.txt` (backend) / `npm install && npm run build` (frontend)
+2. `pip install -r requirements/base.lock` (backend) / `npm install && npm run build` (frontend)
 3. `python -m alembic upgrade head`
 4. Restart the backend
 

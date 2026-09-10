@@ -23,6 +23,16 @@
 # scripts/quickstart (or copy .env.example -> .env and set POSTGRES_PASSWORD)
 # first — the stack fails closed rather than boot Postgres with an empty
 # password.
+#
+# NETWORK EXPOSURE (secure by default): every published port binds to LOOPBACK
+# via ${BIND_HOST:-127.0.0.1}, so a Demo on a laptop / office / lab LAN never
+# exposes Postgres, the backend API, the approval path or the frontend to other
+# hosts. The platform ships without edge authentication (see SECURITY.md), so
+# this loopback default is the primary exposure control. To deliberately allow
+# remote access set BIND_HOST=0.0.0.0 in .env (advanced — put it behind your own
+# SSO / reverse proxy first). Container-to-container traffic uses the compose
+# network (service names), NOT these published ports, so loopback binding never
+# breaks the boot chain.
 
 name: sentinelflow
 
@@ -37,7 +47,7 @@ services:
       # Mandatory: no empty database password. quickstart generates a random one.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (quickstart does this for you)}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${BIND_HOST:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -83,7 +93,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinelflow}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-sentinelflow}
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     healthcheck:
       # /ready returns 200 only when the DB answers SELECT 1, else 503.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4)"]
@@ -101,7 +111,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "${BIND_HOST:-127.0.0.1}:${FRONTEND_PORT:-5173}:80"
 
   # --- AI Local Mode (OPTIONAL; enable with `--profile ollama`) --------------
   # Ollama is never required for Demo Mode. To use it: start this profile, then
@@ -115,7 +125,7 @@ services:
     profiles: ["ollama"]
     restart: unless-stopped
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "${BIND_HOST:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama-data:/root/.ollama
 
