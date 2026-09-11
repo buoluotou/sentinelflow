@@ -169,16 +169,19 @@ RESOURCE BLOCKED / NOT CERTIFIED.
 ## 7. Git state at the stop point
 
 ```
-branch: main          HEAD: 6bf2049 (11 local forward commits; report + hygiene included)
-baseline: d3025ac     ahead of origin/main: 11 commits • origin/main untouched
+branch: main          baseline: d3025ac (origin/main untouched)
+local forward commits: 13 (the authoritative final list + hash is in the
+review bundle's `17-final-git-status.txt`, generated at bundle time — this
+report avoids self-referential hashes)
 working tree: only the known CRLF artifacts + the report/bundle additions
 no push • no tag • no release • no remote branch-protection change
 ```
 
-RC2 commits on `d3025ac` (11): `df27c4c` → `d40381b` → `f489c0c` → `456c52b` →
-`c083e82` → `89d61e0` → `e12f557` → `8e3d016` → `52ec326` (matrix/audits/SBOM)
-→ `2068902` (this report) → `6bf2049` (LF hygiene). No push; `origin/main`
-still `d3025ac`.
+RC2 commit chain on `d3025ac`: release engineering → C-1 → H-1 → H-2 →
+§7/§20 → §18 → H-2 read-order follow-up → §14/§19/§24/§26 docs → §11/§15/§16/
+§17 matrix+audits+SBOM → §32 final report → LF hygiene → report corrections.
+No push; `origin/main` is still `d3025ac`. The exact 13-commit list with
+hashes is in `17-final-git-status.txt`.
 
 ## 8. Review bundle
 
