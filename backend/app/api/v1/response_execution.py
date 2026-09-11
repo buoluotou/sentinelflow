@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -346,64 +346,116 @@ def list_executions(
     read contract, completed 3.1.9). Filters narrow the derived-state
     view only — state comes exclusively from the frozen
     derive_execution_state(); this layer never recomputes. Read ≠
-    execute: no token, no writes."""
+    execute: no token, no writes.
+
+    RC2: pagination happens at the EXECUTION-CHAIN level inside SQL. The
+    previous implementation loaded the ENTIRE ``execution_log`` table into
+    Python, grouped it, filtered it and only then sliced a page — O(table)
+    memory and latency per request. Two window functions now pick exactly one
+    row per chain (its first row by ``(created_at, id)`` and its latest row by
+    the same ordering, DESC — the very ordering ``derive_execution_state``
+    uses), the chain-level filters, ordering and LIMIT/OFFSET run in the
+    database, and only the CURRENT PAGE's audit rows are hydrated. The
+    ``derived_state`` of the returned items is still produced by
+    ``derive_execution_state`` over those rows: the SQL expression is only the
+    filter/order key, and a test pins the two together."""
+    # 1. Rank every row inside its own chain. ``rn_first`` = the chain's first
+    #    row, ``rn_last`` = its latest row, both by the frozen (created_at, id)
+    #    ordering of derive_execution_state() (state.py).
+    first_rank = func.row_number().over(
+        partition_by=ExecutionLog.execution_id,
+        order_by=(ExecutionLog.created_at.asc(), ExecutionLog.id.asc()),
+    ).label("rn_first")
+    last_rank = func.row_number().over(
+        partition_by=ExecutionLog.execution_id,
+        order_by=(ExecutionLog.created_at.desc(), ExecutionLog.id.desc()),
+    ).label("rn_last")
+    ranked = select(
+        ExecutionLog.execution_id.label("execution_id"),
+        ExecutionLog.id.label("row_id"),
+        ExecutionLog.created_at.label("created_at"),
+        ExecutionLog.decision.label("decision"),
+        ExecutionLog.direction.label("direction"),
+        ExecutionLog.approval_id.label("approval_id"),
+        ExecutionLog.action.label("action"),
+        ExecutionLog.target.label("target"),
+        ExecutionLog.operator.label("operator"),
+        first_rank,
+        last_rank,
+    ).subquery("ranked_execution_log")
+    heads = select(ranked).where(ranked.c.rn_first == 1).subquery("chain_head")
+    tails = select(ranked).where(ranked.c.rn_last == 1).subquery("chain_tail")
+    # 2. One row per chain: the head carries the chain's own facts, the tail its
+    #    latest stamp, its latest decision (= the derived state) and the row id
+    #    used as the RC2/H-2 tie-break.
+    chains = select(
+        heads.c.execution_id,
+        heads.c.approval_id,
+        heads.c.direction,
+        heads.c.action,
+        heads.c.target,
+        heads.c.operator,
+        heads.c.created_at,
+        tails.c.created_at.label("last_decision_at"),
+        tails.c.row_id.label("last_row_id"),
+        tails.c.decision.label("derived_state"),
+    ).select_from(
+        heads.join(tails, heads.c.execution_id == tails.c.execution_id)
+    )
+    # Filters operate on server-derived fields only — never re-deriving.
+    if direction is not None:
+        chains = chains.where(heads.c.direction == direction)
+    if approval_id is not None:
+        chains = chains.where(heads.c.approval_id == approval_id)
+    if status is not None:
+        chains = chains.where(tails.c.decision == status)
+    # 3. total = the number of CHAINS matching the filters; no audit rows are
+    #    transferred to compute it.
+    total = db.scalar(select(func.count()).select_from(chains.subquery())) or 0
+    # 4. Only the requested page of chains leaves the database. Most recent
+    #    activity first; the stamp tie resolves to the insert-ordered UUIDv7 of
+    #    the chain's last audit row (RC2 / H-2) — never a random execution_id
+    #    lottery, never a clock artifact.
+    page_rows = db.execute(
+        chains.order_by(tails.c.created_at.desc(), tails.c.row_id.desc())
+        .limit(size)
+        .offset((page - 1) * size)
+    ).all()
+    if not page_rows:
+        return ExecutionListResponse(total=total, page=page, size=size, items=[])
+    # 5. Hydrate the audit rows of THOSE chains only (created_at ASC, so a chain
+    #    reads forward), then derive each state with the frozen function.
     rows = list(
         db.scalars(
-            select(ExecutionLog).order_by(
-                ExecutionLog.created_at.asc(), ExecutionLog.id.asc()
+            select(ExecutionLog)
+            .where(
+                ExecutionLog.execution_id.in_(
+                    [chain.execution_id for chain in page_rows]
+                )
             )
+            .order_by(ExecutionLog.created_at.asc(), ExecutionLog.id.asc())
         )
     )
     grouped: dict[uuid.UUID, list[ExecutionLog]] = {}
-    order: list[uuid.UUID] = []
-    #: RC2 / H-2 tie-break: the chain's LAST row id is an insertion-ordered
-    #: UUIDv7, so (created_at, id) is deterministic on EVERY dialect —
-    #: including SQLite's second-precision CURRENT_TIMESTAMP where
-    #: rapid consecutive chains share a stamp (a uuid4 execution_id would
-    #: degrade this to a random lottery).
-    last_row_id: dict[uuid.UUID, uuid.UUID] = {}
     for row in rows:
-        if row.execution_id not in grouped:
-            grouped[row.execution_id] = []
-            order.append(row.execution_id)
-        grouped[row.execution_id].append(row)
-        last_row_id[row.execution_id] = row.id
-    summaries: list[ExecutionSummaryRead] = []
-    for execution_id in order:
-        asc_rows = grouped[execution_id]
-        first, last = asc_rows[0], asc_rows[-1]
-        summaries.append(
-            ExecutionSummaryRead(
-                execution_id=execution_id,
-                approval_id=first.approval_id,
-                direction=first.direction,
-                action=first.action,
-                target=first.target,
-                operator=first.operator,
-                derived_state=derive_execution_state(list(reversed(asc_rows))),
-                chain=[row.decision for row in asc_rows],
-                created_at=first.created_at,
-                last_decision_at=last.created_at,
-            )
+        grouped.setdefault(row.execution_id, []).append(row)
+    items = [
+        ExecutionSummaryRead(
+            execution_id=chain.execution_id,
+            approval_id=chain.approval_id,
+            direction=chain.direction,
+            action=chain.action,
+            target=chain.target,
+            operator=chain.operator,
+            derived_state=derive_execution_state(
+                list(reversed(grouped[chain.execution_id]))
+            ),
+            chain=[row.decision for row in grouped[chain.execution_id]],
+            created_at=chain.created_at,
+            last_decision_at=chain.last_decision_at,
         )
-    # Filters operate on server-derived fields only — never re-deriving.
-    if status is not None:
-        summaries = [s for s in summaries if s.derived_state == status]
-    if direction is not None:
-        summaries = [s for s in summaries if s.direction == direction]
-    if approval_id is not None:
-        summaries = [s for s in summaries if s.approval_id == approval_id]
-    # Most recent activity first; fully deterministic tie-breaks. The stamp
-    # tie resolves to the insert-ordered UUIDv7 of the chain's last audit row
-    # (RC2 / H-2) — never a random execution_id lottery, never a clock
-    # artifact; a tie here means "same recorded stamp", so insertion order
-    # IS the true order.
-    summaries.sort(
-        key=lambda s: (s.last_decision_at, last_row_id[s.execution_id]),
-        reverse=True,
-    )
-    total = len(summaries)
-    items = summaries[(page - 1) * size : (page - 1) * size + size]
+        for chain in page_rows
+    ]
     return ExecutionListResponse(total=total, page=page, size=size, items=items)
 
 
