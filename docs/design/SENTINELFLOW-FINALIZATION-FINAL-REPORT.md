@@ -5,8 +5,10 @@
 - **Host**: Kali GNU/Linux Rolling (6 vCPU / 6.2 GiB RAM / 79 GB disk),
   Docker Engine 28.5.2, Compose v5.3.1
 - **Repository**: `/home/kali/Documents/QoderCN/2026-09-10/chat-1/sentinelflow`
-  — branch `main`, frozen baseline `d3025ac`, RC2 HEAD `8e3d016`
-  (this report is itself the final commit of the round)
+  — branch `main`, frozen baseline `d3025ac`. This report describes the RC2
+  round; it deliberately carries NO hand-filled HEAD (RC2-R continued on top —
+  see `SENTINELFLOW-RC2-R-FINAL-REPORT.md` and the acceptance bundle's
+  `00-git-status.txt` for the dynamically recorded head of each round).
 - **Discipline**: local forward commits only — **no push, no tag, no release,
   no remote branch-protection change** (final review gate respected)
 - **Evidence**: `../rc2-evidence/` (outside the repository) + the review
@@ -75,7 +77,7 @@ RESOURCE BLOCKED / NOT CERTIFIED.
 | 17 | THEHIVE CONNECTIVITY | **PASS** | isolated lab, digest `c8b6c7ea…c6811` verified (`13-thehive-lab`) |
 | 18 | THEHIVE WRITE | **PASS** | real case `~8408` via durable dispatch, tags + severity verified |
 | 19 | THEHIVE READ | **PASS** | trusted reader: resource id, correlation tag, createdAt; independent key |
-| 20 | THEHIVE VERIFIED OUTCOME | **BLOCKED BY GATE 5** | instance/tenant = None; `UnrecognizedExternalState`; zero facts |
+| 20 | THEHIVE VERIFIED OUTCOME | **BLOCKED** | TWO distinct gates (split in the RC2-R report §5.1): (A) the shared external-state vocabulary is EMPTY -> `UnrecognizedExternalState`, zero facts; (B) even with a certified state, Gate 5 fails structurally (instance/tenant = None). Never conflate A and B. |
 | 21 | SHUFFLE CONNECTIVITY | **RESOURCE BLOCKED** | OpenSearch-based stack ≥4 GB; measured headroom insufficient |
 | 22 | SHUFFLE WRITE | **NOT VALIDATED** | code-certified only; no real runtime this round |
 | 23 | SHUFFLE READ | **NOT IN SCOPE** | no reader exists; registry stays EMPTY (404 fail-closed) |
@@ -153,9 +155,14 @@ RESOURCE BLOCKED / NOT CERTIFIED.
 
 ## 6. What remains blocked / open (no fabrication)
 
-- **Gate 5** — open design question, version-independent (see the feasibility
-  study): an authoritative instance/tenant fact must exist on BOTH the write
-  binding and the read observation.
+- **TheHive outcome — two distinct gates** (RC2-R §5.1): (A) CURRENT blocker:
+  the shared external-state vocabulary is EMPTY / no certified TheHive
+  external-state transition exists, so the standard reconcile path rejects with
+  `UnrecognizedExternalState` and persists ZERO fabricated outcomes;
+  (B) STRUCTURAL proof blocker: even if a future exact-version external state
+  is certified, TheHive 4.1.24-1 still lacks an authoritative instance/tenant
+  fact on both the write binding and the read observation, so Gate 5 would
+  still fail. `UnrecognizedExternalState` is NOT "the Gate 5 failure".
 - **Shuffle + Wazuh real labs** — RESOURCE BLOCKED with minimums recorded; no
   runtime claim is made and no mock substituted.
 - **Compensation reverse path** — durable + PG-tested, but not yet validated
@@ -169,11 +176,10 @@ RESOURCE BLOCKED / NOT CERTIFIED.
 ## 7. Git state at the stop point
 
 ```
-branch: main          baseline: d3025ac (origin/main untouched)
-local forward commits: 13 (the authoritative final list + hash is in the
-review bundle's `17-final-git-status.txt`, generated at bundle time — this
-report avoids self-referential hashes)
-working tree: only the known CRLF artifacts + the report/bundle additions
+branch: main          baseline: d3025ac (origin/main untouched at RC2 time)
+RC2 local forward commits: 13 (the RC2 review bundle's
+`17-final-git-status.txt` records that round's list verbatim; RC2-R later
+added its own forward commits on top — see the RC2-R report)
 no push • no tag • no release • no remote branch-protection change
 ```
 
