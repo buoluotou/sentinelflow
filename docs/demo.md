@@ -97,7 +97,7 @@ Open one high-risk event (e.g. *Malicious IOC match detected*, score 90). Three 
 
 ## 8. Response Execution (Execute Console)
 
-1. Open the **Execute Console** page. The recommendation you approved in Step 7 appears as executable (the approval is already recorded).
+1. Open **Incidents**, pick the case whose event carries the recommendation you approved in Step 7, and scroll to its **AI Investigation** panel. The approved recommendation appears there as executable (the approval is already recorded) — that panel is the console's execution affordance; there is no separate Execute Console page.
 2. Select the action (e.g. *Block source IP*), enter an operator name and an optional note, then click **Execute**. Note: the recorded operator identity comes from the Bearer token (RBAC, v1.3.0) — the typed name is display-only and never recorded; only `executor` / `admin` roles may dispatch.
 3. The MockExecutor processes the request as a zero-outbound DryRun: `201` with `status=succeeded`, `detail` showing `{"dry_run": true}`. No real external call is made.
 4. Open the **Execution Audit** page — the append-only `execution_log` shows the row you just created: execution id, adapter name (`mock`), action, target, operator, status (`succeeded`), and the redacted detail. Secrets never appear.
@@ -108,7 +108,7 @@ Open one high-risk event (e.g. *Malicious IOC match detected*, score 90). Three 
 
 1. Open one of the auto-created incidents → the **AI Investigation** panel loads via a single `GET /incidents/{id}/ai-context`.
 2. It shows the incident snapshot (status/severity + the frozen **risk score snapshot**) and the event's complete AI histories — explanation, risk summary and recommendation, newest first — with the **Approved** chip (reviewer + timestamp) auditing the Step 7 decision.
-3. The panel renders **zero buttons**: no approve, reject or execute affordance of any kind — it observes, reviews and audits only.
+3. The panel is read-only (one `GET`, zero writes) and offers **no approve/reject affordance** — decisions belong to the Approval Queue. It does embed the guarded **Execute** control for an *approved* recommendation: clicking it POSTs `/api/v1/executions`, and every request is still gated server-side by RBAC + Guard + policy.
 4. An incident with no AI history shows the legal empty state "No AI analysis available yet." — not an error.
 
 ## 10. Reset

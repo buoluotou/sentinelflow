@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app import __version__
 from app.api.v1.router import router as v1_router
 from app.core.config import settings
 from app.core.runtime_mode import (
@@ -92,7 +93,9 @@ async def _lifespan(application: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    version="1.3.0",
+    # Single source of truth (app.__version__) — the OpenAPI version used to lag
+    # one release behind the shipped tag. Bumped with the release, not by hand.
+    version=__version__,
     lifespan=_lifespan,
 )
 

@@ -161,8 +161,8 @@ Demo Mode.
   service (`postgres` healthy → `migrate` → `backend`). Do **not** also run
   `alembic` by hand against the compose database while the stack is up.
 - `Base.metadata.create_all()` is **never** used in production — schema only comes
-  from Alembic (`0001 … 0012`).
-- Check state: `alembic current` (should read `0012 (head)`) vs `alembic heads`.
+  from Alembic (`0001 … 0014`).
+- Check state: `alembic current` (should read `0014 (head)`) vs `alembic heads`.
   Doctor compares them for you. The chain is reversible
   (`alembic downgrade base` → `upgrade head` verified).
 - Native "database is locked" **during migration** usually means another process

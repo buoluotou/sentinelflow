@@ -1,5 +1,9 @@
 # SentinelFlow M5 — Release-Readiness Final Report
 
+> **Historical snapshot (M5 baseline, HEAD `5545de0`, Alembic `0012`).** The test
+> counts and the Alembic head below are from that round; `README.md` carries the
+> current figures and the current head.
+
 > **Milestone:** M5 — Full Code Audit, Logic Optimization & Quickstart Release Readiness.
 > **Authorization:** ONE AGENT · FULL-REPO AUDIT · SAFE REFACTOR · INSTALLATION ENGINEERING · FEASIBILITY VALIDATION · LOCAL FORWARD COMMITS · NO PUSH.
 > **Repository:** `D:\edge\github\sentinelflow` (local, `main`).

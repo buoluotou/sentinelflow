@@ -88,8 +88,11 @@ the console and watch the Dashboard light up, then follow the
 - **Alert explanation**, **risk summary** and **response recommendation** (drawn
   from a frozen action vocabulary). The AI **never emits a risk score** — the
   event's own score stays authoritative.
-- **Incident AI investigation** — a read-only panel aggregating an event's full
-  AI history and approval audit. Zero buttons, zero mutating traffic.
+- **Incident AI investigation** — read-only aggregation of an event's full AI
+  history and approval audit (one `GET`, no writes, no approve/reject
+  affordance). For an *approved* recommendation it also embeds the console's
+  guarded **Execute** control — the same Guard + policy gate and `executor` /
+  `admin` RBAC as any other dispatch.
 
 **Human approval + controlled execution**
 - **Approval Queue** — one-shot approve/reject decisions; "pending" is derived,
@@ -116,7 +119,8 @@ the console and watch the Dashboard light up, then follow the
   the audit log. *Observed ≠ probed*: no live health probe, no outbound request.
 
 **Web console** — a dark SOC theme: Dashboard, Events, Incidents, Approval Queue,
-Execute Console, Execution Audit and Observability.
+Execution Audit and Observability. Execution is dispatched from the Incident
+**AI Investigation** panel (there is no separate Execute Console page).
 
 ---
 
@@ -251,7 +255,7 @@ sentinelflow/
 ## Testing
 
 ```bash
-# Backend (2869 tests; the external-integration suite is deselected by default)
+# Backend (2996 tests; the external-integration suite is deselected by default)
 cd backend && python -m pytest -q
 
 # Frontend
@@ -322,9 +326,9 @@ CORS/frontend, migrations).
 
 | Status | Capability |
 |---|---|
-| **Available** | Detection → incident pipeline; advisory AI (mock / Ollama / cloud); human approval; controlled execution with a mock executor; governance (operator RBAC, execution policy, metrics, observed health); durable dispatch, external-outcome reconciliation and recovery |
+| **Available** | Detection → incident pipeline; advisory AI (mock / Ollama / cloud); human approval; controlled execution with a mock executor; governance (operator RBAC, execution policy, metrics, observed health); durable dispatch, plus the external-outcome channels (inbound webhook + manual reconcile, kept in **separate trust domains**) — shipped and tested but **fail-closed by default**: the external-state vocabulary and the production read registry are deliberately empty, so an outcome is refused with a static `404` / `422` rather than fabricated |
 | **Available (LAB / EXPERIMENTAL)** | Real Shuffle / Wazuh / TheHive adapters — config-gated, not production-certified |
-| **Next** | Broaden certified external integrations; edge authentication/authorization for exposed deployments; performance and pagination at audit-log scale |
+| **Next** | Certify an evidenced external-state vocabulary (today the outcome channels refuse every state **by design**); broaden certified external integrations; edge authentication/authorization for exposed deployments; further read-path work at audit-log scale (the execution audit list is now chain-level paginated in SQL) |
 
 ---
 

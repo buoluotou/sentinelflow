@@ -1,4 +1,4 @@
-# SentinelFlow Architecture (v1.3.0)
+# SentinelFlow Architecture (v1.4.0-rc1)
 
 ## Overview
 
@@ -148,7 +148,7 @@ The governance triangle over the v1.2.0 execution layer — Who can execute + Wh
 
 ## Incident AI Context (read-only aggregation)
 
-`GET /incidents/{id}/ai-context` composes the incident's event AI history into one DTO through `viewonly` ORM traversals — zero schema change, zero writes (no add/flush/commit in the service). The incident snapshot exposes only the creation-time `risk_score`; AI histories embed their Step 10–13 protocol schemas unchanged, each recommendation carrying its `approval | null`. Unknown incident → unified `404` before anything is assembled (no cross-case leak). The console panel renders this single GET with zero buttons and zero mutating traffic: **Observe / Review / Audit, never Decide / Execute.**
+`GET /incidents/{id}/ai-context` composes the incident's event AI history into one DTO through `viewonly` ORM traversals — zero schema change, zero writes (no add/flush/commit in the service). The incident snapshot exposes only the creation-time `risk_score`; AI histories embed their Step 10–13 protocol schemas unchanged, each recommendation carrying its `approval | null`. Unknown incident → unified `404` before anything is assembled (no cross-case leak). The console panel renders this single GET (no writes, no approve/reject affordance) and embeds the guarded **Execute** control for an *approved* recommendation — **Observe / Review / Audit here, Decide in the Approval Queue, Execute through the guarded chain.**
 
 ## Backend Layering (invariant)
 

@@ -26,7 +26,7 @@ The compose file uses env-var substitution only — no secrets are baked into th
 cd backend
 python -m venv .venv && source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements/base.lock
-python -m alembic upgrade head                        # migrations 0001–0012
+python -m alembic upgrade head                        # migrations 0001–0014
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -102,7 +102,7 @@ Phase 1 is intentionally minimal — review every item before exposing the platf
 3. `python -m alembic upgrade head`
 4. Restart the backend
 
-Migrations are additive and reversible (full downgrade support), `0001–0013`.
+Migrations are additive and reversible (full downgrade support), `0001–0014`.
 
 ## Resource guidance (RC2 §18)
 

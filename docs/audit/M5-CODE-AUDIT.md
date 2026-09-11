@@ -1,5 +1,8 @@
 # SentinelFlow M5 — 全仓代码审计（CODE AUDIT）
 
+> **历史快照（M5 基线，HEAD `5545de0`，Alembic `0012`）。** 下方部分发现此后已被修复（例如 H-1），
+> 测试数（2869）也属于当时基线、并非当前套件；本文档是**当时**的记录，不代表当前状态。
+
 > 范围：真实全仓 `D:\edge\github\sentinelflow`（后端 `backend/app` 130 个 .py + 迁移 + 前端 `frontend/src` 49 个 ts/tsx + 配置/依赖/构建），**非**仅 M4 文件。
 > 方法：入口→Outcome 全链只读追踪 + 三份并行子代理证据（后端链/前端/配置依赖）+ 本人对将修改项的逐条 `文件:行` 复核。
 > 基线（审计时）：HEAD `5545de0`（main，ahead 63），Alembic head `0012`。M5 后续本地前向提交：`34799e2`(audit) → `f0085df`(logic-refactor)，现 HEAD `f0085df`（ahead 65）；quickstart/docker/docs/tests 阶段提交见 §20。
