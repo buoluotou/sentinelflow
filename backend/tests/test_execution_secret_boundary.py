@@ -20,6 +20,7 @@ ZERO real external HTTP in this file (or in 3.2.2 at all): Shuffle /
 Wazuh / TheHive business calls land in 3.2.3 / 3.2.4 / 3.2.5.
 """
 import io
+import json
 import logging
 import uuid
 
@@ -441,3 +442,142 @@ class TestFullPathLeak:
         for surface in surfaces:
             assert FAKE_SECRET not in surface, f"LEAK on surface: {surface}"
         assert response.status_code == 503
+
+
+# --------------------------------------------------------------------------
+# 10. RC2 — the logging filter is actually INSTALLED (it used to be tests-only)
+# --------------------------------------------------------------------------
+class TestLoggingRedactionIsInstalled:
+    """RC2 regression: ``SecretRedactionFilter`` was defined and exercised by
+    tests, but ``_configure_logging()`` never attached it — so the README's
+    "secrets are never logged at any level" rested on there happening to be no
+    secret-bearing log line. It is now installed on the app logger, the root
+    logger and their handlers."""
+
+    @pytest.fixture()
+    def restore_logging(self):
+        """Snapshot/restore the filters of the loggers + handlers we touch, so
+        this file never leaks global logging state into the rest of the suite."""
+        root = logging.getLogger()
+        app_logger = logging.getLogger("sentinelflow")
+        targets = [root, app_logger, *root.handlers, *app_logger.handlers]
+        before = {id(target): list(target.filters) for target in targets}
+        yield
+        for target in targets:
+            target.filters = before[id(target)]
+
+    def test_configure_logging_installs_the_filter(self, restore_logging):
+        from app.main import _configure_logging
+        _configure_logging()
+        assert any(
+            isinstance(f, SecretRedactionFilter)
+            for f in logging.getLogger("sentinelflow").filters
+        )
+        assert any(
+            isinstance(f, SecretRedactionFilter)
+            for f in logging.getLogger().filters
+        )
+
+    def test_install_is_idempotent(self, restore_logging):
+        from app.main import _configure_logging
+        _configure_logging()
+        _configure_logging()
+        app_logger = logging.getLogger("sentinelflow")
+        assert sum(
+            isinstance(f, SecretRedactionFilter) for f in app_logger.filters
+        ) == 1
+
+    def test_app_logger_record_is_masked_after_configure(
+        self, monkeypatch, restore_logging
+    ):
+        monkeypatch.setattr(settings, "EXECUTION_TOKEN", FAKE_SECRET)
+        app_logger = logging.getLogger("sentinelflow")
+        # The filter captures the secret set ONCE, at install time (= app boot),
+        # and the ``client`` fixture's lifespan has already installed one built
+        # from the ambient settings. Simulate a fresh process so this test
+        # proves the PRODUCTION path masks the secret configured at startup.
+        app_logger.filters = [
+            f for f in app_logger.filters
+            if not isinstance(f, SecretRedactionFilter)
+        ]
+        from app.main import _configure_logging
+        _configure_logging()
+
+        app_logger = logging.getLogger("sentinelflow")
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        app_logger.addHandler(handler)
+        app_logger.setLevel(logging.INFO)
+        try:
+            app_logger.info("authorization: Bearer %s", FAKE_SECRET)
+        finally:
+            app_logger.removeHandler(handler)
+
+        assert FAKE_SECRET not in stream.getvalue()
+        assert MASK in stream.getvalue()
+
+
+# --------------------------------------------------------------------------
+# 11. RC2 — the substitution set covers EVERY credential-bearing setting
+# --------------------------------------------------------------------------
+class TestRedactionSetCompleteness:
+    """RC2 regression: the set held the adapter keys + the legacy execution token
+    only. Operator tokens, callback tokens, the AI provider key and the password
+    inside ``DATABASE_URL`` were missing — interpolating any of them into a log
+    line would have printed it in the clear."""
+
+    def test_operator_tokens_are_redactable(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
+            {"token": "op-token-abc-123456", "name": "alice", "role": "executor"},
+        ]))
+        assert "op-token-abc-123456" in current_secret_values()
+
+    def test_every_operator_token_is_redactable(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
+            {"token": "op-token-one-111111", "name": "alice", "role": "executor"},
+            {"token": "op-token-two-222222", "name": "bob", "role": "reviewer"},
+        ]))
+        values = set(current_secret_values())
+        assert {"op-token-one-111111", "op-token-two-222222"} <= values
+
+    def test_callback_tokens_are_redactable(self, monkeypatch):
+        monkeypatch.setattr(settings, "SHUFFLE_CALLBACK_TOKEN", "cb-shuffle-333333")
+        monkeypatch.setattr(settings, "WAZUH_CALLBACK_TOKEN", "cb-wazuh-444444")
+        monkeypatch.setattr(settings, "THEHIVE_CALLBACK_TOKEN", "cb-thehive-555555")
+        values = set(current_secret_values())
+        assert {"cb-shuffle-333333", "cb-wazuh-444444", "cb-thehive-555555"} <= values
+
+    def test_ai_api_key_is_redactable(self, monkeypatch):
+        monkeypatch.setattr(settings, "AI_API_KEY", "sk-ai-key-666666")
+        assert "sk-ai-key-666666" in current_secret_values()
+
+    def test_database_url_password_is_redactable(self, monkeypatch):
+        monkeypatch.setattr(
+            settings,
+            "DATABASE_URL",
+            "postgresql+psycopg://sf:s3cret-pw-777777@db:5432/sentinelflow",
+        )
+        assert "s3cret-pw-777777" in current_secret_values()
+
+    def test_database_url_without_a_password_adds_nothing(self, monkeypatch):
+        monkeypatch.setattr(settings, "DATABASE_URL", "sqlite:///./demo.db")
+        assert all("demo.db" not in value for value in current_secret_values())
+
+    @pytest.mark.parametrize(
+        "blob",
+        ["", "   ", "{not json", '{"token": "x"}', "[]", "[1, 2, 3]"],
+    )
+    def test_unusable_operators_json_never_raises(self, monkeypatch, blob):
+        # A redaction helper must never raise, whatever the blob looks like.
+        monkeypatch.setattr(settings, "OPERATORS_JSON", blob)
+        assert isinstance(current_secret_values(), tuple)
+
+    def test_redact_text_masks_an_operator_token(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
+            {"token": "op-token-abc-123456", "name": "alice", "role": "executor"},
+        ]))
+        assert (
+            redact_text("dispatch by op-token-abc-123456")
+            == f"dispatch by {MASK}"
+        )

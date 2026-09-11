@@ -13,8 +13,31 @@ from app.core.runtime_mode import (
 )
 from app.core.database import get_db
 from app.services.executions.registry import validate_adapter_config
+from app.services.executions.secrets import SecretRedactionFilter
 
 logger = logging.getLogger("sentinelflow")
+
+
+def _install_secret_redaction() -> None:
+    """Install the platform-wide ``***`` gate on every logger AND handler.
+
+    The README promises "secrets are never logged at any level", but the filter
+    was only ever attached in tests — in production nothing was installed, so
+    the promise rested on there happening to be no secret-bearing log line.
+    Handlers are filtered as well as loggers: a logger filter only sees records
+    logged through that logger directly, whereas a HANDLER filter sees every
+    propagated record, including uvicorn's. Idempotent, so repeated
+    ``_configure_logging()`` calls (tests, reloads) never stack filters."""
+    redaction = SecretRedactionFilter()
+    targets = [logger, logging.getLogger()]
+    targets.extend(logging.getLogger().handlers)
+    targets.extend(logger.handlers)
+    for target in targets:
+        if not any(
+            isinstance(existing, SecretRedactionFilter)
+            for existing in target.filters
+        ):
+            target.addFilter(redaction)
 
 
 def _configure_logging() -> None:
@@ -26,6 +49,7 @@ def _configure_logging() -> None:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
         logger.addHandler(handler)
+    _install_secret_redaction()
 
 
 def _safe_config_summary() -> str:

@@ -28,6 +28,7 @@ build their HTTP calls ON this boundary, never around it.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -189,12 +190,52 @@ def credentials_from_settings(adapter: str, settings_obj=None) -> AdapterCredent
 # --------------------------------------------------------------------------
 # Redaction (the platform-wide *** gate, frozen design §8)
 # --------------------------------------------------------------------------
+def _operator_tokens(operators_json: str) -> tuple[str, ...]:
+    """Every ``token`` inside ``OPERATORS_JSON`` (a malformed blob yields none).
+
+    The registry already REFUSES to boot on malformed JSON, so this is a purely
+    defensive path: a redaction helper must never raise."""
+    raw = (operators_json or "").strip()
+    if not raw:
+        return ()
+    try:
+        entries = json.loads(raw)
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(entries, list):
+        return ()
+    tokens: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            token = entry.get("token")
+            if isinstance(token, str) and token.strip():
+                tokens.append(token)
+    return tuple(tokens)
+
+
+def _database_url_password(database_url: str) -> tuple[str, ...]:
+    """The password embedded in ``DATABASE_URL``, if it carries one.
+
+    Only the password is taken: the driver / host / database name stay
+    diagnosable in logs, the credential itself never does."""
+    try:
+        password = urlsplit(database_url or "").password
+    except ValueError:
+        return ()
+    return (password,) if password else ()
+
+
 def current_secret_values(settings_obj=None) -> tuple[str, ...]:
     """Every live secret value held by Settings (empty values dropped).
 
     This is the substitution set for all redaction paths. Memory-only,
     process-lifetime — the same exposure class as holding the settings
-    themselves, never widened."""
+    themselves, never widened.
+
+    RC2: the set was INCOMPLETE. It covered the adapter keys and the legacy
+    execution token, but NOT the operator tokens, the per-adapter callback
+    tokens, the AI provider key, or the password inside ``DATABASE_URL`` — any
+    of which could have been interpolated into a log line unmasked."""
     source = settings_obj if settings_obj is not None else settings
     candidates = (
         source.SHUFFLE_API_KEY,
@@ -204,6 +245,13 @@ def current_secret_values(settings_obj=None) -> tuple[str, ...]:
         # rides the same Authorization header, so it joins the redaction set.
         source.THEHIVE_READ_API_KEY,
         source.EXECUTION_TOKEN,
+        # RC2: every remaining credential-bearing setting.
+        source.SHUFFLE_CALLBACK_TOKEN,
+        source.WAZUH_CALLBACK_TOKEN,
+        source.THEHIVE_CALLBACK_TOKEN,
+        source.AI_API_KEY or "",
+        *_operator_tokens(source.OPERATORS_JSON),
+        *_database_url_password(source.DATABASE_URL),
     )
     return tuple(value.strip() for value in candidates if value and value.strip())
 
