@@ -31,6 +31,18 @@ raise ExecutorOutcomeViolation — protocol_violation is adjudicated by
 the platform parse ONLY (D9). Credentials: WAZUH_API_USER /
 WAZUH_API_PASSWORD -> Basic Authorization header via the 3.2.2 Secret
 Boundary; the secret never rides URL / query / body / detail.
+
+RC2-R §3.3/§3.5. Two closures on the reverse path:
+- the adapter implements ``CompensationBindingContributor``: the reverse
+  target (``command:<cmd>`` + the exact active-response endpoint) is bound
+  at BIND time and CONSUMED at SEND time, so the wire call can never
+  diverge from the durable binding (a mapping/config drift refuses
+  fail-closed, zero outbound). ``block_source_ip`` is NEVER recorded as the
+  reverse operation itself — the bound ref is the real reverse command
+  (``command:unblock-source-ip`` / ``command:release-host``);
+- the production transport is a NO-REDIRECT opener (a 3xx is refused by
+  ``HTTPError`` — the Authorization header is never forwarded cross-host
+  and the request never leaves the bound endpoint).
 """
 from __future__ import annotations
 
@@ -38,9 +50,13 @@ import json
 import re
 import urllib.error
 import urllib.request
-from typing import Callable
+from typing import Any, Callable
 
 from app.services.executions.base import ResponseExecutor
+from app.services.executions.compensation_binding import (
+    CompensationBinding,
+    CompensationBindingContributor,  # noqa: F401 — protocol marker (isinstance)
+)
 from app.services.executions.exceptions import (
     ExecutorConfigError,
     ExecutorOutcomeViolation,
@@ -52,6 +68,7 @@ from app.services.executions.secrets import (
     redact_text,
     validate_base_url,
 )
+from app.services.executions.transport import build_no_redirect_opener
 
 #: 3.2.4 adjudication — exactly these three endpoint capabilities.
 #: escalate / hunt belong to TheHive; monitor_only to the analysis
@@ -72,6 +89,10 @@ WAZUH_REVERSE_COMMANDS = {
     "isolate_host": "release-host",
     "block_source_ip": "unblock-source-ip",
 }
+
+#: The CERTIFIED reverse-command set (RC2-R §3.3): a durable binding's
+#: ``command:`` reference is accepted only when it names one of these.
+WAZUH_CERTIFIED_REVERSE_COMMANDS = frozenset(WAZUH_REVERSE_COMMANDS.values())
 
 #: External duplicate signals (frozen §5) — idempotency HITs for the
 #: SAME execution_id -> command pair.
@@ -110,7 +131,9 @@ class WazuhExecutor(ResponseExecutor):
     ``transport`` is the deployment seam for tests: a callable
     ``transport(request, timeout=...) -> response`` where response has
     ``status``/``read()`` — matching ``urllib.request.urlopen`` shape.
-    Production uses the default urllib opener; there is NO retry layer,
+    Production uses a NO-REDIRECT opener (RC2-R §3.5: a 3xx is refused, so
+    the ``Authorization`` header is never forwarded cross-host and the real
+    request target stays the bound endpoint); there is NO retry layer,
     NO polling and NO callback surface around it (E5 — the transport is
     invoked exactly once per call).
     """
@@ -133,7 +156,8 @@ class WazuhExecutor(ResponseExecutor):
             raise ExecutorConfigError("Wazuh timeout must be positive")
         self._credentials = credentials
         self._timeout = timeout
-        self._transport = transport or urllib.request.urlopen
+        # RC2-R §3.5: refuse redirects by default — never bare urlopen.
+        self._transport = transport or build_no_redirect_opener().open
 
     @property
     def name(self) -> str:
@@ -159,16 +183,108 @@ class WazuhExecutor(ResponseExecutor):
         return self._send(dispatch, command=command)
 
     def compensate(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
-        reverse = WAZUH_REVERSE_COMMANDS.get(dispatch.action)
-        if reverse is None:
-            raise ValueError(
-                f"wazuh adapter has no reverse command for "
-                f"'{dispatch.action}'"
-            )
+        reverse = self._reverse_command(dispatch.action)
         return self._send(dispatch, command=reverse)
 
+    # ------------------------------------------------------------------
+    # RC2-R §3.1/§3.3 — compensation target binding (server-side facts only)
+    # ------------------------------------------------------------------
+    def compensation_binding_facts(self, dispatch: ExecutionDispatch) -> dict[str, Any]:
+        """BIND time: the REAL reverse command + the exact active-response
+        endpoint the wire call will use. Assembled from the frozen server-side
+        action->command table + the validated base URL — never a request body
+        field, and never the original action masquerading as the reverse
+        operation. A missing reverse command or an unsafe target refuses
+        before any outbound."""
+        reverse = WAZUH_REVERSE_COMMANDS.get(dispatch.action)
+        if reverse is None:
+            raise ExecutorConfigError(
+                "wazuh adapter has no reverse command for "
+                f"'{dispatch.action}' — refusing to bind a reverse target "
+                "(zero outbound)"
+            )
+        target = dispatch.target or ""
+        if not _SAFE_TARGET.fullmatch(target):
+            raise ExecutorConfigError(
+                "wazuh dispatch target is not a safe agent identifier — "
+                "refusing to bind a reverse target (zero outbound)"
+            )
+        return {
+            "reverse_operation_ref": f"command:{reverse}",
+            "endpoint": self._active_response_endpoint(target),
+        }
+
+    def compensate_with_binding(
+        self, dispatch: ExecutionDispatch, binding: CompensationBinding
+    ) -> ExecutionOutcome:
+        """SEND time: CONSUME the committed binding — the outbound payload
+        carries the BOUND command and targets the BOUND endpoint, never a
+        re-read of mutable settings. Any drift between the binding and the
+        current server-side mapping/configuration refuses FAIL-CLOSED with
+        ZERO outbound (the transport is never invoked)."""
+        ref = binding.reverse_operation_ref or ""
+        prefix = "command:"
+        command = ref[len(prefix):] if ref.startswith(prefix) else ""
+        if command not in WAZUH_CERTIFIED_REVERSE_COMMANDS:
+            raise ExecutorConfigError(
+                "compensation binding carries no certified wazuh reverse "
+                "command (reverse_operation_ref) — refusing fail-closed "
+                "before any outbound"
+            )
+        if binding.adapter != self.name:
+            raise ExecutorConfigError(
+                "compensation binding adapter does not match this executor — "
+                "refusing fail-closed before any outbound"
+            )
+        if binding.target != dispatch.target:
+            raise ExecutorConfigError(
+                "compensation binding target does not match the dispatch "
+                "target — refusing fail-closed before any outbound"
+            )
+        target = dispatch.target or ""
+        if not _SAFE_TARGET.fullmatch(target):
+            raise ExecutorOutcomeViolation(
+                "wazuh dispatch target is not a safe agent identifier "
+                "(path-injection shape refused before outbound)"
+            )
+        # DRIFT GATES (RC2-R §3.3): the bound command must still be the frozen
+        # table's reverse for this action, and the bound endpoint must still be
+        # what the CURRENT base URL + target derive. Either mismatch =
+        # mapping/configuration changed between the durable commit and the wire
+        # call -> zero outbound. The adapter NEVER resolves a different
+        # command and sends it.
+        if WAZUH_REVERSE_COMMANDS.get(dispatch.action) != command:
+            raise ExecutorConfigError(
+                "compensation binding reverse command does not match the "
+                "frozen action->command table (mapping drift refused); "
+                "zero outbound"
+            )
+        if binding.endpoint != self._active_response_endpoint(target):
+            raise ExecutorConfigError(
+                "compensation binding endpoint does not match the configured "
+                "wazuh target (config drift refused); zero outbound"
+            )
+        return self._send(dispatch, command=command, endpoint=binding.endpoint)
+
+    @staticmethod
+    def _reverse_command(action: str) -> str:
+        reverse = WAZUH_REVERSE_COMMANDS.get(action)
+        if reverse is None:
+            raise ValueError(
+                f"wazuh adapter has no reverse command for '{action}'"
+            )
+        return reverse
+
+    def _active_response_endpoint(self, target: str) -> str:
+        """The ONE endpoint shape this adapter ever targets."""
+        return f"{self._credentials.base_url}/api/v1/agents/{target}/active-response"
+
     def _send(
-        self, dispatch: ExecutionDispatch, *, command: str
+        self,
+        dispatch: ExecutionDispatch,
+        *,
+        command: str,
+        endpoint: str | None = None,
     ) -> ExecutionOutcome:
         # The dispatch target IS the agent id (validated upstream:
         # Approval -> recommendation snapshot -> Service binding). The
@@ -187,7 +303,7 @@ class WazuhExecutor(ResponseExecutor):
             "arguments": [str(dispatch.execution_id)],
         }
         request = urllib.request.Request(
-            f"{self._credentials.base_url}/api/v1/agents/{target}/active-response",
+            endpoint or self._active_response_endpoint(target),
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 **self._credentials.auth_headers(),

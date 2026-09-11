@@ -15,22 +15,36 @@ THIS compensation attempt: the compensation chain's own execution identity, the
 original (compensated) execution identity, the original's forward durable
 attempt reference when it exists, approval, adapter, the reversed action /
 target, the adapter-declared endpoint (validated secret-free base URL), the
-authenticated operator principal, the server-clock prepared / dispatch-start
-instants, and the original outcome state being undone. It NEVER records a
-secret: no field IS a credential, and the durable store passes every field
-through ``redact_detail`` at its single write point. Version evidence is a
-CONFIG DECLARATION (``version_assertion_kind``) — never a liveness proof;
+reverse OPERATION identity (RC2-R §3.4 — ``reverse_operation_ref``: the workflow
+id / command that the reverse call will actually request, e.g.
+``workflow:<id>`` or ``command:unblock-source-ip``), the authenticated
+operator principal, the server-clock prepared / dispatch-start instants, and
+the original outcome state being undone. It NEVER records a secret: no field IS
+a credential, and the durable store passes every field through
+``redact_detail`` at its single write point. Version evidence is a CONFIG
+DECLARATION (``version_assertion_kind``) — never a liveness proof;
 ``target_instance`` / ``target_tenant`` stay ``None`` unless an adapter
 contributor provides an AUTHORITATIVE source (the offline mock does not
 contribute; TheHive 4.1.24-1 has no authoritative source and never compensates)
 — an honest UNKNOWN, never a base-URL substitute.
+
+RC2-R §3.1 — ``CompensationBindingContributor``. A SEPARATE optional protocol
+(never on the frozen ``ResponseExecutor`` ABC, mirroring
+``DispatchBindingContributor``): the adapter contributes the reverse-target
+facts at BIND time (``compensation_binding_facts``) and CONSUMES the committed
+binding at SEND time (``compensate_with_binding``) — the wire call uses the
+BOUND operation identity + endpoint, never a re-read of mutable settings; a
+config drift between the durable commit and the wire call refuses fail-closed
+with ZERO outbound.
 """
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+from app.services.executions.models import ExecutionDispatch, ExecutionOutcome
 
 #: The terminal compensation row's detail key carrying the binding's
 #: ``compensation_attempt_id`` — the explicit "the terminal REFERENCES the same
@@ -40,8 +54,51 @@ from typing import Any
 COMPENSATION_REFERENCE_KEY = "compensation_attempt_id"
 
 #: Shape version, so a forward parser refuses an UNKNOWN binding shape
-#: fail-closed rather than mis-reading a future field layout.
-COMPENSATION_BINDING_SCHEMA = "sentinelflow.compensation_binding.v1"
+#: fail-closed rather than mis-reading a future field layout. RC2-R §3.4: v2
+#: adds ``reverse_operation_ref`` (the REAL reverse operation identity). A v1
+#: record is NOT parsed as v2 and is NEVER back-filled from current config —
+#: a v1 detail simply yields ``None`` (legacy insufficient evidence, an
+#: honest UNKNOWN).
+COMPENSATION_BINDING_SCHEMA = "sentinelflow.compensation_binding.v2"
+
+
+@runtime_checkable
+class CompensationBindingContributor(Protocol):
+    """An OPTIONAL adapter capability: bind + consume the immutable reverse
+    target facts (RC2-R §3.1 — the reverse mirror of
+    ``DispatchBindingContributor``, a SEPARATE ``runtime_checkable`` Protocol,
+    NOT a method on the frozen ``ResponseExecutor`` ABC).
+
+    Two halves, one contract:
+      * ``compensation_binding_facts`` runs at BIND time and returns ONLY
+        server-side facts (server-side adapter configuration / server-side
+        action mapping — NEVER a client request-body field): the
+        ``reverse_operation_ref`` naming the reverse operation the wire call
+        will actually use, and the exact ``endpoint`` it will target.
+      * ``compensate_with_binding`` runs at SEND time and CONSUMES the
+        committed binding — the outbound request uses the BOUND operation
+        identity + endpoint, never a re-resolution from mutable settings. If
+        the binding cannot be consumed honestly (missing/mismatched facts) it
+        refuses FAIL-CLOSED before any outbound (ZERO external call).
+
+    ``isinstance`` against this ``runtime_checkable`` Protocol checks only the
+    PRESENCE of the methods (same caveat the codebase documents for
+    ``DispatchBindingContributor`` / ``TrustedCreationReader``) — the trust is
+    the controlled call chain, not the type name.
+    """
+
+    def compensation_binding_facts(self, dispatch: ExecutionDispatch) -> dict[str, Any]:
+        """The adapter-specific REVERSE target facts for THIS compensation
+        (server-side only, never a secret): ``reverse_operation_ref`` +
+        ``endpoint`` (+ optional identity facts)."""
+        ...
+
+    def compensate_with_binding(
+        self, dispatch: ExecutionDispatch, binding: "CompensationBinding"
+    ) -> ExecutionOutcome:
+        """Reverse call that CONSUMES the committed binding; config/mapping
+        drift refuses fail-closed with zero outbound."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +130,16 @@ class CompensationBinding:
     adapter: str
     #: The action whose reverse effect is being applied (the action inherited
     #: server-side from the original chain — e.g. ``block_source_ip``; the
-    #: adapter maps it to its reverse operation internally).
+    #: adapter maps it to its reverse operation internally). Informational:
+    #: the REAL reverse operation identity lives in ``reverse_operation_ref``.
     reverse_action: str
+    #: RC2-R §3.4 — the REAL reverse operation the wire call requests, in the
+    #: adapter's own namespace: e.g. ``workflow:<workflow-id>`` (Shuffle) or
+    #: ``command:unblock-source-ip`` (Wazuh). ``None`` for a non-contributor
+    #: (mock / TheHive never compensates) or a legacy v1 record — an honest
+    #: UNKNOWN, never back-filled and never ``reverse_action`` masquerading as
+    #: the reverse operation.
+    reverse_operation_ref: str | None
     target: str
     #: ISO-8601 server-clock instants (see the model docstring for the exact
     #: meaning of each): when the binding was prepared, and the last instant
@@ -109,6 +174,7 @@ class CompensationBinding:
             "approval_id": self.approval_id,
             "adapter": self.adapter,
             "reverse_action": self.reverse_action,
+            "reverse_operation_ref": self.reverse_operation_ref,
             "target": self.target,
             "prepared_at": self.prepared_at,
             "dispatch_started_at": self.dispatch_started_at,
@@ -169,11 +235,11 @@ def build_compensation_binding(
     ``compensation_attempt_id`` is minted HERE (a fresh uuid4 — the unique
     identifier of THIS compensation attempt); the terminal compensation row
     references it via ``COMPENSATION_REFERENCE_KEY``. Contributor facts are
-    merged through an EXPLICIT WHITELIST — only the five adapter-specific
-    identity keys are read (``endpoint`` / ``version_evidence_ref`` /
-    ``version_assertion_kind`` / ``target_instance`` / ``target_tenant``), so a
-    contributor can NEVER override a platform fact or smuggle an arbitrary key
-    into the binding.
+    merged through an EXPLICIT WHITELIST — only the six adapter-specific
+    identity keys are read (``reverse_operation_ref`` / ``endpoint`` /
+    ``version_evidence_ref`` / ``version_assertion_kind`` / ``target_instance``
+    / ``target_tenant``), so a contributor can NEVER override a platform fact
+    or smuggle an arbitrary key into the binding.
     """
     facts = contributor_facts or {}
     return CompensationBinding(
@@ -189,6 +255,7 @@ def build_compensation_binding(
         approval_id=str(approval_id),
         adapter=adapter,
         reverse_action=action,
+        reverse_operation_ref=_optional_str(facts.get("reverse_operation_ref")),
         target=target,
         prepared_at=prepared_at.isoformat(),
         dispatch_started_at=dispatch_started_at.isoformat(),
@@ -241,6 +308,7 @@ def parse_compensation_binding(detail: Any) -> CompensationBinding | None:
         approval_id=detail["approval_id"],
         adapter=detail["adapter"],
         reverse_action=detail["reverse_action"],
+        reverse_operation_ref=_optional_str(detail.get("reverse_operation_ref")),
         target=detail["target"],
         prepared_at=detail["prepared_at"],
         dispatch_started_at=detail["dispatch_started_at"],

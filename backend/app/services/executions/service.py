@@ -65,7 +65,10 @@ from app.services.executions.binding import (
     DispatchBindingContributor,
     build_dispatch_binding,
 )
-from app.services.executions.exceptions import ExecutorOutcomeViolation
+from app.services.executions.exceptions import (
+    ExecutorConfigError,
+    ExecutorOutcomeViolation,
+)
 from app.services.executions.guard import (
     ApprovalAlreadyExecuted,
     ApprovalNotFound,
@@ -90,6 +93,7 @@ if TYPE_CHECKING:  # annotation-only: the Service depends on record(), not the c
     from app.services.executions.durable_dispatch import DurableDispatchAttemptStore
 from app.services.executions.compensation_binding import (
     COMPENSATION_REFERENCE_KEY,
+    CompensationBindingContributor,
     build_compensation_binding,
 )
 from app.services.executions.durable_compensation import (
@@ -835,28 +839,60 @@ def compensate_response(
     # reservation) — means the adapter is NEVER called: the duplicate maps to
     # the SAME typed 409 the pre-check raises; any other failure propagates and
     # aborts before the wire call.
+    #
+    # RC2-R §3.1: the reverse target facts come from the SEPARATE
+    # CompensationBindingContributor protocol (the reverse mirror of
+    # DispatchBindingContributor) — NEVER hard-wired from the forward
+    # contributor. A contributor that cannot establish its facts (missing
+    # reverse mapping / unsafe target) refuses here: the chain ends as
+    # compensation_failed with ZERO outbound.
     prepared_at = datetime.now(timezone.utc)
     dispatch_started_at = datetime.now(timezone.utc)
-    contributor_facts = (
-        executor.dispatch_binding_facts(dispatch)
-        if isinstance(executor, DispatchBindingContributor)
-        else None
-    )
-    binding = build_compensation_binding(
-        execution_id=execution_id,
-        original_execution_id=compensates_execution_id,
-        original_dispatch_attempt_id=_original_dispatch_attempt_id(original_rows),
-        approval_id=approval_id,
-        adapter=executor.name,
-        action=action,
-        target=target,
-        operator=operator,
-        reason=comment,
-        original_outcome_state=derived,
-        prepared_at=prepared_at,
-        dispatch_started_at=dispatch_started_at,
-        contributor_facts=contributor_facts,
-    )
+    try:
+        contributor_facts = (
+            executor.compensation_binding_facts(dispatch)
+            if isinstance(executor, CompensationBindingContributor)
+            else None
+        )
+        binding = build_compensation_binding(
+            execution_id=execution_id,
+            original_execution_id=compensates_execution_id,
+            original_dispatch_attempt_id=_original_dispatch_attempt_id(original_rows),
+            approval_id=approval_id,
+            adapter=executor.name,
+            action=action,
+            target=target,
+            operator=operator,
+            reason=comment,
+            original_outcome_state=derived,
+            prepared_at=prepared_at,
+            dispatch_started_at=dispatch_started_at,
+            contributor_facts=contributor_facts,
+        )
+    except ExecutorConfigError as config_error:
+        # The reverse target could not be honestly bound (missing reverse
+        # configuration, unsafe target, adapter mismatch) — the adapter is
+        # NEVER called and the chain ends as a terminal compensation_failed.
+        _append(
+            session,
+            execution_id=execution_id,
+            approval_id=approval_id,
+            decision="compensation_failed",
+            direction="compensate",
+            action=action,
+            target=target,
+            operator=operator,
+            detail=redact_detail(
+                {
+                    "source": "binding",
+                    "classification": "binding_missing",
+                    "reason": str(config_error),
+                }
+            ),
+            compensates_execution_id=compensates_execution_id,
+        )
+        session.flush()
+        return _result(_rows_for_execution(session, execution_id))
     if compensation_attempt_store is not None:
         try:
             compensation_attempt_store.record(binding)
@@ -864,10 +900,45 @@ def compensate_response(
             _translate_integrity_error(exc, session)
     violation_message: str | None = None
     try:
-        outcome = parse_execution_outcome(executor.compensate(dispatch))
+        # RC2-R §3.1: a contributor CONSUMES the committed binding (the wire
+        # call uses the BOUND reverse operation + endpoint — never a re-read of
+        # mutable settings). Any drift discovered at the send boundary refuses
+        # fail-closed BEFORE transport, mapped below to a terminal failure.
+        if isinstance(executor, CompensationBindingContributor):
+            outcome = parse_execution_outcome(
+                executor.compensate_with_binding(dispatch, binding)
+            )
+        else:
+            outcome = parse_execution_outcome(executor.compensate(dispatch))
     except ExecutorOutcomeViolation as violation:  # D9 — platform judges
         outcome = None
         violation_message = str(violation)
+    except ExecutorConfigError as config_error:
+        # Binding-vs-configuration drift discovered at send time: the adapter
+        # refused BEFORE any outbound (zero external call). The chain ends as
+        # a terminal compensation_failed; the durable attempt survives for
+        # manual, read-only reconciliation.
+        _append(
+            session,
+            execution_id=execution_id,
+            approval_id=approval_id,
+            decision="compensation_failed",
+            direction="compensate",
+            action=action,
+            target=target,
+            operator=operator,
+            detail=redact_detail(
+                {
+                    "source": "binding",
+                    "classification": "binding_mismatch",
+                    "reason": str(config_error),
+                    COMPENSATION_REFERENCE_KEY: binding.compensation_attempt_id,
+                }
+            ),
+            compensates_execution_id=compensates_execution_id,
+        )
+        session.flush()
+        return _result(_rows_for_execution(session, execution_id))
 
     if outcome is not None:
         decision = (

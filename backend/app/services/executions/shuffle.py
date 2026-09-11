@@ -26,6 +26,16 @@ HTTP discipline (3.2.2 Secret Boundary):
 Malformed external responses raise ExecutorOutcomeViolation; the
 platform parse (D9) judges ``protocol_violation`` — the adapter never
 self-declares it.
+
+RC2-R §3.2/§3.5. Two closures on the reverse path:
+- the adapter implements ``CompensationBindingContributor``: the reverse
+  target (``workflow:<id>`` + the exact ``/execute`` endpoint) is bound at
+  BIND time and CONSUMED at SEND time, so the wire call can never diverge
+  from the durable binding (a config drift refuses fail-closed, zero
+  outbound);
+- the production transport is a NO-REDIRECT opener (a 3xx is refused by
+  ``HTTPError`` — the Authorization header is never forwarded cross-host
+  and the request never leaves the bound endpoint).
 """
 from __future__ import annotations
 
@@ -33,9 +43,13 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from app.services.executions.base import ResponseExecutor
+from app.services.executions.compensation_binding import (
+    CompensationBinding,
+    CompensationBindingContributor,  # noqa: F401 — protocol marker (isinstance)
+)
 from app.services.executions.exceptions import (
     ExecutorConfigError,
     ExecutorOutcomeViolation,
@@ -47,6 +61,7 @@ from app.services.executions.secrets import (
     redact_text,
     validate_base_url,
 )
+from app.services.executions.transport import build_no_redirect_opener
 
 #: Frozen §4 Shuffle column — exactly the four ✅ cells, nothing else.
 #: ``trigger_workflow`` is NOT an action (E2 rejected it): workflow
@@ -121,7 +136,9 @@ class ShuffleExecutor(ResponseExecutor):
     ``transport`` is the deployment seam for tests: a callable
     ``transport(request, timeout=...) -> response`` where response has
     ``status``/``read()`` — matching ``urllib.request.urlopen`` shape.
-    Production uses the default urllib opener; there is NO retry layer
+    Production uses a NO-REDIRECT opener (RC2-R §3.5: a 3xx is refused, so
+    the ``Authorization`` header is never forwarded cross-host and the real
+    request target stays the bound endpoint); there is NO retry layer
     around it (E5 — the transport is invoked exactly once per call).
     """
 
@@ -153,7 +170,8 @@ class ShuffleExecutor(ResponseExecutor):
         self._workflows = dict(workflows)
         self._reverse_workflows = dict(reverse_workflows or {})
         self._timeout = timeout
-        self._transport = transport or urllib.request.urlopen
+        # RC2-R §3.5: refuse redirects by default — never bare urlopen.
+        self._transport = transport or build_no_redirect_opener().open
 
     @property
     def name(self) -> str:
@@ -174,19 +192,120 @@ class ShuffleExecutor(ResponseExecutor):
     # Execute / compensate — one shared trigger path, zero retry
     # ------------------------------------------------------------------
     def execute(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
-        return self._trigger(dispatch, operation="execute")
+        workflow_id = self._required_workflow(
+            dispatch.action, self._workflows, reverse=False
+        )
+        return self._trigger(
+            dispatch,
+            operation="execute",
+            workflow_id=workflow_id,
+            endpoint=self._execution_endpoint(workflow_id),
+        )
 
     def compensate(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
-        return self._trigger(dispatch, operation="compensate")
+        workflow_id = self._required_workflow(
+            dispatch.action, self._reverse_workflows, reverse=True
+        )
+        return self._trigger(
+            dispatch,
+            operation="compensate",
+            workflow_id=workflow_id,
+            endpoint=self._execution_endpoint(workflow_id),
+        )
 
-    def _trigger(self, dispatch: ExecutionDispatch, *, operation: str) -> ExecutionOutcome:
-        mapping = self._workflows if operation == "execute" else self._reverse_workflows
-        workflow_id = mapping.get(dispatch.action)
+    # ------------------------------------------------------------------
+    # RC2-R §3.1/§3.2 — compensation target binding (server-side facts only)
+    # ------------------------------------------------------------------
+    def compensation_binding_facts(self, dispatch: ExecutionDispatch) -> dict[str, Any]:
+        """BIND time: the reverse workflow id + the exact endpoint the wire
+        call will use. Assembled from SERVER-SIDE configuration only (the
+        reverse mapping + the validated base URL) — never a request body
+        field. A missing reverse configuration refuses before any outbound."""
+        workflow_id = self._reverse_workflows.get(dispatch.action)
+        if not workflow_id:
+            raise ExecutorConfigError(
+                "shuffle adapter has no reverse workflow configured for "
+                f"action '{dispatch.action}' — refusing to bind a reverse "
+                "target (zero outbound)"
+            )
+        return {
+            "reverse_operation_ref": f"workflow:{workflow_id}",
+            "endpoint": self._execution_endpoint(workflow_id),
+        }
+
+    def compensate_with_binding(
+        self, dispatch: ExecutionDispatch, binding: CompensationBinding
+    ) -> ExecutionOutcome:
+        """SEND time: CONSUME the committed binding — the outbound request
+        uses the BOUND workflow id + endpoint, never a re-read of mutable
+        settings. Any drift between the binding and the current server-side
+        configuration refuses FAIL-CLOSED with ZERO outbound (the transport is
+        never invoked)."""
+        ref = binding.reverse_operation_ref or ""
+        prefix = "workflow:"
+        workflow_id = ref[len(prefix):] if ref.startswith(prefix) else ""
+        if not workflow_id:
+            raise ExecutorConfigError(
+                "compensation binding carries no shuffle workflow reference "
+                "(reverse_operation_ref) — refusing fail-closed before any "
+                "outbound"
+            )
+        if binding.adapter != self.name:
+            raise ExecutorConfigError(
+                "compensation binding adapter does not match this executor — "
+                "refusing fail-closed before any outbound"
+            )
+        if binding.target != dispatch.target:
+            raise ExecutorConfigError(
+                "compensation binding target does not match the dispatch "
+                "target — refusing fail-closed before any outbound"
+            )
+        # DRIFT GATES (RC2-R §3.2): the bound id must still be the configured
+        # reverse mapping for this action, and the bound endpoint must still be
+        # what the CURRENT base URL derives. Either mismatch = configuration
+        # changed between the durable commit and the wire call -> zero outbound.
+        # The adapter NEVER resolves a different workflow id and sends it.
+        if self._reverse_workflows.get(dispatch.action) != workflow_id:
+            raise ExecutorConfigError(
+                "compensation binding workflow id does not match the current "
+                "reverse mapping (config drift refused); zero outbound"
+            )
+        if binding.endpoint != self._execution_endpoint(workflow_id):
+            raise ExecutorConfigError(
+                "compensation binding endpoint does not match the configured "
+                "shuffle target (config drift refused); zero outbound"
+            )
+        return self._trigger(
+            dispatch,
+            operation="compensate",
+            workflow_id=workflow_id,
+            endpoint=binding.endpoint,
+        )
+
+    def _execution_endpoint(self, workflow_id: str) -> str:
+        """The ONE endpoint shape this adapter ever targets."""
+        return f"{self._credentials.base_url}/api/v1/workflows/{workflow_id}/execute"
+
+    @staticmethod
+    def _required_workflow(
+        action: str, mapping: Mapping[str, str], *, reverse: bool
+    ) -> str:
+        workflow_id = mapping.get(action)
         if workflow_id is None:
             raise ValueError(
-                f"shuffle adapter has no {'reverse ' if operation == 'compensate' else ''}"
-                f"workflow configured for action '{dispatch.action}'"
+                f"shuffle adapter has no {'reverse ' if reverse else ''}"
+                f"workflow configured for action '{action}'"
             )
+        return workflow_id
+
+    def _trigger(
+        self,
+        dispatch: ExecutionDispatch,
+        *,
+        operation: str,
+        workflow_id: str,
+        endpoint: str,
+    ) -> ExecutionOutcome:
         # Outbound idempotency (frozen §5 rule 2): the platform's
         # execution_id rides in the BODY, never in the URL.
         payload = {
@@ -197,7 +316,7 @@ class ShuffleExecutor(ResponseExecutor):
             "approval_id": str(dispatch.approval_id),
         }
         request = urllib.request.Request(
-            f"{self._credentials.base_url}/api/v1/workflows/{workflow_id}/execute",
+            endpoint,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 **self._credentials.auth_headers(),

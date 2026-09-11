@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **RC2-R §3 — durable compensation TARGET BINDING**: the C-1 reservation now
+  also binds the REAL reverse operation identity and the exact endpoint, and
+  the send CONSUMES the committed binding instead of re-resolving from
+  mutable settings. New `CompensationBindingContributor` protocol
+  (`compensation_binding_facts` + `compensate_with_binding`) implemented by
+  Shuffle (`workflow:<id>` + `/api/v1/workflows/<id>/execute`) and Wazuh
+  (`command:<release-host|unblock-source-ip>` + ghost `/api/v1/agents/<id>/
+  active-response`); binding schema honestly bumped to
+  `sentinelflow.compensation_binding.v2` (`reverse_operation_ref`; v1 records
+  are never parsed as v2 and never back-filled). Any config/mapping drift
+  between the durable commit and the wire call refuses fail-closed with ZERO
+  outbound. New shared no-redirect transport (`executions/transport.py`) makes
+  Shuffle/Wazuh default transports refuse every 3xx (Authorization never
+  forwarded cross-host); the TheHive adapter is untouched. 31 new tests
+  (`test_compensation_target_binding.py`) cover the full §3.6 matrix including
+  real local-server redirect checks.
+
+### Security
+- **RC2-R §4 — CI security gates compute instead of report**: `pip-audit` now
+  runs as a REAL gate (no `|| true`) with an explicit-CVE-allowlist policy;
+  `npm audit` fails on HIGH+CRITICAL (MEDIUM/LOW reported); the new
+  `scripts/ci/secret-scan.sh` FAILS on any unallowlisted high-confidence
+  credential hit (private key / ghp_ / github_pat_ / AKIA / xox / sk- / long
+  Bearer) and on a tracked `.env` — allowlist is the exact AWS documentation
+  example value only, no directory-wide exclusions. RED/GREEN validated
+  locally (synthetic fixture + staged `.env` → exit 1; cleanup → exit 0).
+
+### Fixed
+- **RC2-R §1 — PostgreSQL CI false green**: the `postgres-external` job now
+  sets the dedicated `SENTINELFLOW_PG_TEST_URL` (the env var the suites
+  actually read — `DATABASE_URL` alone silently skipped everything), runs the
+  full four-file suite (dispatch 9 + compensation 9 + audit-ordering 2 +
+  risk/incident 2 = 22) and gates the result with
+  `scripts/ci/check_pg_external_result.py` (collected=22, passed=22,
+  skipped=0 — an unexpected skip FAILS the job). The H-1 risk/incident
+  PostgreSQL tests are now actually executed in the gate: 2/2 passed on a
+  real PostgreSQL 16.
+
 - **RC2 / C-1 — Durable Compensation (production debt fix)**: the reverse
   (compensation) dispatch now receives the same durable protection as forward
   dispatch. A new append-only `compensation_attempt` table (migration 0013)
