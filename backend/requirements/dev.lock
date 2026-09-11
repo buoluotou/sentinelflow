@@ -24,6 +24,8 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
     #   pytest
+coverage==7.16.0
+    # via pytest-cov
 fastapi==0.141.1
     # via -r backend/requirements/base.txt
 greenlet==3.5.5
@@ -56,7 +58,9 @@ packaging==26.3
 playwright==1.62.0
     # via pytest-playwright
 pluggy==1.6.0
-    # via pytest
+    # via
+    #   pytest
+    #   pytest-cov
 psycopg==3.3.4
     # via -r backend/requirements/base.txt
 psycopg-binary==3.3.4 ; implementation_name != 'pypy'
@@ -77,9 +81,12 @@ pytest==9.1.1
     # via
     #   -r backend/requirements/dev.txt
     #   pytest-base-url
+    #   pytest-cov
     #   pytest-playwright
 pytest-base-url==2.1.0
     # via pytest-playwright
+pytest-cov==7.1.0
+    # via -r backend/requirements/dev.txt
 pytest-playwright==0.9.0
     # via -r backend/requirements/dev.txt
 python-dotenv==1.2.3

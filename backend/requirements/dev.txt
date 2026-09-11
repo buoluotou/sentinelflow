@@ -1,7 +1,8 @@
 -r base.txt
 pytest>=8.3.0
 httpx>=0.27.0
-# Step 13.6 real-browser E2E (tests/e2e/test_approval_queue_browser.py,
-# marker: browser). Browsers are NOT installed by pip — run once:
+pytest-cov>=6.0.0
+# The browser tests (backend/tests/e2e, marker: browser) need a browser binary,
+# which pip does not install. Run once per machine:
 #   python -m playwright install chromium
 pytest-playwright>=0.9.0
