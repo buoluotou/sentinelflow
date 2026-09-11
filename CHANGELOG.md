@@ -50,7 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same-millisecond bursts and clamped backward clock steps. One chain is
   written by exactly one process, so per-chain ordering never needs
   cross-process coordination; no caller ever passes or fabricates a
-  timestamp.
+  timestamp. The execution-list read order uses the same insert-ordered
+  UUIDv7 as its final tie-break (`last_decision_at`, then the chain's last
+  audit-row id) — deterministic on SQLite's second-precision timestamps too,
+  where a uuid4 `execution_id` tie-break was a coin flip.
 
 ### Added
 - **RC2 / §7 + §20 — `DEPLOYMENT_MODE` (demo | production) with an approval

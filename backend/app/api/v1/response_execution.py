@@ -356,11 +356,18 @@ def list_executions(
     )
     grouped: dict[uuid.UUID, list[ExecutionLog]] = {}
     order: list[uuid.UUID] = []
+    #: RC2 / H-2 tie-break: the chain's LAST row id is an insertion-ordered
+    #: UUIDv7, so (created_at, id) is deterministic on EVERY dialect —
+    #: including SQLite's second-precision CURRENT_TIMESTAMP where
+    #: rapid consecutive chains share a stamp (a uuid4 execution_id would
+    #: degrade this to a random lottery).
+    last_row_id: dict[uuid.UUID, uuid.UUID] = {}
     for row in rows:
         if row.execution_id not in grouped:
             grouped[row.execution_id] = []
             order.append(row.execution_id)
         grouped[row.execution_id].append(row)
+        last_row_id[row.execution_id] = row.id
     summaries: list[ExecutionSummaryRead] = []
     for execution_id in order:
         asc_rows = grouped[execution_id]
@@ -386,9 +393,13 @@ def list_executions(
         summaries = [s for s in summaries if s.direction == direction]
     if approval_id is not None:
         summaries = [s for s in summaries if s.approval_id == approval_id]
-    # Most recent activity first; fully deterministic tie-breaks.
+    # Most recent activity first; fully deterministic tie-breaks. The stamp
+    # tie resolves to the insert-ordered UUIDv7 of the chain's last audit row
+    # (RC2 / H-2) — never a random execution_id lottery, never a clock
+    # artifact; a tie here means "same recorded stamp", so insertion order
+    # IS the true order.
     summaries.sort(
-        key=lambda s: (s.last_decision_at, s.created_at, s.execution_id),
+        key=lambda s: (s.last_decision_at, last_row_id[s.execution_id]),
         reverse=True,
     )
     total = len(summaries)
