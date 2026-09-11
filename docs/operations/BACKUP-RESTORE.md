@@ -1,42 +1,43 @@
-# Backup & Restore — SentinelFlow PostgreSQL (RC2 §12)
+# Backup and Restore — SentinelFlow PostgreSQL
 
-**Status: VERIFIED on a real PostgreSQL 16 round trip** (2026-09-10 Kali /
-2026-09-11 UTC validation run, stack at Alembic head `0014`). This document
-records the exact, executed procedure — not a plan.
+**Status: this procedure was run end to end against PostgreSQL 16.** Two runs,
+2026-09-10 on Kali and 2026-09-11 UTC, with the stack at Alembic head `0014`.
+The commands below are the commands that were run.
 
-Evidence: `/tmp/rc2-evidence/12-backup-restore.txt` (full command log, count
-tables, content digests, failure case) and the artifact
+Evidence: the full command log from that run (commands, per-table counts, content
+digests, and the failure case) and the artifact
 `sentinelflow-backup.dump` (streamed to the host at validation time;
 SHA-256 `507f3759343b3c24ec63ccfb18c1638f40fa2b373c0f6716a3c8d95117288582`,
 48 KiB — regenerated 2026-09-11 after the host reboot; the streamed procedure
 was reproduced end-to-end and both snapshot diffs matched again).
 
-> **RC2 §18 interaction — read this first.** The production hardening makes
-> `postgres` run with a **read-only root filesystem + tmpfs `/tmp`**. The
-> legacy pattern "`pg_dump -f /tmp/x.dump` inside the container, then
-> `docker cp`" **fails** now: tmpfs mounts are not part of the container root
-> filesystem layer, so `docker cp` cannot see the file (`Could not find the
-> file ... in container`). The validation reproduced this deliberately.
-> **Use the streamed form below** — it never touches the container filesystem.
+> **Read this first: the production hardening breaks the old `docker cp`
+> pattern.** Production runs `postgres` with a read-only root filesystem and a
+> tmpfs `/tmp`. The legacy pattern — `pg_dump -f /tmp/x.dump` inside the
+> container, then `docker cp` — fails now: tmpfs mounts are not part of the
+> container root filesystem layer, so `docker cp` cannot see the file
+> (`Could not find the file ... in container`). The validation reproduced this
+> failure. Use the streamed form below: it never touches the container
+> filesystem.
 
 ## 1. What is backed up
 
-The PostgreSQL database `sentinelflow` (the compose `pg-data` volume is just
-where it lives — **never back up the volume files as a substitute for a
-logical dump**; a file copy of a running cluster is not a consistent backup).
+The PostgreSQL database `sentinelflow`. The compose `pg-data` volume is only
+where it lives: never back up the volume files instead of a logical dump,
+because a file copy of a running cluster is not a consistent backup.
 
 The logical dump captures every fact table: `alerts`, `alert_events`,
 `alert_groups`, `event_risk`, `incidents`, `ai_analyses`, `ai_risk_summaries`,
 `ai_response_recommendations`, `ai_response_approvals`, `execution_log`,
-`execution_outcome`, `dispatch_attempt`, `compensation_attempt`
-(RC2: migration 0013), `alembic_version`.
+`execution_outcome`, `dispatch_attempt`, `compensation_attempt` (migration
+0013), `alembic_version`.
 
-The dump never contains operator tokens / execution tokens / passwords —
-those are **never stored in the database by design** (they live only in `.env`
-/ the operator registry), so a leaked dump yields SOC data, never credentials.
-Treat it as sensitive anyway (it is the full alert/incident history).
+The dump never contains operator tokens, execution tokens or passwords: those
+are never stored in the database (they live only in `.env` / the operator
+registry), so a leaked dump yields SOC data, never credentials. Treat the dump
+as sensitive anyway — it is the full alert and incident history.
 
-## 2. Canonical procedure (verified as-is)
+## 2. Backup and restore procedure
 
 ```bash
 # 1) BACKUP — stream the custom-format dump straight to the host.
@@ -59,73 +60,83 @@ docker compose exec -T postgres psql -U sentinelflow -d postgres \
 
 Notes:
 
-- `pg_restore` **must not be given the argument `-`**: it treats `-` as a
-  literal filename (unlike `pg_dump`). Omit the filename to read stdin, or
-  pass a real file path.
-- The restore target must be **brand new / empty**. `pg_restore` does not
-  merge; see §4.
+- `pg_restore` must not be given the argument `-`: it treats `-` as a literal
+  filename (unlike `pg_dump`). Omit the filename to read stdin, or pass a real
+  file path.
+- The restore target must be brand new and empty: `pg_restore` does not merge
+  (section 4).
 - `<project>` is the compose project name (`sentinelflow` by default; any
   `docker compose -p <name>` produces `<name>-postgres-1`).
 
-## 3. Verification performed (evidence)
+## 3. Verification performed
 
-Two independent rounds, both streamed **from the host artifact**:
+Two independent runs, both streamed from the host artifact:
 
-| Round | Path | Result |
+| Run | Path | Result |
 |---|---|---|
 | 1 | host artifact → fresh `sentinelflow_restore` | `pg_dump rc=0`, `pg_restore rc=0` |
 | 2 | same artifact → fresh `sentinelflow_restore_host` (repeatability) | `pg_restore rc=0` |
 
-**Per-table comparison (counts + row-order-independent `md5(string_agg(x::text ORDER BY x::text))` content digests): 13/13 MATCH, 0 MISMATCH** —
-the full-source snapshot diff against the restored database is empty.
+The per-table comparison — row counts plus the row-order-independent
+`md5(string_agg(x::text ORDER BY x::text))` content digest of every table —
+matched on 13 of 13 tables, with 0 mismatches. The full-source snapshot diff
+against the restored database is empty.
+
 Validation dataset (post-smoke, head 0014): `alerts=8`, `alert_events=8`,
 `alert_groups=2`, `event_risk=2`, `incidents=2`, `ai_analyses=8`,
 `ai_response_recommendations=12`, `ai_response_approvals=12`,
-`execution_log=33`, `execution_outcome=1` (documented synthetic fixture for
-outcome coverage — the demo reconcile path is intentionally 404/fail-closed),
+`execution_log=33`, `execution_outcome=1` (a synthetic fixture covering the
+outcome path; the demo reconcile path answers 404 and fails closed),
 `dispatch_attempt=11`, `compensation_attempt=0`, `alembic_version=1` (`0014`).
 
-**Relational probes on the restored database** (all non-zero where data is
-expected): `chains_with_approval=11`, `all_chains=11`, `succeeded_terminals=10`,
+Relational probes on the restored database, all non-zero where data is
+expected: `chains_with_approval=11`, `all_chains=11`, `succeeded_terminals=10`,
 `dispatch_attempts_joined=33`, `outcomes_joined=3`, `open_incidents=2`,
 `incidents_with_group=2`, `alembic_version=0014`.
 
-**Independence check**: after restore, source and restored databases answered
-`count(*) FROM alerts` independently (`8` / `8`) — the demo database was never
-the restore target.
+Independence check: after the restore, the source and the restored database
+answered `count(*) FROM alerts` independently (`8` / `8`). The demo database was
+never the restore target.
 
-## 4. Failure cases (verified behavior)
+## 4. Failure cases
 
 | Case | Result |
 |---|---|
-| Restore into a **non-empty, conflicting** database | **Fails loudly** — `pg_restore` reports every conflicting statement (`relation "alerts" already exists`, `column ... does not exist`, `multiple primary keys ...`). It never silently merges partial data. Restore into a **fresh** database, or use `--clean --if-exists` deliberately. |
-| Restore into a missing target database | connection error — create the DB first (see §2 step 2). |
-| Wrong credentials / user without rights on the target DB | PostgreSQL refuses (auth or ownership error) — the `-U` user must own the target database. |
-| `docker cp` of an in-container dump under RC2 §18 hardening | `Could not find the file ... in container` — tmpfs is invisible to `docker cp`; use the streamed form. |
-| `pg_restore ... -` (stdin spelled as `-`) | `could not open input file "-"` — omit the filename instead. |
+| Restore into a non-empty, conflicting database | Fails loudly: `pg_restore` reports every conflicting statement (`relation "alerts" already exists`, `column ... does not exist`, `multiple primary keys ...`) and never silently merges partial data. Restore into a fresh database, or use `--clean --if-exists`. |
+| Restore into a missing target database | Connection error. Create the database first (section 2, step 2). |
+| Wrong credentials, or a user without rights on the target database | PostgreSQL refuses with an auth or ownership error. The `-U` user must own the target database. |
+| `docker cp` of an in-container dump when `postgres` runs with a read-only root filesystem and tmpfs `/tmp` | `Could not find the file ... in container`: tmpfs is invisible to `docker cp`. Use the streamed form. |
+| `pg_restore ... -` (stdin spelled as `-`) | `could not open input file "-"`. Omit the filename instead. |
 
-## 5. Production recommendation (documented — NOT auto-configured)
+## 5. Production recommendations
 
-- **Scheduled backups**: `pg_dump -Fc` on a cron/systemd timer; the wrapper
-  must fail loudly (non-zero exit) and keep a timestamped artifact.
-- **Retention**: e.g. 7 daily + 4 weekly + 6 monthly; prune by age, never
-  "latest only".
-- **Encryption**: `age` / `gpg` the dump at rest (it is plain SOC data).
-- **Off-host copy**: sync encrypted dumps to a second machine / object store
-  you operate. This repository never auto-connects to any cloud storage.
-- **Restore drills**: run §2's restore-into-a-dedicated-db on a schedule; the
-  §3 count/digest comparison is the acceptance check (script it, assert zero
-  MISMATCH).
-- **Point-in-time**: for RPO below the dump interval, configure PostgreSQL
-  WAL archiving + base backups — an operational decision outside this repo.
-- **Volume snapshots**: only as a *supplement* (whole-host DR), never as the
-  primary backup — they may capture a torn state of a live cluster.
+Nothing in this section is configured by the repository.
 
-## 6. Upgrade / rollback note (RC2 §13)
+- Scheduled backups: run `pg_dump -Fc` from a cron or systemd timer. The
+  wrapper must fail loudly, with a non-zero exit, and keep a timestamped
+  artifact.
+- Retention: for example 7 daily, 4 weekly and 6 monthly copies, pruned by age.
+  Never keep "latest only".
+- Encryption: encrypt the dump at rest with `age` or `gpg`; it is plain SOC
+  data.
+- Off-host copy: sync encrypted dumps to a second machine or object store you
+  operate. This repository never auto-connects to any cloud storage.
+- Restore drills: run the restore into a dedicated database (section 2) on a
+  schedule, and use the count and digest comparison (section 3) as the
+  acceptance check: script it and assert zero mismatches.
+- Point-in-time recovery: for an RPO below the dump interval, configure
+  PostgreSQL WAL archiving and base backups. That is an operational decision
+  outside this repository.
+- Volume snapshots: only as a supplement for whole-host disaster recovery,
+  never as the primary backup; a snapshot may capture a torn state of a live
+  cluster.
 
-Application rollback **≠** database destructive downgrade. The supported
-recovery path is: restore the last known-good dump (this document) and
-redeploy the matching application version. Alembic `downgrade` is a
-development affordance, **not** a production rollback strategy — the upgrade
-validation (old `0009` schema + data → head `0014`, data + digests intact)
-lives in `docs/design/` and the review bundle's `07-postgres-validation.txt`.
+## 6. Upgrade and rollback
+
+Application rollback is not the same as a destructive database downgrade. The
+supported recovery path is to restore the last known-good dump (this document)
+and redeploy the matching application version. Alembic `downgrade` is a
+development affordance, not a production rollback strategy.
+
+The upgrade validation — old `0009` schema and data upgraded to head `0014`,
+with data and digests intact — lives in `docs/design/`.

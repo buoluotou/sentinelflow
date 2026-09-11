@@ -167,7 +167,7 @@ execution audit, the observability page, and the read-only incident AI
 investigation view.
 
 The console has six pages — Dashboard, Events, Incidents, Approval Queue,
-Execution Audit, Observability. Execution is dispatched from the **AI
+Execution Audit, Execution Observability. Execution is dispatched from the **AI
 Investigation** panel on an incident; there is no separate Execute Console page.
 
 ## Architecture
