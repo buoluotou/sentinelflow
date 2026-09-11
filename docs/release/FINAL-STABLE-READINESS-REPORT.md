@@ -11,7 +11,8 @@ what is explicitly not claimed.
 | Branch | `rc2/finalization-fixes` |
 | Base | `9542f36` (= `v1.4.0-rc1`) |
 | Pull request | #1 |
-| Commits on the branch | 19 |
+| Commits on the branch | 22 |
+| Merge | merge commit `b2201f9` (no squash, no rebase) |
 | `v1.4.0-rc1` tag | untouched (`f6b3f60` → `9542f36`) |
 
 No reset, rebase, amend or force push was used, and the branch protection rules
@@ -24,7 +25,7 @@ already on `main` were not weakened.
 | Backend, default suite | **2997 passed, 27 deselected, 0 failed, 0 skipped** (95.9 s in CI) |
 | Backend, PostgreSQL external durable suite | 22 collected, 22 passed, 0 skipped |
 | Frontend | typecheck clean, **97/97** tests, production build 279.99 kB (gzip 82.07 kB) |
-| Browser end-to-end (Playwright, PostgreSQL) | see §4 |
+| Browser end-to-end (Playwright, PostgreSQL) | 40 collected, **40 passed**, 0 skipped, 0 failed |
 
 New regression tests added this round: 9 for the non-ASCII credential, 2 for the
 execution-list query, 1 for the approval-queue query count, 3 for the release
@@ -69,6 +70,15 @@ modules cover the execution path through the console (alert → event → case �
 recommendation → approval → execute → succeeded → audit), the approval queue, the
 incident AI context and observability. The CI job gates on the pytest counts:
 collected > 0, every module present, passed == collected, skipped == 0.
+
+On CI: 40 collected, 40 passed, 0 skipped, 0 failed, 0 errors in 81 s, and the
+gate reports `BROWSER_E2E_GATE=OK`.
+
+The first CI run of the rebuilt suite found three problems, all fixed before the
+merge: two journeys still encoded the outdated "zero buttons" contract that the
+documentation carried, one located a status badge by text that also matched a
+neighbouring note, and a non-browser Ollama suite contributed a skipped
+collection entry, which the job now excludes on both of its pytest steps.
 
 ## 5. Read-path scale sanity
 
@@ -134,7 +144,8 @@ stripped in a separate mechanical pass.
 
 ## 8. CI
 
-Nine jobs, all green on the merge candidate. The two added this round:
+Nine jobs, all green on the merge candidate (163 s) and again on the merged
+`main` commit. The two added this round:
 
 - `compose-demo-e2e` — boots the documented compose demo on PostgreSQL, waits
   for the ordered boot, checks the reverse proxy, and runs `scripts/smoke.py`
@@ -154,8 +165,11 @@ original jobs plus the two added this round.
 
 ## 10. Release
 
-`v1.4.0-rc1` is untouched. `v1.4.0-rc2` is tagged on the merged `main` HEAD and
-published as a GitHub pre-release (prerelease = true).
+`v1.4.0-rc1` is untouched. `v1.4.0-rc2` is an annotated tag (`2b9d8f8`) pointing
+at the merged `main` HEAD (`b2201f9`), published as a GitHub pre-release:
+<https://github.com/buoluotou/sentinelflow/releases/tag/v1.4.0-rc2>
+(prerelease, not a draft). The release notes list the fixes, the documentation
+work and the limitations that remain.
 
 ## 11. Capability matrix
 
