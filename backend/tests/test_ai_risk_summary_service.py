@@ -1,4 +1,4 @@
-"""Step 11.3: AIRiskSummaryService tests.
+"""AIRiskSummaryService tests.
 
 Event -> EventRisk + evidence (+ optional Step 10 analysis) -> Mock provider
 -> persisted ai_risk_summaries row. CI-stable: only the deterministic
@@ -101,7 +101,7 @@ def _add_analysis(db_session, group: AlertGroup, summary: str, minutes_ago: int)
     return record
 
 
-# --------------------------------------------------------------- Case 1: happy
+# Case 1: happy
 
 
 def test_generate_persists_full_summary_from_mock(db_session):
@@ -122,7 +122,7 @@ def test_generate_persists_full_summary_from_mock(db_session):
     assert record.confidence == pytest.approx(0.7)
 
 
-# -------------------------------------------- Case 2: without Step 10 analysis
+# Case 2: without Step 10 analysis
 
 
 def test_succeeds_without_prior_explanation(db_session):
@@ -139,7 +139,7 @@ def test_succeeds_without_prior_explanation(db_session):
     assert record.id is not None
 
 
-# --------------------------------------------- Case 3: with Step 10 analyses
+# Case 3: with Step 10 analyses
 
 
 def test_latest_step10_analysis_is_injected(db_session):
@@ -164,7 +164,7 @@ def test_latest_step10_analysis_is_injected(db_session):
     ).id == latest.id
 
 
-# ------------------------------------------------------- Case 4: history append
+# Case 4: history append
 
 
 def test_repeated_generation_appends_history(db_session):
@@ -188,7 +188,7 @@ def test_repeated_generation_appends_history(db_session):
     assert latest is not None and latest.id == second.id
 
 
-# ---------------------------------------------------- Case 5: risk missing
+# Case 5: risk missing
 
 
 def test_without_risk_degrades_but_still_generates(db_session):
@@ -204,7 +204,7 @@ def test_without_risk_degrades_but_still_generates(db_session):
     assert record.risk_drivers == ["severity"]  # fallback, never empty
 
 
-# ------------------------------------------------------------ Case 6: 503 path
+# Case 6: 503 path
 
 
 def test_provider_unavailable_propagates_and_persists_nothing(db_session):
@@ -219,7 +219,7 @@ def test_provider_unavailable_propagates_and_persists_nothing(db_session):
     assert db_session.query(AIRiskSummary).count() == 0
 
 
-# ------------------------------------------------------------ Case 7: 502 path
+# Case 7: 502 path
 
 
 def test_response_parse_error_propagates_and_persists_nothing(db_session):
@@ -247,7 +247,7 @@ def test_wrong_protocol_for_task_is_never_persisted(db_session):
     assert db_session.query(AIRiskSummary).count() == 0
 
 
-# ----------------------------------------------------- Case 8: flush/rollback
+# Case 8: flush/rollback
 
 
 def test_service_flushes_but_does_not_commit(db_session):
@@ -262,7 +262,7 @@ def test_service_flushes_but_does_not_commit(db_session):
     assert db_session.query(AIRiskSummary).count() == 0
 
 
-# ------------------------------------------------------------- error boundary
+# error boundary
 
 
 def test_unknown_event_raises_not_found(db_session):

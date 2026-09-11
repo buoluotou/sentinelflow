@@ -1,4 +1,4 @@
-"""Security events query layer (Phase 1 Step 4.4)."""
+"""Security events query layer."""
 
 from app.services.events.service import get_event, list_events
 

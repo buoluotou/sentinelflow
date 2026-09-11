@@ -1,4 +1,4 @@
-"""Phase 3.2.1 — External Adapter Architecture regression.
+"""External Adapter Architecture regression.
 
 This step builds ONLY the skeleton future external adapters plug into:
 configuration surface, registry unlock (reserved -> recognized slots),
@@ -7,15 +7,15 @@ startup fail-closed validation, and the Single-Active-Adapter invariant.
 ZERO real external HTTP anywhere in this file (or in 3.2.1 at all):
 Shuffle / Wazuh / TheHive implementations land in 3.2.3 / 3.2.4 / 3.2.5.
 
-Coverage map (user-frozen minimum bar):
- 1. default adapter = mock                 9. wazuh requires its creds
- 2. EXECUTION_ADAPTER=mock                 10. thehive requires its creds
- 3. shuffle recognized                     11. single-active invariant
- 4. wazuh recognized                       12. startup fail-closed (lifespan)
- 5. thehive recognized                     13. secret never in config errors
- 6. unknown adapter rejected               14. secret never in repr/str
- 7. mock needs no external creds           15. Guard stays adapter-agnostic
- 8. shuffle requires its creds             16. ATTACK: "shuffle,wazuh" -> hard error
+Coverage map (user-minimum bar):
+1. default adapter = mock                 9. wazuh requires its creds
+2. EXECUTION_ADAPTER=mock                 10. thehive requires its creds
+3. shuffle recognized                     11. single-active invariant
+4. wazuh recognized                       12. startup fail-closed (lifespan)
+5. thehive recognized                     13. secret never in config errors
+6. unknown adapter rejected               14. secret never in repr/str
+7. mock needs no external creds           15. Guard stays adapter-agnostic
+8. shuffle requires its creds             16. ATTACK: "shuffle,wazuh" -> hard error
 """
 import inspect
 
@@ -97,7 +97,7 @@ class TestRecognizedSlots:
 
     def test_recognized_vocabulary(self):
         assert RECOGNIZED_ADAPTER_NAMES == ("shuffle", "wazuh", "thehive")
-        # 3.1-era alias stays alive for frozen 3.1 imports/tests.
+        # 3.1-era alias stays alive for 3.1 imports/tests.
         assert RESERVED_ADAPTER_NAMES == RECOGNIZED_ADAPTER_NAMES
         # 3.2.3/3.2.4/3.2.5 evolution: every recognized slot graduated
         # to an implemented adapter — no unimplemented slot remains.
@@ -285,7 +285,7 @@ class TestSecretDiscipline:
 
 class TestGuardStaysAdapterAgnostic:
     """15. the Guard knows ExecutorCapability ONLY — never the registry,
-    never a concrete adapter. Static source audit (frozen 3.1.4 layering)."""
+never a concrete adapter. Static source audit (3.1.4 layering)."""
 
     def test_guard_source_never_references_registry_or_adapters(self):
         from app.services.executions import guard

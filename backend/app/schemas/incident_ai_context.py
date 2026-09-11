@@ -1,9 +1,9 @@
-"""Read-only Incident AI context DTOs (Phase 2 Step 14.2).
+"""Read-only Incident AI context DTOs.
 
-The incident-centric case view is a pure AGGREGATION of existing history —
-every AI artifact embeds its frozen protocol schema unchanged (Step 10
-explanation, Step 11 risk summary, Step 12 recommendation, Step 13
-approval); this file defines no second AI protocol and no writable field.
+The incident-centric case view is composed from the incident's view-only
+traversals, so it introduces no second AI protocol and no writable field:
+each embedded AI artifact (explanation, risk summary, recommendation,
+approval) keeps the protocol schema it was written with.
 """
 import uuid
 
@@ -18,10 +18,10 @@ from app.schemas.response_recommendation import AIResponseRecommendationRead
 class IncidentSnapshot(BaseModel):
     """The case record, read-only.
 
-    ``risk_score_snapshot`` is the creation-time COPY of EventRisk.score
-    (Step 7 freeze) — the context service never recomputes, refreshes or
-    exposes any live score.
-    """
+``risk_score_snapshot`` is the copy of EventRisk.score taken when the
+incident was created; the context service neither recomputes nor
+refreshes it, so no live score is exposed here.
+"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -32,12 +32,12 @@ class IncidentSnapshot(BaseModel):
 
 
 class RecommendationWithApproval(BaseModel):
-    """One Step 12 recommendation plus its Step 13 audit trail.
+    """One response recommendation plus the approval recorded for it.
 
-    ``approval`` is None exactly when the recommendation is still pending —
-    a DERIVED state that is never written to the database by the context
-    service (or anywhere else).
-    """
+``approval`` is None while the recommendation is still pending: the
+context service derives that state from the absent audit row instead of
+storing a "pending" value in the database.
+"""
 
     recommendation: AIResponseRecommendationRead
     approval: AIResponseApprovalRead | None = None
@@ -46,9 +46,9 @@ class RecommendationWithApproval(BaseModel):
 class IncidentAIContext(BaseModel):
     """The complete AI context of one incident.
 
-    Histories are complete (never truncated) and ordered created_at ASC,
-    mirroring the Step 14.1 viewonly traversals they are composed from.
-    """
+Each history is returned in full, ordered by created_at ascending to
+match the view-only traversals it is composed from.
+"""
 
     incident: IncidentSnapshot
     analyses: list[AIAnalysisRead]

@@ -1,5 +1,5 @@
-/** Response Execution console (Phase 3.1.8): the FIRST UI able to trigger
- * a real execution — built deliberately more cautiously than ordinary UI.
+/* * Response Execution console: the FIRST UI able to trigger
+ * a real execution — built more cautiously than ordinary UI.
  *
  * HARD RULE: React never re-judges permission. It decides whether to SHOW
  * the Execute button (approval.status === 'approved' AND no forward
@@ -9,23 +9,23 @@
  *
  * Frozen discipline locked here (and in the tests):
  * - GET-only on mount (existing execution status); POST happens ONLY after
- *   an explicit operator confirmation — page load fires zero POSTs
+ * an explicit operator confirmation — page load fires zero POSTs
  * - the 201 body is authoritative: derived_state / chain / history render
- *   straight from the response — NO follow-up GET after POST
+ * straight from the response — NO follow-up GET after POST
  * - 201 + guard_rejected is a legally formed execution FACT, rendered as
- *   status — never as an error banner (HTTP was 201, not 403)
+ * status — never as an error banner (HTTP was 201, not 403)
  * - the token lives ONLY in modal-local React state (memory): never
- *   localStorage / sessionStorage / IndexedDB / URL / persistent store; it
- *   dies with the modal unmount
+ * localStorage / sessionStorage / IndexedDB / URL / persistent store; it
+ * dies with the modal unmount
  * - execution_id = crypto.randomUUID(), generated ONCE per fresh Execute
- *   Intent — never derived from approval_id, never reused across intents
+ * Intent — never derived from approval_id, never reused across intents
  * - the request body strictly mirrors the API: { execution_id, approval_id,
- *   operator, comment? } — never action / target / direction / status /
- *   detail / created_at
+ * operator, comment? } — never action / target / direction / status /
+ * detail / created_at
  * - Confirm is disabled + "Submitting…" while the request is in flight
- *   (UX guard; the server's approval_id uniqueness is the real defense)
+ * (UX guard; the server's approval_id uniqueness is the real defense)
  * - NO Retry / Compensate / Approve / Reject affordance — compensation UI
- *   belongs to a later step
+ * belongs to a later step
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { executeResponse, getExecution, getExecutions } from '../api/responseExecution'

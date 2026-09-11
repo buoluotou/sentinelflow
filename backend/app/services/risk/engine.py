@@ -1,8 +1,8 @@
 """Risk engine: deterministic, explainable event scoring.
 
-Phase 1 Step 5.2: the engine computes a RiskResult from an AlertGroup and
+the engine computes a RiskResult from an AlertGroup and
 its evidence alerts. It does NOT persist anything — saving/updating the
-EventRisk row is the RiskService's job (Step 5.3), keeping calculation and
+EventRisk row is the RiskService's job (), keeping calculation and
 storage cleanly separated.
 """
 
@@ -35,5 +35,5 @@ class RiskEngine:
         )
 
 
-#: shared engine instance
+# shared engine instance
 engine = RiskEngine()

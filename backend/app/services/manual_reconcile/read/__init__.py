@@ -1,9 +1,9 @@
-"""Read side of Manual Reconcile (Phase 3.4.5-A1).
+"""Read side of Manual Reconcile.
 
-The Adapter Read Contract + Registry — the PURE, read-only, DB-free, HTTP-free
-mirror of the write-side executor stack. Concrete readers (Shuffle / Wazuh /
-TheHive) are Evidence-Gapped and land in 3.4.5-B/C/D; this package ships the
-contract shapes and an EMPTY production registry that rejects every adapter.
+The adapter read contract + registry — the pure, read-only, DB-free, HTTP-free
+mirror of the write-side executor stack. Concrete Shuffle / Wazuh / TheHive readers
+have no runtime evidence yet; this package ships the contract shapes and an empty
+production registry that rejects every adapter.
 """
 from app.services.manual_reconcile.read.base import (
     AdapterReadRequest,

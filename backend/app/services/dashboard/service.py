@@ -1,4 +1,4 @@
-"""Dashboard aggregation service (Phase 1 Step 7.5).
+"""Dashboard aggregation service.
 
 Pure real-time aggregation for the Web Console home page — no new tables,
 no caching: the console binds ONE endpoint instead of stitching
@@ -6,13 +6,13 @@ no caching: the console binds ONE endpoint instead of stitching
 
 Frozen metric semantics:
 - open_incidents / critical|high|medium_incidents
-    ACTIVE cases only: status in (open, in_progress); the severity
-    counters break those active cases down.
+ACTIVE cases only: status in (open, in_progress); the severity
+counters break those active cases down.
 - today_alerts / today_events
-    created since today 00:00 UTC.
+created since today 00:00 UTC.
 - risk_distribution
-    current EventRisk.level over ALL events (events without a risk
-    snapshot contribute nothing).
+current EventRisk.level over ALL events (events without a risk
+snapshot contribute nothing).
 """
 from datetime import datetime, timezone
 
@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Alert, AlertGroup, EventRisk, Incident
 
-#: Lifecycle positions that count as an active SOC queue item.
+# Lifecycle positions that count as an active SOC queue item.
 ACTIVE_STATUSES = ("open", "in_progress")
 
 RISK_LEVELS = ("critical", "high", "medium", "low")
@@ -29,13 +29,13 @@ RISK_LEVELS = ("critical", "high", "medium", "low")
 
 def _today_start(now: datetime) -> datetime:
     """Today 00:00 UTC (aware; compares correctly against both SQLite's
-    naive-UTC storage and PostgreSQL timestamptz)."""
+naive-UTC storage and PostgreSQL timestamptz)."""
     return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def get_summary(db: Session) -> dict:
     """Aggregate the dashboard snapshot; shaped exactly like the API
-    response so the HTTP layer only wraps it in a schema."""
+response so the HTTP layer only wraps it in a schema."""
     now = datetime.now(timezone.utc)
     today_start = _today_start(now)
 

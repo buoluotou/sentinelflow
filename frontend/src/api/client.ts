@@ -1,5 +1,5 @@
 /**
- * Minimal API client for the SentinelFlow backend (Phase 1 Step 8.1).
+ * Minimal API client for the SentinelFlow backend.
  *
  * All console pages go through this layer: React -> api client -> FastAPI.
  * Pages never assemble database fields or business rules themselves.
@@ -19,7 +19,7 @@ export class ApiError extends Error {
 /** Single authoritative API base URL. Empty (the default) yields same-origin
  * relative calls: dev uses the vite proxy, prod uses a reverse proxy (see the
  * compose nginx conf). Set VITE_API_BASE_URL to an absolute origin (e.g.
- * http://localhost:8000) ONLY when the frontend is served from a different
+ * http://localhost:8000) only when the frontend is served from a different
  * host than the backend. This is the one and only place the variable is read. */
 const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? ''
 
@@ -31,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   if (!res.ok) {
     // FastAPI error bodies carry { detail: "..." } — surface it verbatim.
-    // The execution API (3.1.7) uses structured details ({ error, message });
+    // The execution API uses structured details ({ error, message });
     // the stable message string is what the operator needs.
     let detail = `HTTP ${res.status}`
     try {

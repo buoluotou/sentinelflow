@@ -1,10 +1,10 @@
-"""Phase 3.2.5 — TheHive Adapter regression.
+"""TheHive Adapter regression.
 
 Locks the complete offline chain:
 
-    API -> Service -> Guard -> TheHiveExecutor -> (stubbed) TheHive
-    Case API -> case creation -> ExecutionOutcome -> D9 protocol
-    parser -> execution_log
+API -> Service -> Guard -> TheHiveExecutor -> (stubbed) TheHive
+Case API -> case creation -> ExecutionOutcome -> D9 protocol
+parser -> execution_log
 
 Frozen responsibility (3.2.5 adjudication, E1): TheHive is a Case
 Management / Investigation provider ONLY — the adapter turns ONE
@@ -14,35 +14,35 @@ responses (Wazuh), NEVER triggers workflows (Shuffle), NEVER modifies
 risk scores / approvals / incidents, and it NEVER compensates: the case
 lifecycle belongs to the investigation and cases are never auto-closed.
 
-    SentinelFlow decision -> TheHive case creation -> human
-    investigation. NOT: SentinelFlow -> TheHive -> automatic
-    investigation / automatic closure.
+SentinelFlow decision -> TheHive case creation -> human
+investigation. NOT: SentinelFlow -> TheHive -> automatic
+investigation / automatic closure.
 
 Request -> response -> decision -> execution_log. No polling, no async
-callback, no task queue, no retry — the suite is deliberately NOT a
+callback, no task queue, no retry — the suite is NOT a
 copy of 3.2.3/3.2.4: case creation semantics replace command semantics.
 
 Discipline battery:
 - succeeded requires 200/201 + a STRING resource reference (_id/id — the
-  TheHive 4.1.24-1 v0 OutputCase; caseId is the Int human case NUMBER,
-  kept for audit only and NEVER the reference). A creation without a valid
-  string _id/id is a protocol lie -> ExecutorOutcomeViolation -> D9;
+TheHive 4.1.24-1 v0 OutputCase; caseId is the Int human case NUMBER,
+kept for audit only and NEVER the reference). A creation without a valid
+string _id/id is a protocol lie -> ExecutorOutcomeViolation -> D9;
 - 202 -> failed adapter_error (no waiting state — 3.1 froze "no
-  asynchronous execution facts");
+asynchronous execution facts");
 - 409 -> failed fail-closed ALWAYS: TheHive v0 case creation has no
-  certified idempotency / duplicate-recovery contract (CaseSrv.create
-  auto-assigns the next case number), so a conflict — duplicate marker,
-  foreign execution_id, different event or none — is never claimed as
-  success (M1 §4);
+certified idempotency / duplicate-recovery contract (CaseSrv.create
+auto-assigns the next case number), so a conflict — duplicate marker,
+foreign execution_id, different event or none — is never claimed as
+success;
 - classification table: 401/403/404/500 adapter_error, 502/503/504
-  adapter_unavailable, timeout timeout, connection errors
-  adapter_unavailable;
+adapter_unavailable, timeout timeout, connection errors
+adapter_unavailable;
 - supports_compensation is False for EVERY action (guard G4 refuses
-  upstream; compensate itself raises);
+upstream; compensate itself raises);
 - ZERO automatic retry (E5): transport invoked exactly once;
 - secret five-check with sentinel ``sentinel-thehive-secret-test``:
-  request body / URL / detail / exception / logger — everything stays
-  ***; the key rides ONLY in the Authorization header.
+request body / URL / detail / exception / logger — everything stays
+***; the key rides ONLY in the Authorization header.
 
 Default run: REAL EXTERNAL NETWORK = 0 — every HTTP exchange goes
 through an injected transport double. The ONE test touching a real
@@ -76,7 +76,7 @@ from app.services.executions.exceptions import ExecutorOutcomeViolation
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import compensate_response, execute_response
 
-# M4-G §2: these service-chain tests drive the REAL durable path — a RECOGNIZED
+# these service-chain tests drive the REAL durable path — a RECOGNIZED
 # adapter (thehive) with store=None is now refused before dispatch by the
 # fail-closed gate. They inject the shared no-DB recording store double (a real
 # independent-commit store cannot interleave with the in-memory StaticPool
@@ -114,7 +114,7 @@ def _http_error(status: int, body: bytes) -> urllib.error.HTTPError:
 
 class StubTransport:
     """Injected transport double — records every outbound request and
-    plays back a scripted response (or raises a scripted exception)."""
+plays back a scripted response (or raises a scripted exception)."""
 
     def __init__(self, *, status=200, body=None, payload=None, exc=None):
         if body is None and payload is not None:
@@ -146,9 +146,9 @@ class StubTransport:
 
 
 class _InterruptedReadResponse:
-    """M4-F §3: a response whose BODY read is INTERRUPTED mid-stream. The
-    request was already SENT (the case MAY exist) but the answer is lost — the
-    exact "emitted but abandoned" uncertainty the durable attempt survives."""
+    """a response whose BODY read is INTERRUPTED mid-stream. The
+request was already SENT (the case MAY exist) but the answer is lost — the
+exact "emitted but abandoned" uncertainty the durable attempt survives."""
 
     def __init__(self, exc, status=200):
         self.status = status
@@ -209,16 +209,16 @@ def _thehive_settings(**overrides) -> Settings:
 
 def _success_payload(case_id="case-1", *, case_number=1) -> dict:
     """A TheHive 4.1.24-1 v0 OutputCase success body (dto/v0/Case.scala).
-    The real response emits "_id"/"id" — BOTH the STRING EntityId and the
-    reconcilable resource reference — and "caseId", the Int human case
-    NUMBER. It NEVER emits "case_id": that is SentinelFlow's internal
-    reconcile key, which the adapter populates FROM "_id"."""
+The real response emits "_id"/"id" — BOTH the STRING EntityId and the
+reconcilable resource reference — and "caseId", the Int human case
+NUMBER. It NEVER emits "case_id": that is SentinelFlow's internal
+reconcile key, which the adapter populates FROM "_id"."""
     return {"_id": case_id, "id": case_id, "caseId": case_number}
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Architecture (registry / name / supports / compensation policy)
-# --------------------------------------------------------------------------
+#
 class TestArchitecture:
     def test_registry_builds_thehive_executor(self):
         executor = create_executor(_thehive_settings())
@@ -297,9 +297,9 @@ class TestArchitecture:
             TheHiveExecutor(_creds(), timeout=0)
 
 
-# --------------------------------------------------------------------------
+#
 # 2. HTTP contract (endpoint / body mapping / auth surface / timeout)
-# --------------------------------------------------------------------------
+#
 class TestHttpContract:
     def test_url_is_the_fixed_case_endpoint(self):
         stub = StubTransport(payload=_success_payload())
@@ -318,7 +318,7 @@ class TestHttpContract:
         assert stub.last["method"] == "POST"
 
     def test_body_matches_frozen_contract_exactly(self):
-        # M2 §4: the body carries ONLY v0 InputCase-declared fields
+        # M2 : the body carries ONLY v0 InputCase-declared fields
         # (dto/v0/Case.scala:8). The correlation moved INTO tags (a declared
         # Set[String], persisted by CaseSrv.create + echoed in OutputCase);
         # severity is the Int 3 (High), never the string "high" (severity is
@@ -342,7 +342,7 @@ class TestHttpContract:
         assert isinstance(body["description"], str) and body["description"]
 
     def test_body_field_mapping_rules(self):
-        # SentinelFlow execution facts -> TheHive case fields (M2 §4):
+        # SentinelFlow execution facts -> TheHive case fields:
         # target -> title; severity -> Int 3 (High); execution_id +
         # approval_id + provenance -> tags (the ONLY authenticated,
         # persisted, read-back channel — undeclared top-level keys are
@@ -359,7 +359,7 @@ class TestHttpContract:
         assert body["description"]
         # The M1 undeclared top-level keys are GONE — FieldsParser dropped
         # them silently, so they were never persisted; sending them was a
-        # silent-correlation-loss bug (M2 §4).
+        # silent-correlation-loss bug.
         assert "sentinelflow_execution_id" not in body
         assert "source" not in body
         assert "approval_id" not in body
@@ -420,9 +420,9 @@ class TestHttpContract:
         assert str(dispatch.execution_id) not in stub.last["url"]
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Outcome matrix (status -> SentinelFlow decision)
-# --------------------------------------------------------------------------
+#
 class TestOutcomeMatrix:
     @pytest.mark.parametrize("status", [200, 201])
     def test_created_case_is_succeeded(self, status):
@@ -432,7 +432,7 @@ class TestOutcomeMatrix:
         outcome = _executor(stub).execute(_dispatch())
         assert outcome.status == "succeeded"
         # detail["case_id"] carries the STRING resource reference (_id) under
-        # the frozen reconcile key; caseId (number) rides along for audit only.
+        # the reconcile key; caseId (number) rides along for audit only.
         assert outcome.detail == {
             "provider": "thehive",
             "case_id": "case-9",
@@ -492,12 +492,12 @@ class TestOutcomeMatrix:
         assert stub.calls == []
 
 
-# --------------------------------------------------------------------------
-# 3b. M4-F §3 — response READ interruption (the request was SENT, the body was
-#     lost): fail closed, NEVER infer success/failure of the external effect,
-#     ZERO auto-retry; the committed pre-dispatch attempt survives for MANUAL
-#     reconciliation (paired with §1 in TestDurableAttemptSurvivesFailures).
-# --------------------------------------------------------------------------
+#
+# 3b. response READ interruption (the request was SENT, the body was
+# lost): fail closed, NEVER infer success/failure of the external effect,
+# ZERO auto-retry; the committed pre-dispatch attempt survives for MANUAL
+# reconciliation.
+#
 class TestResponseReadInterruption:
     def test_incomplete_read_is_fail_closed_never_success(self):
         transport = InterruptedReadTransport(http.client.IncompleteRead(b""))
@@ -531,16 +531,16 @@ class TestResponseReadInterruption:
         assert sentinel not in json.dumps(outcome.detail)
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Protocol violations (D9 — platform judges, adapter only raises)
-# --------------------------------------------------------------------------
+#
 class TestProtocolViolation:
     @pytest.mark.parametrize(
         "payload",
         [
             {},  # empty answer
             {"success": True},  # success flag without a resource reference
-            # ONLY the numeric case number — M1 §4: a lone caseId is NEVER a
+            # ONLY the numeric case number — M1 : a lone caseId is NEVER a
             # string resource id and must NOT be accepted as the reference.
             {"caseId": 12},
             {"_id": "", "id": ""},  # empty string reference
@@ -604,9 +604,9 @@ class TestProtocolViolation:
         assert result.rows[-1].detail["classification"] == "protocol_violation"
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Idempotency (409 semantics, execution_id contract)
-# --------------------------------------------------------------------------
+#
 class TestIdempotency:
     @pytest.mark.parametrize(
         "body",
@@ -621,7 +621,7 @@ class TestIdempotency:
         # TheHive 4.1.24-1 v0 case creation has NO certified idempotency /
         # duplicate-recovery contract (CaseSrv.create auto-assigns the next
         # case number, never detects duplicates), so a 409 carries no
-        # authoritative re-fetchable case reference. M1 §4: a 409 is NEVER
+        # authoritative re-fetchable case reference. M1 : a 409 is NEVER
         # auto-success — a duplicate marker does not make it one.
         stub = StubTransport(status=409, body=body)
         outcome = _executor(stub).execute(_dispatch())
@@ -633,7 +633,7 @@ class TestIdempotency:
         # An echoed sentinelflow_execution_id in a 409 body is NOT a
         # certified TheHive case reference — no authoritative contract
         # recovers the EXISTING case's _id from a conflict, so this still
-        # fails closed (M1 §4: no reliable recovery -> explicit error,
+        # fails closed (M1 : no reliable recovery -> explicit error,
         # never auto-success).
         dispatch = _dispatch()
         body = json.dumps(
@@ -695,9 +695,9 @@ class TestIdempotency:
         assert len(stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Secret boundary (five-check battery, sentinel key)
-# --------------------------------------------------------------------------
+#
 class TestSecretBoundary:
     def test_secret_five_check_offline(self, caplog):
         stub = StubTransport(
@@ -762,9 +762,9 @@ class TestSecretBoundary:
         assert "THEHIVE_BASE_URL" in message
 
 
-# --------------------------------------------------------------------------
+#
 # 7. Security (API surface + forgery attempts)
-# --------------------------------------------------------------------------
+#
 class TestSecurity:
     def test_api_target_mutation_is_refused_422(self, client, monkeypatch):
         from app.core.config import settings as global_settings
@@ -827,12 +827,12 @@ class TestSecurity:
             )
 
 
-# --------------------------------------------------------------------------
-# 7b. M4-F §3 — no-redirect write transport (finding ②: the WRITE adapter must
-#     refuse 3xx exactly like the READ adapter, M2-R §4, so the Authorization
-#     Bearer key is NEVER forwarded to a cross-host redirect target and the real
-#     request target stays the bound endpoint).
-# --------------------------------------------------------------------------
+#
+# 7b. no-redirect write transport (finding ②: the WRITE adapter must
+# refuse 3xx exactly like the READ adapter, M2-R , so the Authorization
+# Bearer key is NEVER forwarded to a cross-host redirect target and the real
+# request target stays the bound endpoint).
+#
 class TestWriteNoRedirectCredentialLeak:
     def test_default_transport_is_not_bare_urlopen(self):
         # With NO injected transport the executor must NOT default to bare
@@ -843,7 +843,7 @@ class TestWriteNoRedirectCredentialLeak:
 
     def test_default_opener_installs_the_no_redirect_handler(self):
         # The production write opener carries _NoRedirectHandler (default
-        # verifying TLS handlers UNCHANGED — §3 forbids disabling TLS/URL checks).
+        # verifying TLS handlers UNCHANGED — forbids disabling TLS/URL checks).
         from app.services.executions.thehive import (
             _build_opener,
             _NoRedirectHandler,
@@ -877,14 +877,14 @@ class TestWriteNoRedirectCredentialLeak:
         )
 
 
-# --------------------------------------------------------------------------
-# 7c. M4-F §3 — target-binding consistency: the endpoint the durable binding
-#     records and the target the executor ACTUALLY requests must be one and the
-#     same, and a 3xx can never divert the write to an unbound host. These LOCK
-#     the invariant the no-redirect opener (7b) makes robust; the base URL is a
-#     CONFIG DECLARATION, never a certified instance/tenant identity (gate 5 stays
-#     UNKNOWN).
-# --------------------------------------------------------------------------
+#
+# 7c. target-binding consistency: the endpoint the durable binding
+# records and the target the executor ACTUALLY requests must be one and the
+# same, and a 3xx can never divert the write to an unbound host. These LOCK
+# the invariant the no-redirect opener (7b) makes robust; the base URL is a
+# CONFIG DECLARATION, never a certified instance/tenant identity (gate 5 stays
+# UNKNOWN).
+#
 class TestWriteTargetBindingConsistency:
     def test_binding_endpoint_is_the_exact_request_origin(self):
         stub = StubTransport(payload=_success_payload())
@@ -903,7 +903,7 @@ class TestWriteTargetBindingConsistency:
 
         executor = _executor(StubTransport(payload=_success_payload()))
         facts = executor.dispatch_binding_facts(_dispatch())
-        # §3: the version stays a config-declaration; instance/tenant stay None so
+        # the version stays a config-declaration; instance/tenant stay None so
         # gate 5 STILL fails closed — a base URL is never passed off as an identity.
         assert facts["version_assertion_kind"] == VERSION_ASSERTION_CONFIG
         assert facts["target_instance"] is None
@@ -911,7 +911,7 @@ class TestWriteTargetBindingConsistency:
 
     def test_a_3xx_fails_closed_and_is_never_followed_to_another_host(self):
         # The no-redirect opener surfaces a 3xx as ``HTTPError`` (redirect_request
-        # -> None); execute() maps it to a fail-closed adapter_error with ZERO
+        # > None); execute() maps it to a fail-closed adapter_error with ZERO
         # second call — the write is NEVER re-issued to the Location host, so the
         # target cannot diverge from the bound endpoint.
         stub = StubTransport(exc=_http_error(302, b""))
@@ -921,9 +921,9 @@ class TestWriteTargetBindingConsistency:
         assert len(stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 8. End-to-end (full chain: Approval -> Guard -> Executor -> log)
-# --------------------------------------------------------------------------
+#
 class TestEndToEnd:
     @staticmethod
     def _run(db_session, transport):
@@ -1059,17 +1059,17 @@ class TestEndToEnd:
         assert compensation.final_decision == "compensation_failed"
 
 
-# --------------------------------------------------------------------------
-# 8b. M4-F §3 × §1 — EVERY TheHive failure classification preserves the
-#     COMMITTED pre-dispatch attempt (real file-backed store, read back on an
-#     INDEPENDENT connection), makes EXACTLY ONE external request (zero
-#     auto-retry), and NEVER infers success from a lost/ambiguous answer.
-# --------------------------------------------------------------------------
+#
+# 8b. × — EVERY TheHive failure classification preserves the
+# COMMITTED pre-dispatch attempt (real file-backed store, read back on an
+# INDEPENDENT connection), makes EXACTLY ONE external request (zero
+# auto-retry), and NEVER infers success from a lost/ambiguous answer.
+#
 @pytest.fixture()
 def durable_engine(tmp_path):
     """A FILE-backed engine (real, non-shared pool) for the durable store, so its
-    independent commit is genuinely isolated from the in-memory caller session
-    (constraint 2: no shared-connection artifact masks durability)."""
+independent commit is isolated from the in-memory caller session
+(constraint 2: no shared-connection artifact masks durability)."""
     db_path = tmp_path / "thehive_durable.db"
     engine = create_engine(
         f"sqlite:///{db_path.as_posix()}",
@@ -1129,7 +1129,7 @@ class TestDurableAttemptSurvivesFailures:
         # ZERO auto-retry: exactly ONE external request was made.
         assert len(transport.calls) == 1
         # The COMMITTED pre-dispatch attempt SURVIVES on an independent connection
-        # (§1) — the external effect is uncertain, so it stays a MANUAL
+        # the external effect is uncertain, so it stays a MANUAL
         # reconciliation candidate, never auto-retried or auto-resolved.
         with Session(durable_engine) as session:
             rows = session.scalars(
@@ -1141,9 +1141,9 @@ class TestDurableAttemptSurvivesFailures:
         assert rows[0].execution_id == execution_id
 
 
-# --------------------------------------------------------------------------
+#
 # 9. External (OPT-IN only — default run: 0 external requests)
-# --------------------------------------------------------------------------
+#
 class TestRealTheHive:
     @pytest.mark.external
     def test_real_thehive_case_creation(self):

@@ -1,4 +1,4 @@
-"""Pydantic schemas of the Dashboard API (Phase 1 Step 7.5)."""
+"""Pydantic schemas of the Dashboard API."""
 from pydantic import BaseModel
 
 
@@ -14,10 +14,10 @@ class RiskDistribution(BaseModel):
 class DashboardSummary(BaseModel):
     """GET /dashboard/summary — the Web Console home page snapshot.
 
-    open_incidents counts ACTIVE cases (status open + in_progress); the
-    severity counters break those active cases down. today_* metrics are
-    since today 00:00 UTC.
-    """
+open_incidents counts the active cases (status open or in_progress) and
+the severity counters break those active cases down. today_alerts and
+today_events cover the current UTC day, from 00:00 onward.
+"""
 
     open_incidents: int
     critical_incidents: int

@@ -1,14 +1,14 @@
-/** ExecutionAuditPage unit tests (Phase 3.1.9, jsdom, fetch mocked).
+/* * ExecutionAuditPage unit tests.
  *
  * Locks the read-only audit contract:
- *   A. list renders the paged envelope as-is (server ordering, no re-derivation)
- *   B. empty list is a legal state, not an error
- *   C. filters are pure Filter -> GET query parameters
- *   D. pagination drives page= (server decides the window)
- *   E. state badges map derived_state facts
- *   F. backend errors surface as a banner
- *   G. zero action affordances (no Execute/Approve/Reject/Retry/Compensate)
- *   H. zero mutations + zero Authorization header on every request
+ * A. list renders the paged envelope as-is (server ordering, no re-derivation)
+ * B. empty list is a legal state, not an error
+ * C. filters are pure Filter -> GET query parameters
+ * D. pagination drives page= (server decides the window)
+ * E. state badges map derived_state facts
+ * F. backend errors surface as a banner
+ * G. zero action affordances (no Execute/Approve/Reject/Retry/Compensate)
+ * H. zero mutations + zero Authorization header on every request
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'

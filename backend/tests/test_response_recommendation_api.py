@@ -1,7 +1,7 @@
-"""Step 12.3: AI response-recommendation API tests.
+"""AI response-recommendation API tests.
 
 HTTP contract over AIResponseRecommendationService — still MockProvider
-only (CI runs without any model). Covers the frozen error mapping
+only (CI runs without any model). Covers the error mapping
 (identical to Step 10/11):
 
     unknown event               -> 404
@@ -119,7 +119,7 @@ def _seed(db_session: Session) -> AlertGroup:
     return group
 
 
-# ------------------------------------------------------------------ creation
+# creation
 
 
 def test_create_recommendation_returns_201_with_frozen_fields(client, db_session):
@@ -132,7 +132,7 @@ def test_create_recommendation_returns_201_with_frozen_fields(client, db_session
     assert body["provider"] == "mock"
     assert body["model"] == "mock-deterministic"
     assert body["alert_group_id"] == str(group.id)
-    # The three frozen protocol outputs.
+    # The three protocol outputs.
     assert "SSH Brute Force on edge-gateway" in body["overall_rationale"]
     actions = [item["action"] for item in body["recommendations"]]
     assert actions == ["block_source_ip", "escalate_to_incident"]
@@ -153,7 +153,7 @@ def test_create_recommendation_returns_201_with_frozen_fields(client, db_session
     assert len(rows) == 1 and str(rows[0].id) == body["id"]
 
 
-# ------------------------------------------------------------------ latest
+# latest
 
 
 def test_get_returns_latest_of_history(client, db_session):
@@ -183,7 +183,7 @@ def test_get_without_any_recommendation_is_404(client, db_session):
     assert "No response recommendation" in response.json()["detail"]
 
 
-# ------------------------------------------------------------------ 404s
+# 404s
 
 
 @pytest.mark.parametrize(
@@ -205,7 +205,7 @@ def test_get_unknown_event_is_404(client, db_session):
     assert response.json()["detail"] == "Event not found"
 
 
-# ------------------------------------------------------------------ 5xx
+# 5xx
 
 
 def test_provider_unavailable_maps_to_503_and_persists_nothing(client, db_session):
@@ -267,7 +267,7 @@ def test_unknown_action_maps_to_502_and_persists_nothing(client, db_session):
     assert db_session.query(AIResponseRecommendation).count() == 0
 
 
-# ------------------------------------------------------------------ history
+# history
 
 
 def test_repeated_posts_append_history(client, db_session):
@@ -296,7 +296,7 @@ def test_failed_then_successful_recommendation_leaves_one_row(client, db_session
     assert db_session.query(AIResponseRecommendation).count() == 1
 
 
-# ------------------------------------------------------------------ safety
+# safety
 
 
 def test_generation_never_touches_risk_or_incidents(client, db_session):

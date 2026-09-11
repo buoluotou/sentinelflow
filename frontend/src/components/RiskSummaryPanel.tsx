@@ -1,4 +1,4 @@
-/** AI Risk Summary panel (Step 11.6): display + explicit trigger, no chat.
+/** AI Risk Summary panel: display + explicit trigger, no chat.
  *
  * Reads the latest summary on mount (GET only — never an automatic POST);
  * "Generate Risk Summary" POSTs a new one. The backend appends a history row

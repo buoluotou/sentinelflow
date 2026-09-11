@@ -1,4 +1,4 @@
-"""Dashboard aggregation services (Phase 1 Step 7.5).
+"""Dashboard aggregation services.
 
 One aggregated snapshot for the Web Console home page, computed in the
 backend so the frontend never assembles metrics from multiple endpoints.

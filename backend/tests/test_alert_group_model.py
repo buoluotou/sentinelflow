@@ -1,4 +1,4 @@
-"""Phase 1 Step 4.1: AlertGroup data model tests."""
+"""AlertGroup data model tests."""
 
 from datetime import datetime, timezone
 

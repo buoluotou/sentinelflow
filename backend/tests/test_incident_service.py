@@ -1,6 +1,6 @@
-"""Phase 1 Step 7.2: Incident Service + lifecycle state machine tests.
+"""Incident Service + lifecycle state machine tests.
 
-Covers the three frozen contracts:
+Covers the three contracts:
 - create_incident: AlertGroup + EventRisk -> Incident snapshot (title /
   severity / risk_score copied, status open); missing group, missing risk
   and duplicate case are all business errors
@@ -48,7 +48,7 @@ def _seed(db_session, fingerprint: str = FINGERPRINT_A, score: int = 80, level: 
     return group
 
 
-# ---------------------------------------------------------------- creation
+# creation
 
 
 def test_create_incident_fills_case_record_from_event_and_risk(db_session):
@@ -109,7 +109,7 @@ def test_create_duplicate_incident_is_rejected(db_session):
     assert db_session.query(Incident).count() == 1
 
 
-# ------------------------------------------------------- valid transitions
+# valid transitions
 
 
 @pytest.mark.parametrize(
@@ -183,7 +183,7 @@ def test_full_lifecycle_open_false_positive_closed(db_session):
     assert incident.closed_at is not None
 
 
-# ----------------------------------------------------- invalid transitions
+# invalid transitions
 
 
 @pytest.mark.parametrize(
@@ -238,7 +238,7 @@ def test_transition_missing_incident_raises(db_session):
         transition_status(db_session, uuid.uuid4(), "closed")
 
 
-# ------------------------------------------ timestamps & disposition rules
+# timestamps & disposition rules
 
 
 def test_resolved_at_written_only_on_resolve(db_session):

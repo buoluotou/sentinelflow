@@ -1,31 +1,29 @@
-"""Durable pre-compensation attempt store (RC2 / C-1 — the reverse of durable_dispatch).
+"""Durable pre-compensation attempt store (the reverse of durable_dispatch).
 
-THE PROBLEM. The forward path has M4-F §1 / M4-G §2: the immutable dispatch
-binding commits on its OWN transaction BEFORE ``executor.execute()``. The
-reverse path had no equivalent — ``compensate_response`` fired
-``executor.compensate()`` with only a flushed ``compensation_requested`` row,
-so a caller rollback, a terminal-write failure or a process crash AFTER the
-external reverse request could erase every durable trace of the attempt while
-the external effect may already have applied.
+WHY IT EXISTS. The forward path commits the immutable dispatch binding on its own
+transaction BEFORE ``executor.execute()``. The reverse path had no equivalent —
+``compensate_response`` fired ``executor.compensate()`` with only a flushed
+``compensation_requested`` row, so a caller rollback, a terminal-write failure or
+a process crash AFTER the external reverse request could erase every durable
+trace of the attempt while the external effect may already have applied.
 
-THE FIX. This store commits the compensation intent + reverse binding on its
-OWN transaction (a SEPARATE Session/connection derived from the caller's bind)
-BEFORE the external compensation request is sent. Because it is committed
-independently of the caller's execution_log transaction, it SURVIVES a caller
-rollback, a terminal-write failure or a process crash. Recovery then correlates
-a committed attempt that has no terminal compensation row -> a MANUAL
-reconciliation candidate (NEVER an auto-retry).
+WHAT IT DOES. This store commits the compensation intent and the reverse binding
+on its own transaction (a separate Session/connection derived from the caller's
+bind) BEFORE the external compensation request is sent. Because it is committed
+independently of the caller's execution_log transaction, it survives a caller
+rollback, a terminal-write failure or a process crash. Recovery then correlates a
+committed attempt that has no terminal compensation row -> a manual
+reconciliation candidate (never an auto-retry).
 
-FROZEN-CONTRACT SAFE. This does NOT violate "the Service NEVER calls commit()":
-that clause protects the CALLER's business transaction. This store owns a
-SEPARATE session and commits ONLY that one — the exact precedent already set by
+COMMIT BOUNDARY. The store does not commit the caller's business transaction: it
+owns a separate session and commits only that one — the same precedent as
 ``durable_dispatch`` and the outcomes services. The caller's execution_log
 transaction is untouched; its commit boundary stays in the API layer.
 
-SECRET-GATED. The binding projection passes ``redact_detail`` at this single
-write point, and no binding field IS a credential (the endpoint is the
-validated secret-free base URL; the version is a config declaration, never a
-liveness proof).
+SECRETS. The binding projection passes ``redact_detail`` at this single write
+point, and no binding field is a credential (the endpoint is the validated
+secret-free base URL; the version is a config declaration, never a liveness
+proof).
 """
 from __future__ import annotations
 
@@ -49,16 +47,16 @@ from app.services.executions.secrets import redact_detail
 
 
 class DurableCompensationAttemptStore:
-    """Commits the pre-compensation reverse binding on its OWN durable transaction.
+    """Commits the pre-compensation reverse binding on its own durable transaction.
 
-    Constructed with a SQLAlchemy ``bind`` (an Engine — in production the API
-    layer passes ``db.get_bind()``; in tests a file-backed engine). ``record``
-    opens an INDEPENDENT Session on that bind, INSERTs the append-only
-    ``CompensationAttempt`` row and COMMITS it, then closes. A duplicate
-    ``original_execution_id`` (a replay / concurrent race — the C-1
-    reservation) raises ``IntegrityError`` — the caller MUST treat that as
-    "do not emit the external reverse request".
-    """
+Constructed with a SQLAlchemy ``bind`` (an Engine — in production the API
+layer passes ``db.get_bind()``; in tests a file-backed engine). ``record``
+opens an independent Session on that bind, INSERTs the append-only
+``CompensationAttempt`` row and commits it, then closes. A duplicate
+``original_execution_id`` (a replay / concurrent race — a unique index allows
+one durable compensation per original execution) raises ``IntegrityError`` —
+the caller must treat that as "do not emit the external reverse request".
+"""
 
     def __init__(self, bind) -> None:
         self._bind = bind
@@ -66,12 +64,11 @@ class DurableCompensationAttemptStore:
     def record(self, binding: CompensationBinding) -> None:
         """Durably commit ``binding`` BEFORE the external compensation request is sent.
 
-        Returns ``None`` (the row is committed and the session closed, so there
-        is deliberately no ORM object handed back). On ANY failure the
-        independent session is rolled back and the exception propagates, so the
-        caller NEVER proceeds to the external adapter when the durable
-        pre-compensation fact did not commit.
-        """
+Returns ``None`` (the row is committed and the session closed, so no ORM
+object is handed back). On any failure the independent session is rolled
+back and the exception propagates, so the caller never proceeds to the
+external adapter when the durable pre-compensation fact did not commit.
+"""
         detail = redact_detail(binding.to_detail())
         prepared = binding.prepared_instant() or datetime.now(timezone.utc)
         started_at = binding.started_at() or prepared
@@ -95,12 +92,13 @@ class DurableCompensationAttemptStore:
             prepared_at=prepared,
             dispatch_started_at=started_at,
             detail=detail,
-            # id / recorded_at intentionally unset -> model defaults (append-only).
+            # id / recorded_at are left unset so the model defaults apply
+            # (append-only).
         )
-        # An INDEPENDENT Session on its own connection: committing HERE (not on
+        # An independent Session on its own connection: committing here (not on
         # the caller's session) is what makes the attempt durable across the
         # caller's rollback / terminal-write failure / crash. The original
-        # IntegrityError is re-raised UNWRAPPED so the Execution Service can
+        # IntegrityError is re-raised unwrapped so the Execution Service can
         # translate a duplicate original_execution_id into its typed 409 — the
         # store never hides it.
         session = Session(self._bind)
@@ -115,41 +113,41 @@ class DurableCompensationAttemptStore:
             session.close()
 
 
-#: execution_log decisions of the COMPENSATION chain that carry a TERMINAL
-#: audit for an attempt's reverse dispatch. A terminal SETTLES a compensation
-#: attempt ONLY when ALL of the attempt's IMMUTABLE durable facts agree — its
-#: ``detail`` REFERENCES that attempt's ``compensation_attempt_id``
-#: (``COMPENSATION_REFERENCE_KEY``) AND the terminal row's ``execution_id``
-#: equals the attempt's AND its ``approval_id`` equals the attempt's. NEVER by
-#: the attempt id alone, so a stale / mis-attributed / cross-execution terminal
-#: cannot mask a still-pending compensation attempt. ``compensation_requested``
-#: rows are NOT terminal and never settle an attempt.
+# execution_log decisions of the compensation chain that carry a terminal audit
+# for an attempt's reverse dispatch. A terminal settles a compensation attempt
+# only when all of the attempt's immutable durable facts agree — its ``detail``
+# references that attempt's ``compensation_attempt_id``
+# (``COMPENSATION_REFERENCE_KEY``) and the terminal row's ``execution_id``
+# equals the attempt's and its ``approval_id`` equals the attempt's. Never by
+# the attempt id alone, so a stale / mis-attributed / cross-execution terminal
+# cannot mask a still-pending compensation attempt. ``compensation_requested``
+# rows are not terminal and never settle an attempt.
 _COMPENSATION_TERMINAL_DECISIONS = ("compensation_succeeded", "compensation_failed")
 
 
 class CompensationRecoveryDisposition(str, Enum):
-    """The READ-ONLY epistemic classification of a committed compensation
-    attempt during recovery. The three states are KEPT DISTINCT and are NEVER
-    collapsed into one another:
+    """The read-only classification of a committed compensation attempt during
+recovery. The three states stay distinct and are never collapsed into one
+another:
 
-    * ``TERMINAL_AUDIT_PRESENT`` — a committed terminal compensation row
-      REFERENCES this attempt's ``compensation_attempt_id`` AND shares its
-      ``execution_id`` + ``approval_id``. The compensation AUDIT is settled
-      (``compensation_succeeded`` / ``compensation_failed``), but this is an
-      AUDIT fact about what the SERVICE recorded, NOT a confirmation of the
-      external world's reverse effect. A ``compensation_failed`` terminal is
-      NEVER ``confirmed_failure``: the external reverse action may still have
-      landed (a timeout AFTER the effect applied, a lost response).
-    * ``DISPATCH_STATUS_UNKNOWN`` — a committed attempt with NO terminal that
-      agrees on ALL its immutable facts: "emitted but no reliable terminal".
-      The external reverse effect is UNKNOWN; this is a MANUAL, read-only
-      human-reconciliation candidate, NEVER an auto-retry / re-compensation /
-      re-dispatch, and NEVER a fabricated ``compensation_succeeded`` row.
-    * ``EXTERNAL_EFFECT_CONFIRMED`` — the external reverse effect was
-      authoritatively confirmed. This state lives ONLY in the Outcome layer,
-      produced ONLY by the authoritative Manual Reconcile / trusted-reader
-      proof path. The recovery read NEVER produces it.
-    """
+* ``TERMINAL_AUDIT_PRESENT`` — a committed terminal compensation row
+references this attempt's ``compensation_attempt_id`` and shares its
+``execution_id`` + ``approval_id``. The compensation audit is settled
+(``compensation_succeeded`` / ``compensation_failed``), but this is an
+audit fact about what the service recorded, not a confirmation of the
+external world's reverse effect. A ``compensation_failed`` terminal is
+never ``confirmed_failure``: the external reverse action may still have
+landed (a timeout after the effect applied, a lost response).
+* ``DISPATCH_STATUS_UNKNOWN`` — a committed attempt with no terminal that
+agrees on all its immutable facts: "emitted but no reliable terminal".
+The external reverse effect is unknown; this is a manual, read-only
+human-reconciliation candidate, never an auto-retry / re-compensation /
+re-dispatch, and never a fabricated ``compensation_succeeded`` row.
+* ``EXTERNAL_EFFECT_CONFIRMED`` — the external reverse effect was
+authoritatively confirmed. This state lives only in the Outcome layer,
+produced only by the authoritative Manual Reconcile / trusted-reader
+proof path. The recovery read never produces it.
+"""
 
     TERMINAL_AUDIT_PRESENT = "terminal_audit_present"
     DISPATCH_STATUS_UNKNOWN = "dispatch_status_unknown"
@@ -158,13 +156,13 @@ class CompensationRecoveryDisposition(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class CompensationRecovery:
-    """The READ-ONLY recovery classification of ONE committed compensation attempt.
+    """The read-only recovery classification of one committed compensation attempt.
 
-    The identity facts (``adapter`` / ``reverse_action`` / ``target``) are the
-    durable attempt's IMMUTABLE snapshot, NEVER back-filled from the current
-    config. This record carries NO authorization power: it is evidence for a
-    human operator, who reconciles through the EXISTING Manual Reconcile path.
-    """
+The identity facts (``adapter`` / ``reverse_action`` / ``target``) are the
+durable attempt's immutable snapshot, never back-filled from the current
+config. This record carries no authorization power: it is evidence for a
+human operator, who reconciles through the existing Manual Reconcile path.
+"""
 
     compensation_attempt_id: uuid.UUID
     execution_id: uuid.UUID
@@ -174,20 +172,20 @@ class CompensationRecovery:
     reverse_action: str
     target: str
     disposition: CompensationRecoveryDisposition
-    #: The terminal AUDIT decision (``compensation_succeeded`` /
-    #: ``compensation_failed``) when a terminal agrees on ALL this attempt's
-    #: immutable facts, else ``None``. An AUDIT fact only — NEVER an
-    #: external-effect confirmation.
+    # The terminal audit decision (``compensation_succeeded`` /
+    # ``compensation_failed``) when a terminal agrees on all this attempt's
+    # immutable facts, else ``None``. An audit fact only — never an
+    # external-effect confirmation.
     audit_decision: str | None
 
 
 @dataclass(frozen=True, slots=True)
 class _CompensationTerminalRef:
-    """One committed terminal compensation row's IMMUTABLE correlation facts,
-    as read for recovery: the ``execution_id`` / ``approval_id`` the row was
-    written under and its terminal ``decision``. Whether the ref actually
-    SETTLES a given ``CompensationAttempt`` is decided by
-    :func:`_settling_compensation_decision`."""
+    """One committed terminal compensation row's immutable correlation facts,
+as read for recovery: the ``execution_id`` / ``approval_id`` the row was
+written under and its terminal ``decision``. Whether the ref actually
+settles a given ``CompensationAttempt`` is decided by
+:func:`_settling_compensation_decision`."""
 
     execution_id: uuid.UUID
     approval_id: uuid.UUID | None
@@ -197,14 +195,13 @@ class _CompensationTerminalRef:
 def _compensation_terminal_refs_by_attempt(
     session: Session,
 ) -> dict[str, list[_CompensationTerminalRef]]:
-    """Group every committed terminal compensation row that REFERENCES an
-    attempt (via ``COMPENSATION_REFERENCE_KEY``) by its canonical referenced
-    ``compensation_attempt_id`` (str).
+    """Group every committed terminal compensation row that references an
+attempt (via ``COMPENSATION_REFERENCE_KEY``) by its canonical referenced
+``compensation_attempt_id`` (str).
 
-    READ-ONLY. A non-str / malformed reference is skipped (fail-closed —
-    settles nothing). Rows scan oldest-first so the latest matching terminal
-    wins.
-    """
+Read-only. A non-str / malformed reference is skipped (fail-closed — settles
+nothing). Rows are scanned oldest-first so the latest matching terminal wins.
+"""
     refs: dict[str, list[_CompensationTerminalRef]] = {}
     terminals = session.scalars(
         select(ExecutionLog)
@@ -233,25 +230,25 @@ def _compensation_terminal_refs_by_attempt(
 def _settling_compensation_decision(
     attempt: CompensationAttempt, refs: dict[str, list[_CompensationTerminalRef]]
 ) -> str | None:
-    """The terminal AUDIT decision that SETTLES ``attempt``, else ``None``.
+    """The terminal audit decision that settles ``attempt``, else ``None``.
 
-    A terminal settles the attempt ONLY when ALL of the attempt's IMMUTABLE
-    durable facts agree with the terminal row:
+A terminal settles the attempt only when all of the attempt's immutable
+durable facts agree with the terminal row:
 
-    * ``terminal.execution_id == attempt.execution_id`` — a cross-execution
-      terminal that merely references this ``compensation_attempt_id`` CANNOT
-      settle it;
-    * the referenced ``compensation_attempt_id`` equals
-      ``attempt.compensation_attempt_id`` (the dict key); AND
-    * when the terminal carries an ``approval_id`` (a committed
-      ``execution_log`` row always does), ``terminal.approval_id ==
-      attempt.approval_id``.
+* ``terminal.execution_id == attempt.execution_id`` — a cross-execution
+terminal that merely references this ``compensation_attempt_id`` cannot
+settle it;
+* the referenced ``compensation_attempt_id`` equals
+``attempt.compensation_attempt_id`` (the dict key); and
+* when the terminal carries an ``approval_id`` (a committed
+``execution_log`` row always does), ``terminal.approval_id ==
+attempt.approval_id``.
 
-    Any missing / malformed / cross-execution / cross-approval / wrong-attempt
-    reference is fail-closed -> ``None`` -> DISPATCH_STATUS_UNKNOWN (the safe
-    direction). Oldest-first scan, so the latest fully-matching terminal's
-    decision wins.
-    """
+Any missing / malformed / cross-execution / cross-approval / wrong-attempt
+reference is fail-closed -> ``None`` -> DISPATCH_STATUS_UNKNOWN (the safe
+direction). Oldest-first scan, so the latest fully-matching terminal's
+decision wins.
+"""
     candidates = refs.get(str(attempt.compensation_attempt_id))
     if not candidates:
         return None
@@ -267,7 +264,7 @@ def _settling_compensation_decision(
 
 def _committed_compensations(session: Session) -> Sequence[CompensationAttempt]:
     """Every committed durable compensation attempt, oldest-first (a stable
-    recovery order)."""
+recovery order)."""
     return session.scalars(
         select(CompensationAttempt).order_by(
             CompensationAttempt.recorded_at, CompensationAttempt.id
@@ -276,21 +273,21 @@ def _committed_compensations(session: Session) -> Sequence[CompensationAttempt]:
 
 
 def find_unreconciled_compensations(session: Session) -> Sequence[CompensationAttempt]:
-    """Committed pre-compensation attempts with NO committed terminal
-    compensation row that agrees on ALL their immutable facts —
-    ``execution_id`` + ``compensation_attempt_id`` + ``approval_id``.
+    """Committed pre-compensation attempts with no committed terminal
+compensation row that agrees on all their immutable facts —
+``execution_id`` + ``compensation_attempt_id`` + ``approval_id``.
 
-    RECOVERY READ. After a crash / lost response / terminal-write failure /
-    caller rollback, the durably committed ``CompensationAttempt`` SURVIVES
-    while the caller's terminal compensation row (``compensation_succeeded`` /
-    ``compensation_failed``) may never have committed. An attempt with no
-    agreeing terminal is "emitted but no reliable terminal" ->
-    DISPATCH_STATUS_UNKNOWN, surfaced for MANUAL human reconciliation.
+Recovery read. After a crash / lost response / terminal-write failure /
+caller rollback, the durably committed ``CompensationAttempt`` survives
+while the caller's terminal compensation row (``compensation_succeeded`` /
+``compensation_failed``) may never have committed. An attempt with no
+agreeing terminal is "emitted but no reliable terminal" ->
+DISPATCH_STATUS_UNKNOWN, surfaced for manual human reconciliation.
 
-    It NEVER re-dispatches, retries or compensates: the external reverse effect
-    of such an attempt is UNKNOWN, and an absent terminal is NOT proof the
-    external call failed. Pure read of committed data on the caller's session.
-    """
+It never re-dispatches, retries or compensates: the external reverse effect
+of such an attempt is unknown, and an absent terminal is not proof the
+external call failed. Pure read of committed data on the caller's session.
+"""
     refs = _compensation_terminal_refs_by_attempt(session)
     return [
         attempt
@@ -302,22 +299,21 @@ def find_unreconciled_compensations(session: Session) -> Sequence[CompensationAt
 def classify_compensation_recovery(
     session: Session,
 ) -> Sequence[CompensationRecovery]:
-    """Classify EVERY committed compensation attempt (READ-ONLY) into its disposition.
+    """Classify every committed compensation attempt (read-only) into its disposition.
 
-    Surfaces the controlled, read-only manual-recovery view: each attempt is
-    TERMINAL_AUDIT_PRESENT (a terminal agrees on ALL its immutable facts;
-    ``audit_decision`` carries the compensation_succeeded/failed AUDIT) or
-    DISPATCH_STATUS_UNKNOWN (no terminal agrees on all of them -> a
-    human-check candidate). It NEVER yields EXTERNAL_EFFECT_CONFIRMED and NEVER
-    interprets a ``compensation_failed`` audit as ``confirmed_failure`` —
-    external-effect confirmation is the Outcome layer's, reachable ONLY through
-    the authoritative reconcile / trusted-reader proof path.
+Surfaces the controlled, read-only manual-recovery view: each attempt is
+TERMINAL_AUDIT_PRESENT (a terminal agrees on all its immutable facts;
+``audit_decision`` carries the compensation_succeeded/failed audit) or
+DISPATCH_STATUS_UNKNOWN (no terminal agrees on all of them -> a human-check
+candidate). It never yields EXTERNAL_EFFECT_CONFIRMED and never interprets a
+``compensation_failed`` audit as ``confirmed_failure`` — external-effect
+confirmation belongs to the Outcome layer, reachable only through the
+authoritative reconcile / trusted-reader proof path.
 
-    Pure read: NO write, NO re-dispatch, NO retry, NO re-compensation, NO
-    Outcome fact, NO fabricated ``compensation_succeeded`` row. Recovery
-    identity comes from the immutable durable attempt, never back-filled from
-    the current config.
-    """
+Pure read: no write, no re-dispatch, no retry, no re-compensation, no Outcome
+fact, no fabricated ``compensation_succeeded`` row. Recovery identity comes
+from the immutable durable attempt, never back-filled from the current config.
+"""
     refs = _compensation_terminal_refs_by_attempt(session)
     classified: list[CompensationRecovery] = []
     for attempt in _committed_compensations(session):

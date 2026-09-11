@@ -1,30 +1,30 @@
 """3.4.5-A2-D Manual Reconcile — READ FAILURE -> ``reconciliation_failed`` acceptance.
 
 This is the step that FIRST turns a definition into behaviour. A2-C proved the
-platform chain down to ``reader.read()`` and deliberately LEFT a transport failure
+platform chain down to ``reader.read()`` and LEFT a transport failure
 as a raw, ephemeral signal (``TestReadFailureSignal`` — NO fact, NO conversion).
 A2-D converts ONE thing and only ONE thing:
 
-    a reader EXISTED, ``read()`` was ACTUALLY invoked, and it FAILED in transit
-    (timeout / connection / transport / unavailable)  ->  ``reconciliation_failed``
-    -> append EXACTLY ONE Outcome Fact -> HTTP 200 (design §4.3).
+a reader EXISTED, ``read()`` was ACTUALLY invoked, and it FAILED in transit
+(timeout / connection / transport / unavailable)  ->  ``reconciliation_failed``
+-> append EXACTLY ONE Outcome Fact -> HTTP 200.
 
-THE INVARIANT THAT MUST NEVER SLIP (spec §6 / §9 / §27 — the crux of A2-D): two
+THE INVARIANT THAT MUST NEVER SLIP: two
 rejections that look adjacent stay STRICTLY disjoint, and this file proves them
 SIDE BY SIDE on the SAME chain (``TestCaseAAndCaseBSideBySide``):
 
-  * Case A — NO reader (``registry.get`` finds nothing): ``UnsupportedAdapterRead``
-    -> 404 -> ZERO Outcome Facts, and NEVER ``reconciliation_failed``. There was no
-    read ATTEMPT, so there is nothing to have "failed". This is EVERY adapter in the
-    EMPTY production registry (shuffle / wazuh / thehive / mock / unknown).
-  * Case B — a reader EXISTS (a test-injected ``FakeReadAdapter``) and ``read()``
-    raises a transport error -> ``reconciliation_failed`` -> EXACTLY ONE fact.
+* Case A — NO reader (``registry.get`` finds nothing): ``UnsupportedAdapterRead``
+-> 404 -> ZERO Outcome Facts, and NEVER ``reconciliation_failed``. There was no
+read ATTEMPT, so there is nothing to have "failed". This is EVERY adapter in the
+EMPTY production registry (shuffle / wazuh / thehive / mock / unknown).
+* Case B — a reader EXISTS (a test-injected ``FakeReadAdapter``) and ``read()``
+raises a transport error -> ``reconciliation_failed`` -> EXACTLY ONE fact.
 
 ``reconciliation_failed`` (the RECONCILE ACTION could not read the outside world —
 fact source is the reconciliation process) is NEVER ``confirmed_failure`` (the
 outside world was read and said the effect was NOT achieved — a MAPPED external
 state, 3.4.3-B, A2-E). A2-D writes the former and can never write the latter: it
-performs NO mapping (spec §16 / §21), so at the A2-D SEAL a SUCCESSFUL read stopped at
+performs NO mapping, so at the A2-D SEAL a SUCCESSFUL read stopped at
 ``NotImplementedError`` -> 501 with ZERO facts. (A2-E FLAG: A2-E replaced that stub — a
 SUCCESSFUL SHUFFLE read is now REFUSED at 3.4.3-B mapping with ``UnrecognizedExternalState``
 -> 422 and STILL ZERO facts, since shuffle has no evidenced vocabulary, §四. The A2-D
@@ -33,20 +33,20 @@ read-FAILURE path proven below is byte-identical and untouched.)
 WHAT D DELIBERATELY DOES NOT DO (AST- + runtime-proven below): NO real
 Shuffle/Wazuh/TheHive read, NO HTTP, NO mapping / ``normalize_external_state``, NO
 SUCCESS-fact persistence, NO executor / dispatch / compensation, NO retry / sleep /
-backoff (ONE read attempt, spec §15), NO global-registry mutation (the fake enters
-ONLY an EXPLICIT ``ReadAdapterRegistry([fake])`` constructor injection, spec §22).
+backoff, NO global-registry mutation (the fake enters
+ONLY an EXPLICIT ``ReadAdapterRegistry([fake])`` constructor injection, ).
 The read-FAILURE path is the ONE writer, and it reuses ``webhook.py``'s persistence
 vocabulary (the ``ExecutionOutcomeFact`` alias + ``OutcomePersistenceError``) for a
-single APPEND-ONLY INSERT — never a second ORM writer (spec §22 / §23).
+single APPEND-ONLY INSERT — never a second ORM writer.
 
-Secret hygiene (spec §10 / §25): the fact ``detail`` records ONLY a SAFE STATIC
+Secret hygiene: the fact ``detail`` records ONLY a SAFE STATIC
 classification (``adapter`` / ``external_reference`` / ``failure_category`` /
 ``reason``) — NEVER ``str(exc)``, a callback token, an operator token, an adapter
 API key, an ``Authorization`` header, or a password. The raw transport exception's
 message is never read into any artifact, so a secret-bearing failure string cannot
 leak into the fact or the response.
 
-Covered here (spec §26 items 1-29 + §27 Case A/B): the four transport shapes
+Covered here: the four transport shapes
 (timeout / connection / transport / unavailable), read-called-exactly-once, the
 ``reconciliation_failed`` verdict + its persisted fact, ``source`` /
 human ``operator`` / server ``observed_at``, historical-outcome + execution_log
@@ -96,22 +96,22 @@ from app.services.outcomes.reconciliation import (
 )
 from app.services.outcomes.webhook import OutcomePersistenceError
 
-#: Fixed clock for seeding the DISPATCH chain (execution_log.created_at). The
-#: OUTCOME facts deliberately use the real ``datetime.now`` because the service
-#: stamps ``observed_at`` with the server clock at reconcile time (spec §9).
+# Fixed clock for seeding the DISPATCH chain (execution_log.created_at). The
+# OUTCOME facts use the real ``datetime.now`` because the service
+# stamps ``observed_at`` with the server clock at reconcile time.
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
-#: The reconcile path template (execution_id is a PATH param).
+# The reconcile path template (execution_id is a PATH param).
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: The authenticated operator identity used for service-level calls. It is a HUMAN
-#: recorder name (spec §11) — NEVER the webhook's ``adapter:{identity}`` machine
-#: domain, and NEVER a client-supplied string.
+# The authenticated operator identity used for service-level calls. It is a HUMAN
+# recorder name — NEVER the webhook's ``adapter:{identity}`` machine
+# domain, and NEVER a client-supplied string.
 OPERATOR = "exec-op"
 
-#: A failure message LOADED with things that must NEVER reach a fact or a response
-#: (spec §10 / §25). If the service ever did ``str(exc)`` into ``detail``, these
-#: substrings would surface — the hygiene tests assert they do not.
+# A failure message LOADED with things that must NEVER reach a fact or a response
+# . If the service ever did ``str(exc)`` into ``detail``, these
+# substrings would surface — the hygiene tests assert they do not.
 SECRETY_MESSAGE = (
     "read failed: token=SUPER_SECRET_TOKEN api_key=AKIAIOSFODNN7EXAMPLE "
     "Authorization: Bearer eyJhbGciOiJKV1Qi password=hunter2"
@@ -135,13 +135,13 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-# ---------------------------------------------------------------------------
-# test-only FakeReadAdapter (spec §4 / §22) — NEVER a production reader. It has
+#
+# test-only FakeReadAdapter — NEVER a production reader. It has
 # ONLY ``name`` + ``read`` (no execute / compensate / dispatch / trigger verb) and
 # performs NO I/O: ``read`` raises the primed transport error (A2-D read failure)
 # or returns a canned result. It records its call count so tests can prove read()
-# was invoked EXACTLY once (spec §26 item 5) or NEVER (items 28 / 29).
-# ---------------------------------------------------------------------------
+# was invoked EXACTLY once or NEVER (items 28 / 29).
+#
 def _result(external_state, *, observed_at=None, raw_evidence=None):
     return AdapterReadResult(
         external_state=external_state,
@@ -174,10 +174,10 @@ class FakeReadAdapter(ReadAdapter):
         return self.requests[-1]
 
 
-# ---------------------------------------------------------------------------
+#
 # seeding + snapshot helpers (mirror test_manual_reconcile_reader.py; the chain
 # must be a valid execute chain so correlate_execution accepts it)
-# ---------------------------------------------------------------------------
+#
 def _seed_approval(db_session) -> AIResponseApproval:
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex,
@@ -252,11 +252,11 @@ def _seed_historical_outcome(
     operator="adapter:shuffle",
     hours_ago=1,
 ):
-    """A PRIOR Outcome Fact for the same execution (spec §13 / §24 / §25). Its
-    ``observed_at`` is a REAL past server time so the reconcile read failure the
-    service stamps with ``datetime.now`` is strictly LATER (latest-wins derivation).
-    Seeded as a ``webhook`` fact to prove the manual_reconcile append COEXISTS with
-    a different source, never overwrites it."""
+    """A PRIOR Outcome Fact for the same execution. Its
+``observed_at`` is a REAL past server time so the reconcile read failure the
+service stamps with ``datetime.now`` is strictly LATER (latest-wins derivation).
+Seeded as a ``webhook`` fact to prove the manual_reconcile append COEXISTS with
+a different source, never overwrites it."""
     fact = ExecutionOutcome(
         execution_id=execution_id,
         outcome_status=status,
@@ -306,8 +306,7 @@ def _all_log_rows(db_session):
 
 
 def _log_snapshot(db_session):
-    """Full-table content snapshot of execution_log INCLUDING ``detail`` (spec §26
-    item 12: D must not mutate the dispatch log). JSON-canonicalized, keyed by id."""
+    """Full-table content snapshot of execution_log INCLUDING ``detail``. JSON-canonicalized, keyed by id."""
     return sorted(
         (
             (
@@ -344,14 +343,14 @@ def _service_import_surface():
     return modules, names
 
 
-# ---------------------------------------------------------------------------
+#
 # Fixtures
-# ---------------------------------------------------------------------------
+#
 @pytest.fixture()
 def operators(monkeypatch):
     """Executor operator via OPERATORS_JSON (the 3.3.1 harness) for the API-level
-    Case A test. The conftest autouse fixture resets the module-level registry
-    around every test, so the monkeypatched config always takes effect."""
+Case A test. The conftest autouse fixture resets the module-level registry
+around every test, so the monkeypatched config always takes effect."""
     monkeypatch.setattr(
         settings,
         "OPERATORS_JSON",
@@ -360,24 +359,24 @@ def operators(monkeypatch):
 
 
 # ===========================================================================
-# spec §27 — Case A and Case B MUST appear side by side (the crux of A2-D)
+# Case A and Case B MUST appear side by side (the crux of A2-D)
 # ===========================================================================
 class TestCaseAAndCaseBSideBySide:
     """The SAME correlated, reference-bearing shuffle chain, run against TWO
-    registries. Case A (EMPTY) and Case B (a fake that times out) MUST diverge —
-    a zero-fact rejection vs a one-fact ``reconciliation_failed`` verdict. They are
-    NEVER the same outcome, and Case A is NEVER ``reconciliation_failed``."""
+registries. Case A (EMPTY) and Case B (a fake that times out) MUST diverge —
+a zero-fact rejection vs a one-fact ``reconciliation_failed`` verdict. They are
+NEVER the same outcome, and Case A is NEVER ``reconciliation_failed``."""
 
     def test_case_a_then_case_b_on_the_same_chain_diverge(self, db_session):
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
 
-        # --- Case A: registry EMPTY -> UnsupportedAdapterRead -> ZERO facts -----
+        # Case A: registry EMPTY -> UnsupportedAdapterRead -> ZERO facts -----
         with pytest.raises(UnsupportedAdapterRead):
             reconcile_execution(db_session, eid, OPERATOR, default_read_adapter_registry())
         assert _outcome_count(db_session) == 0
 
-        # --- Case B: fake registered, read() times out -> reconciliation_failed -
+        # Case B: fake registered, read() times out -> reconciliation_failed -
         fake = FakeReadAdapter("shuffle", error=TimeoutError("simulated timeout"))
         response = reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([fake]))
         assert isinstance(response, ManualReconcileResponse)
@@ -388,7 +387,7 @@ class TestCaseAAndCaseBSideBySide:
     def test_case_a_api_empty_registry_404_zero_facts(self, client, operators, db_session):
         # Case A over HTTP: the route uses the EMPTY production registry, so a
         # correlated, reference-bearing shuffle chain rejects 404 with a STATIC
-        # detail and writes ZERO facts (spec §27 Case A / §26 items 13-14).
+        # detail and writes ZERO facts.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         r = client.post(_url(str(eid)), json={}, headers=_auth("tok-exec"))
@@ -397,7 +396,7 @@ class TestCaseAAndCaseBSideBySide:
         assert _outcome_count(db_session) == 0
 
     def test_case_a_unsupported_is_not_reconciliation_failed(self, db_session):
-        # spec §26 item 14: a registry LOOKUP failure is NOT a read attempt, so it
+        # item 14: a registry LOOKUP failure is NOT a read attempt, so it
         # produces NO outcome word of any kind — never reconciliation_failed.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -409,7 +408,7 @@ class TestCaseAAndCaseBSideBySide:
 
 
 # ===========================================================================
-# spec §26 items 1-10 — Case B: the reconciliation_failed verdict + its fact
+# items 1-10 — Case B: the reconciliation_failed verdict + its fact
 # ===========================================================================
 class TestReadTransportFailureVerdict:
     @pytest.mark.parametrize(
@@ -428,9 +427,9 @@ class TestReadTransportFailureVerdict:
     def test_01_04_every_transport_shape_is_reconciliation_failed(
         self, db_session, error, expected_category
     ):
-        # spec §26 items 1-4: timeout / connection error / transport error /
+        # items 1-4: timeout / connection error / transport error /
         # unavailable ALL close to the SAME reconciliation_failed verdict, each with
-        # its SAFE STATIC failure_category recorded (spec §10). The domain
+        # its SAFE STATIC failure_category recorded. The domain
         # ReadTransportError and the builtin transport errors are caught as a UNION.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -444,7 +443,7 @@ class TestReadTransportFailureVerdict:
         assert fact.detail["reason"] == "read_transport_failure"
 
     def test_05_read_called_exactly_once(self, db_session):
-        # spec §26 item 5 / §15: ONE read attempt — the failure path re-extracts the
+        # item 5 / : ONE read attempt — the failure path re-extracts the
         # context (read-only, no read) but NEVER re-invokes read().
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -454,7 +453,7 @@ class TestReadTransportFailureVerdict:
         assert len(fake.requests) == 1
 
     def test_06_read_failure_is_reconciliation_failed_not_confirmed_failure(self, db_session):
-        # spec §26 item 6 + the opening admonition: reconciliation_failed (the
+        # item 6 + the opening admonition: reconciliation_failed (the
         # reconcile ACTION could not read) is NEVER confirmed_failure (a MAPPED
         # external verdict). D writes no mapping, so confirmed_failure is impossible.
         eid = uuid.uuid4()
@@ -466,7 +465,7 @@ class TestReadTransportFailureVerdict:
         assert _only_fact(db_session, eid).outcome_status == "reconciliation_failed"
 
     def test_07_reconciliation_failed_fact_persisted(self, db_session):
-        # spec §26 item 7: exactly ONE reconciliation_failed row is committed.
+        # item 7: exactly ONE reconciliation_failed row is committed.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", error=TimeoutError("simulated timeout"))
@@ -476,7 +475,7 @@ class TestReadTransportFailureVerdict:
         assert fact.outcome_status == "reconciliation_failed"
 
     def test_08_source_is_manual_reconcile(self, db_session):
-        # spec §26 item 8 / §12: the ingress channel is FIXED server-side.
+        # item 8 / : the ingress channel is FIXED server-side.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", error=TimeoutError("simulated timeout"))
@@ -485,7 +484,7 @@ class TestReadTransportFailureVerdict:
         assert _only_fact(db_session, eid).source == "manual_reconcile"
 
     def test_09_operator_is_human_not_adapter_machine(self, db_session):
-        # spec §26 item 9 / §11: the recorder is the AUTHENTICATED HUMAN operator,
+        # item 9 / : the recorder is the AUTHENTICATED HUMAN operator,
         # NEVER the webhook's ``adapter:{identity}`` machine trust domain.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -496,7 +495,7 @@ class TestReadTransportFailureVerdict:
         assert not fact.operator.startswith("adapter:")
 
     def test_10_observed_at_is_server_observation_time(self, db_session):
-        # spec §26 item 10 / §9: a read failure carries NO trustworthy external
+        # item 10 / : a read failure carries NO trustworthy external
         # timestamp, so the fact time is the SERVER OBSERVATION time (aware, ~now),
         # and the envelope DECLARES it via observed_at_kind (never dressed as an
         # external event time).
@@ -512,13 +511,13 @@ class TestReadTransportFailureVerdict:
 
 
 # ===========================================================================
-# spec §7 — the conversion lives ONLY in reconcile_execution (A2-C split intact)
+# the conversion lives ONLY in reconcile_execution (A2-C split intact)
 # ===========================================================================
 class TestConversionLivesOnlyInTheEntrypoint:
     def test_read_external_state_still_propagates_raw_while_entrypoint_converts(
         self, db_session
     ):
-        # spec §7: ``read_external_state`` stays a PURE PROPAGATOR (the A2-C
+        # ``read_external_state`` stays a PURE PROPAGATOR (the A2-C
         # ``TestReadFailureSignal`` locks it) — it raises the builtin UNCHANGED and
         # writes NOTHING. The reconciliation_failed conversion lives ONLY in
         # ``reconcile_execution``. Same chain, same failure, two different layers.
@@ -544,11 +543,11 @@ class TestConversionLivesOnlyInTheEntrypoint:
 
 
 # ===========================================================================
-# spec §26 items 11-12 / 24-26 / §13 — append-only, immutability, derivation
+# items 11-12 / 24-26 / — append-only, immutability, derivation
 # ===========================================================================
 class TestAppendOnlyAndDerivation:
     def test_11_historical_outcome_unchanged(self, db_session):
-        # spec §26 item 11 / §13: appending the read-failure fact NEVER touches a
+        # item 11 / : appending the read-failure fact NEVER touches a
         # prior fact — the historical row is byte-identical afterwards.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -568,7 +567,7 @@ class TestAppendOnlyAndDerivation:
         assert len(_facts(db_session, eid)) == before_count + 1  # APPEND, not replace
 
     def test_12_execution_log_unchanged(self, db_session):
-        # spec §26 item 12: the dispatch log is SELECT-only — the read-failure path
+        # item 12: the dispatch log is SELECT-only — the read-failure path
         # never UPDATEs / DELETEs / INSERTs an execution_log row.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -582,7 +581,7 @@ class TestAppendOnlyAndDerivation:
         assert _log_snapshot(db_session) == before
 
     def test_13_two_facts_coexist_derived_is_latest(self, db_session):
-        # spec §13: T1 confirmed_success + T2 (reconcile) timeout -> TWO facts, the
+        # T1 confirmed_success + T2 (reconcile) timeout -> TWO facts, the
         # history STILL exists, and the DERIVED state is reconciliation_failed
         # (observed_at DESC / id DESC). The stored series is never rewritten.
         eid = uuid.uuid4()
@@ -601,7 +600,7 @@ class TestAppendOnlyAndDerivation:
         assert response.derived_outcome_status == "reconciliation_failed"
 
     def test_24_derivation_latest_read_failure_wins(self, db_session):
-        # spec §26 item 24: the derived state over the series is the LATEST
+        # item 24: the derived state over the series is the LATEST
         # observation — the fresh reconciliation_failed, not the older
         # confirmed_success. This is derivation, not an echo of this observation.
         eid = uuid.uuid4()
@@ -617,7 +616,7 @@ class TestAppendOnlyAndDerivation:
         assert response.outcome_status == "reconciliation_failed"
 
     def test_25_previous_confirmed_success_immutable(self, db_session):
-        # spec §26 item 25: the prior confirmed_success fact survives UNCHANGED —
+        # item 25: the prior confirmed_success fact survives UNCHANGED —
         # the new verdict is APPENDED, the history is never reinterpreted (O5).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -634,7 +633,7 @@ class TestAppendOnlyAndDerivation:
         assert hist_after.outcome_status == "confirmed_success"
 
     def test_26_repeat_reconcile_creates_separate_facts(self, db_session):
-        # spec §26 item 26 / §13: two failing reconciles APPEND two distinct facts
+        # item 26 / : two failing reconciles APPEND two distinct facts
         # (INSERT-only — never UPDATE / UPSERT / MERGE), forming a time series.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -658,11 +657,11 @@ class TestAppendOnlyAndDerivation:
 
 
 # ===========================================================================
-# spec §26 items 20-23 / §10 / §25 — secret hygiene
+# items 20-23 / / — secret hygiene
 # ===========================================================================
 class TestReadFailureSecretHygiene:
     def test_20_no_api_credential_in_detail(self, db_session):
-        # spec §26 item 20: an adapter API key in the failure message NEVER reaches
+        # item 20: an adapter API key in the failure message NEVER reaches
         # the fact detail — only the static classification is recorded.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -675,7 +674,7 @@ class TestReadFailureSecretHygiene:
         assert "api_key" not in detail_json.lower()
 
     def test_21_no_authorization_in_detail(self, db_session):
-        # spec §26 item 21: an Authorization header / Bearer token in the failure
+        # item 21: an Authorization header / Bearer token in the failure
         # message NEVER reaches the fact detail.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -689,7 +688,7 @@ class TestReadFailureSecretHygiene:
         assert "super_secret_token" not in detail_json
 
     def test_22_raw_exception_message_never_recorded(self, db_session):
-        # spec §26 item 22 / §25: the service records ONLY the static category, never
+        # item 22 / : the service records ONLY the static category, never
         # ``str(exc)``. A builtin TimeoutError carrying secrets proves the raw message
         # is not copied into the fact, and only the safe class survives.
         eid = uuid.uuid4()
@@ -709,7 +708,7 @@ class TestReadFailureSecretHygiene:
         }
 
     def test_23_no_token_in_response(self, db_session):
-        # spec §26 item 23: the ManualReconcileResponse envelope leaks no secret from
+        # item 23: the ManualReconcileResponse envelope leaks no secret from
         # the failure — it carries only the safe verdict + provenance fields.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -725,11 +724,11 @@ class TestReadFailureSecretHygiene:
 
 
 # ===========================================================================
-# spec §26 items 17-19 / §2 / §15 — no retry, no compensation, no execution
+# items 17-19 / / — no retry, no compensation, no execution
 # ===========================================================================
 class TestReadFailureNoSideCapabilities:
     def test_17_no_retry_no_sleep(self, db_session):
-        # spec §26 item 17 / §15: ONE read attempt, no retry / sleep / backoff /
+        # item 17 / : ONE read attempt, no retry / sleep / backoff /
         # loop. Runtime (call_count == 1) + the import surface carries no ``time`` /
         # ``asyncio`` to sleep with.
         eid = uuid.uuid4()
@@ -742,7 +741,7 @@ class TestReadFailureNoSideCapabilities:
         assert "asyncio" not in modules
 
     def test_18_no_compensation(self, db_session):
-        # spec §26 item 18: a read failure NEVER triggers compensation — no new
+        # item 18: a read failure NEVER triggers compensation — no new
         # execution_log row (a compensation would be a fresh chain), and no
         # write-side executor import.
         eid = uuid.uuid4()
@@ -759,7 +758,7 @@ class TestReadFailureNoSideCapabilities:
         assert not any(m.startswith("app.services.executions") for m in modules)
 
     def test_19_no_execute_no_dispatch(self):
-        # spec §26 item 19 / §2: the service imports NO write-side executor /
+        # item 19 / : the service imports NO write-side executor /
         # dispatch / compensation stack — a fact row can never trigger execution.
         modules, names = _service_import_surface()
         assert not any(m.startswith("app.services.executions") for m in modules)
@@ -769,11 +768,11 @@ class TestReadFailureNoSideCapabilities:
 
 
 # ===========================================================================
-# spec §26 items 15-16 / 28 — gate ordering: failures BEFORE the read write 0
+# items 15-16 / 28 — gate ordering: failures BEFORE the read write 0
 # ===========================================================================
 class TestReadFailureGateOrdering:
     def test_15_contract_failure_zero_fact(self, db_session):
-        # spec §26 item 15: a chain with NO reconcilable external reference rejects
+        # item 15: a chain with NO reconcilable external reference rejects
         # with MissingExternalReference BEFORE any read — ZERO facts (a contract
         # failure is never laundered into reconciliation_failed).
         eid = uuid.uuid4()
@@ -792,7 +791,7 @@ class TestReadFailureGateOrdering:
         assert _outcome_count(db_session) == 0
 
     def test_16_successful_read_maps_nothing_zero_fact(self, db_session):
-        # spec §26 item 16 / §16: a SUCCESSFUL SHUFFLE read maps to NOTHING and writes
+        # item 16 / : a SUCCESSFUL SHUFFLE read maps to NOTHING and writes
         # ZERO facts. A2-E FLAG: at the A2-D seal this stopped at the NotImplementedError
         # stub; A2-E replaced it with the real 3.4.3-B mapping edge, which REFUSES the
         # shuffle state ("succeeded" is unevidenced for shuffle, §四) with
@@ -807,7 +806,7 @@ class TestReadFailureGateOrdering:
         assert _outcome_count(db_session) == 0  # but nothing was mapped / persisted
 
     def test_28_no_adapter_read_if_external_reference_missing(self, db_session):
-        # spec §26 item 28 / §10: the extraction gate runs BEFORE registry.get /
+        # item 28 / : the extraction gate runs BEFORE registry.get /
         # read() — a missing reference means read() is NEVER invoked (call_count 0).
         eid = uuid.uuid4()
         _seed_chain(
@@ -822,12 +821,12 @@ class TestReadFailureGateOrdering:
         assert _outcome_count(db_session) == 0
 
     def test_29_no_adapter_read_if_registry_unsupported(self, db_session):
-        # spec §26 item 29 / §6: with the EMPTY registry no reader exists, so read()
+        # item 29 / : with the EMPTY registry no reader exists, so read()
         # is NEVER invoked — an unregistered fake stays at call_count 0 and the path
         # is UnsupportedAdapterRead (zero facts), NOT reconciliation_failed.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
-        fake = FakeReadAdapter("shuffle")  # deliberately NOT registered
+        fake = FakeReadAdapter("shuffle")  # NOT registered
         with pytest.raises(UnsupportedAdapterRead):
             reconcile_execution(db_session, eid, OPERATOR, default_read_adapter_registry())
         assert fake.call_count == 0
@@ -835,11 +834,11 @@ class TestReadFailureGateOrdering:
 
 
 # ===========================================================================
-# spec §26 item 27 / §23 — rollback when the fact append itself fails
+# item 27 / — rollback when the fact append itself fails
 # ===========================================================================
 class TestReadFailurePersistenceRollback:
     def test_27_rollback_if_persistence_fails(self, db_session, monkeypatch):
-        # spec §26 item 27 / §23: if the reconciliation_failed append FAILS at the
+        # item 27 / : if the reconciliation_failed append FAILS at the
         # DB layer, the transaction is ROLLED BACK (no partial fact survives) and an
         # OutcomePersistenceError surfaces — the router maps it to a 5xx, NEVER
         # accepted=true, NEVER an infra error laundered into reconciliation_failed.

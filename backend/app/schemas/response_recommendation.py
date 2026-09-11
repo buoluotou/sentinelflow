@@ -1,4 +1,4 @@
-"""Pydantic schemas of the AI response-recommendation API (Phase 2 Step 12.3)."""
+"""Pydantic schemas of the AI response-recommendation API."""
 import uuid
 from datetime import datetime
 
@@ -8,10 +8,9 @@ from pydantic import BaseModel, ConfigDict
 class RecommendationItemRead(BaseModel):
     """One recommended action as returned by the API.
 
-    Advisory only: action comes from the frozen RESPONSE_ACTIONS
-    vocabulary and target is an analyst-facing string — never an
-    executable payload.
-    """
+Advisory only: action comes from the RESPONSE_ACTIONS vocabulary and
+target is an analyst-facing string — never an executable payload.
+"""
 
     action: str
     target: str
@@ -21,11 +20,11 @@ class RecommendationItemRead(BaseModel):
 class AIResponseRecommendationRead(BaseModel):
     """One AI response recommendation as returned by the API.
 
-    Mirrors the ai_response_recommendations row field-for-field; the frozen
-    output protocol (overall_rationale / recommendations / confidence)
-    surfaces unchanged. No risk score is ever included — EventRisk.score
-    stays the only official score.
-    """
+Mirrors the ai_response_recommendations row field-for-field; the output
+protocol (overall_rationale / recommendations / confidence) surfaces
+unchanged. No risk score is included — EventRisk.score stays the only
+official score.
+"""
 
     model_config = ConfigDict(from_attributes=True)
 

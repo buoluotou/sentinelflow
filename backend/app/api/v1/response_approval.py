@@ -1,27 +1,28 @@
-"""Approval-queue API (Phase 2 Step 13.3).
+"""Approval-queue API.
 
-Thin HTTP layer over AIResponseApprovalService; the frozen error contract:
+Thin HTTP layer over AIResponseApprovalService; the error contract:
 
-    AIEventNotFound             -> 404  "Recommendation not found"
-    AIResponseApprovalNotFound  -> 404  "Approval not found"
-    AIResponseAlreadyReviewed   -> 409  "already reviewed"
+AIEventNotFound             -> 404  "Recommendation not found"
+AIResponseApprovalNotFound  -> 404  "Approval not found"
+AIResponseAlreadyReviewed   -> 409  "already reviewed"
 
 GET /approvals is the Approval Queue backend entry: it returns pending
-RECOMMENDATIONS — pending is the 13.2 derived state (no approval row),
-never a stored status value. Queue ordering comes straight from the
-service (created_at ASC, id ASC — first in, first reviewed); this layer
-never re-sorts.
+recommendations — pending is a derived state (no approval row), never a
+stored status value. Queue ordering comes straight from the service
+(created_at ASC, id ASC — first in, first reviewed); this layer never
+re-sorts.
 
-Approve != Execute: POST .../approve and .../reject record one decision
-row each. They never block an IP, create an Incident, touch EventRisk or
-call any orchestrator — response execution belongs to Step 14.
+Approving and rejecting are decisions, not executions: POST
+.../approve and .../reject record one decision row each. They never
+block an IP, create an Incident, touch EventRisk or call any
+orchestrator — response execution is handled by the execution API.
 
-RC2 §7 — the approval auth boundary: DEMO MODE (default) keeps the simple
-local UX (tokenless; the body ``reviewer`` stays DISPLAY-ONLY, exactly as
-before). PRODUCTION mode forbids tokenless approval: the recorded reviewer
-is ALWAYS the Bearer token's server-side principal (viewer / executor roles
-get 403 — the approval permission is separate); the body identity field is
-ignored, so impersonation is impossible.
+The approval auth boundary: demo mode (the default) keeps the simple
+local UX, where the body ``reviewer`` is display-only. Production mode
+forbids tokenless approval: the recorded reviewer is the Bearer token's
+server-side principal, and viewer / executor roles get 403 because the
+approval permission is separate. The body identity field is ignored, so
+a caller cannot record someone else as the reviewer.
 """
 import uuid
 
@@ -50,24 +51,24 @@ router = APIRouter(tags=["approval-queue"])
 
 
 def get_ai_response_approval_service() -> AIResponseApprovalService:
-    """Deployment seam: tests override this dependency, mirroring the
-    Step 10/11/12 AI APIs."""
+    """Deployment seam: tests override this dependency, as with the other
+AI APIs."""
     return AIResponseApprovalService()
 
 
 def authenticate_approval_principal(
     authorization: str | None = Header(default=None),
 ) -> Operator | None:
-    """RC2 §7 — the approval write-path auth boundary.
+    """the approval write-path auth boundary.
 
-    DEMO MODE (default): returns ``None`` — the simple local Approval UX
-    stays tokenless; the request-body ``reviewer`` remains DISPLAY-ONLY
-    (loopback binding is the exposure control).
+DEMO MODE (default): returns ``None`` — the simple local Approval UX
+stays tokenless; the request-body ``reviewer`` remains DISPLAY-ONLY
+(loopback binding is the exposure control).
 
-    PRODUCTION MODE: tokenless / unknown tokens are 401; an authenticated
-    operator WITHOUT the approval permission (viewer / executor) is 403.
-    The recorded reviewer is the TOKEN's principal — never the body field.
-    """
+PRODUCTION MODE: tokenless / unknown tokens are 401; an authenticated
+operator WITHOUT the approval permission (viewer / executor) is 403.
+The recorded reviewer is the TOKEN's principal — never the body field.
+"""
     if not is_production(settings):
         return None
     token = _extract_bearer(authorization)
@@ -93,7 +94,7 @@ def approval_queue(
     service: AIResponseApprovalService = Depends(get_ai_response_approval_service),
 ) -> list[PendingApprovalRead]:
     """The Approval Queue: every recommendation without a decision yet,
-    oldest first (service ordering, never re-sorted here)."""
+oldest first (service ordering, never re-sorted here)."""
     records = service.get_pending_approvals(db)
     return [_to_pending(record) for record in records]
 
@@ -126,8 +127,8 @@ def approve_recommendation(
 ) -> AIResponseApprovalRead:
     """Record a human APPROVE decision. Records only — executes nothing.
 
-    RC2 §7: in production the reviewer is the authenticated principal; in
-    demo mode the endpoint stays tokenless (display-only reviewer)."""
+in production the reviewer is the authenticated principal; in
+demo mode the endpoint stays tokenless (display-only reviewer)."""
     approval = _decide(db, service, recommendation_id, payload, service.approve, principal)
     db.commit()
     db.refresh(approval)
@@ -148,8 +149,8 @@ def reject_recommendation(
 ) -> AIResponseApprovalRead:
     """Record a human REJECT decision. Records only — executes nothing.
 
-    RC2 §7: same reviewer rule as approve (production principal / demo
-    display-only)."""
+same reviewer rule as approve (production principal / demo
+display-only)."""
     approval = _decide(db, service, recommendation_id, payload, service.reject, principal)
     db.commit()
     db.refresh(approval)
@@ -157,12 +158,12 @@ def reject_recommendation(
 
 
 def _decide(db, service, recommendation_id: str, payload: ApprovalDecisionRequest, decide, principal):
-    """Call approve/reject and translate the frozen error taxonomy to HTTP.
-    A raised error aborts before commit(), so nothing is ever persisted.
+    """Call approve/reject and translate the error taxonomy to HTTP.
+A raised error aborts before commit(), so nothing is ever persisted.
 
-    RC2 §7: the recorded reviewer is the AUTHENTICATED principal in
-    production; only in demo mode does the display-only body reviewer apply.
-    """
+the recorded reviewer is the AUTHENTICATED principal in
+production; only in demo mode does the display-only body reviewer apply.
+"""
     reviewer = principal.name if principal is not None else payload.reviewer
     try:
         return decide(
@@ -178,8 +179,8 @@ def _decide(db, service, recommendation_id: str, payload: ApprovalDecisionReques
 
 
 def _to_pending(record: AIResponseRecommendation) -> PendingApprovalRead:
-    """Project a queue entry; the alert_group relationship carries the
-    human-readable event title without a second query per row."""
+    """Project a queue entry; the alert_group title is already eager-loaded
+by the service, so this reads no lazy relationship."""
     return PendingApprovalRead.model_validate(
         {
             "id": record.id,
@@ -196,7 +197,7 @@ def _to_pending(record: AIResponseRecommendation) -> PendingApprovalRead:
 
 
 def _to_uuid(value: str, detail: str) -> uuid.UUID:
-    """Malformed ids map to the same 404 as unknown ids (Step 12.3 style)."""
+    """Malformed ids map to the same 404 as unknown ids (style)."""
     try:
         return uuid.UUID(value)
     except ValueError as exc:

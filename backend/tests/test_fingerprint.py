@@ -1,4 +1,4 @@
-"""Phase 1 Step 4.2: FingerprintGenerator tests."""
+"""FingerprintGenerator tests."""
 
 from app.services.deduplication.fingerprint import FingerprintGenerator
 from app.services.normalization.models import (
@@ -61,7 +61,7 @@ def test_field_order_does_not_matter():
 
 def test_volatile_fields_do_not_change_fingerprint():
     """timestamp / raw_event / event_id vary per event and must not
-    participate, otherwise every repeat would get a new fingerprint."""
+participate, otherwise every repeat would get a new fingerprint."""
     base = _make_alert()
     fp_base = FingerprintGenerator.generate(base)
 

@@ -1,4 +1,4 @@
-"""Phase 3.3.3.2: Metrics API — the read model exposed as a read-only
+"""Metrics API — the read model exposed as a read-only
 audit view:
 
     GET /api/v1/executions/metrics
@@ -6,10 +6,10 @@ audit view:
 
 Locks the acceptance gate:
 
-- 200 on the empty dataset, rates serialized as JSON null (frozen None
+- 200 on the empty dataset, rates serialized as JSON null (None
   semantics — never a fake 0% / 100%)
 - 200 on the canonical mixed workload: every number field-for-field
-  identical to the read model (body mirrors the frozen dataclasses)
+  identical to the read model (body mirrors the dataclasses)
 - adapter distribution / failure classifications / latency surfaced
 - in-flight chains count toward totals only, never toward denominators
 - GET requires NO token (read ≠ execute), auth headers are irrelevant
@@ -38,9 +38,9 @@ from tests.test_execution_metrics import seed_mix
 METRICS = "/api/v1/executions/metrics"
 
 
-# --------------------------------------------------------------------------
+#
 # Helpers
-# --------------------------------------------------------------------------
+#
 def log_snapshot(db_session):
     """Full content fingerprint of execution_log — rows AND values."""
     rows = db_session.scalars(select(ExecutionLog)).all()
@@ -69,9 +69,9 @@ def add_in_flight_chain(db_session):
     db_session.flush()
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Empty dataset: 200 + explicit JSON nulls
-# --------------------------------------------------------------------------
+#
 class TestEmptyDataset:
     def test_empty_200_with_null_rates(self, client, db_session):
         response = client.get(METRICS)
@@ -96,9 +96,9 @@ class TestEmptyDataset:
         assert body["latency"]["max_seconds"] is None
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Normal data: the body is the read model, field for field
-# --------------------------------------------------------------------------
+#
 class TestNormalData:
     def test_body_mirrors_read_model_exactly(self, client, db_session):
         seed_mix(db_session)
@@ -159,9 +159,9 @@ class TestNormalData:
         assert latency["average_seconds"] <= latency["max_seconds"]
 
 
-# --------------------------------------------------------------------------
+#
 # 3. In-flight chains never enter outcome denominators
-# --------------------------------------------------------------------------
+#
 class TestInFlightSemantics:
     def test_in_flight_excluded_from_rates(self, client, db_session):
         seed_mix(db_session)
@@ -177,9 +177,9 @@ class TestInFlightSemantics:
         assert body["guard_rejection_rate"] == pytest.approx(2 / 11)
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Read ≠ execute: no token, no writes — nailed by row counts
-# --------------------------------------------------------------------------
+#
 class TestReadOnlyContract:
     def test_get_requires_no_token(self, client, db_session, monkeypatch):
         # No Authorization header AND nothing configured server-side —
@@ -223,9 +223,9 @@ class TestReadOnlyContract:
         assert before == after
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Structural locks: route order + endpoint surface
-# --------------------------------------------------------------------------
+#
 class TestStructuralLocks:
     def test_metrics_route_registered_before_param_route(self):
         paths = [route.path for route in api_module.router.routes]

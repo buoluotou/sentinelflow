@@ -1,17 +1,17 @@
-"""Incident AI context service: read-only aggregation (Phase 2 Step 14.2).
+"""Incident AI context service: read-only aggregation.
 
-Composes the incident-centric AI case view from the Step 14.1 viewonly
+Composes the incident-centric AI case view from the viewonly
 traversals. This is a pure READ service:
 
 - consumes ``incident.ai_analyses / ai_risk_summaries /
-  ai_response_recommendations`` directly — no second query layer, no new
-  association table, no JSON copied into a context table
+ai_response_recommendations`` directly — no second query layer, no new
+association table, no JSON copied into a context table
 - never generates AI data (no provider/Ollama calls)
 - never writes: no add/flush/commit, no UPDATE, and "pending" stays a
-  derived state (``approval is None``) instead of a persisted value
+derived state (``approval is None``) instead of a persisted value
 - an approved decision surfaces as audit information on its recommendation;
-  it is never auto-consumed (no Shuffle/Wazuh/TheHive, no incident
-  transition, no risk recompute)
+it is never auto-consumed (no Shuffle/Wazuh/TheHive, no incident
+transition, no risk recompute)
 """
 import uuid
 
@@ -33,9 +33,9 @@ from app.services.incidents.models import IncidentNotFound
 def get_incident_ai_context(db: Session, incident_id: uuid.UUID) -> IncidentAIContext:
     """The complete AI history of one incident, oldest first.
 
-    Raises IncidentNotFound for an unknown id — nothing is returned, so no
-    AI data of other cases can leak through the error path.
-    """
+Raises IncidentNotFound for an unknown id — nothing is returned, so no
+AI data of other cases can leak through the error path.
+"""
     incident = db.get(Incident, incident_id)
     if incident is None:
         raise IncidentNotFound(f"Incident {incident_id} does not exist")

@@ -1,4 +1,4 @@
-"""Phase 3.3.1 — Operator Identity & RBAC tests.
+"""Operator Identity & RBAC tests.
 
 Locks the server-side identity binding:
 
@@ -46,11 +46,25 @@ from app.services.executions.operators import (
 
 EXECUTE = "/api/v1/executions"
 COMPENSATE = "/api/v1/executions/compensate"
+RECONCILE = "/api/v1/executions/{execution_id}/reconcile"
+
+# A credential containing a non-ASCII character. ``secrets.compare_digest``
+# REJECTS a non-ASCII ``str`` with a TypeError, and a raw header byte >= 0x80
+# is decoded latin-1 by the ASGI server — so without encoding, an
+# UNAUTHENTICATED caller turns the promised 401 into an unhandled 500.
+# Mirrors tests/test_webhook_authentication.py (same input class; the
+# callback gate in api/v1/webhooks.py carries the same byte encoding).
+NON_ASCII_CREDENTIAL = "caf" + chr(233)
+NON_ASCII_BEARER = "Bearer " + NON_ASCII_CREDENTIAL
+# The same credential as it actually arrives on the wire. httpx refuses a
+# non-ASCII *str* header (UnicodeEncodeError), so the client-level tests send
+# raw bytes — which is also the true attacker shape.
+NON_ASCII_HEADER = [(b"authorization", b"Bearer caf\xe9")]
 
 
-# --------------------------------------------------------------------------
+#
 # Fixtures
-# --------------------------------------------------------------------------
+#
 @pytest.fixture(autouse=True)
 def _reset_registry():
     """Force a fresh registry for every test (the registry is a module-
@@ -75,9 +89,9 @@ def auth_header():
     return {"Authorization": "Bearer tok-alice-001"}
 
 
-# --------------------------------------------------------------------------
-# OperatorRole — frozen vocabulary
-# --------------------------------------------------------------------------
+#
+# OperatorRole — vocabulary
+#
 class TestOperatorRole:
     def test_four_roles_frozen(self):
         assert VALID_ROLES == {"viewer", "reviewer", "executor", "admin"}
@@ -95,9 +109,9 @@ class TestOperatorRole:
         assert OperatorRole.ADMIN.value == "admin"
 
 
-# --------------------------------------------------------------------------
+#
 # Operator — immutable, token-free
-# --------------------------------------------------------------------------
+#
 class TestOperator:
     def test_immutable_dataclass(self):
         op = Operator(name="alice", role=OperatorRole.EXECUTOR)
@@ -115,9 +129,9 @@ class TestOperator:
         assert "EXECUTOR" in repr(op) or "executor" in repr(op)
 
 
-# --------------------------------------------------------------------------
+#
 # OperatorRegistry — token -> Operator lookup
-# --------------------------------------------------------------------------
+#
 class TestOperatorRegistry:
     def test_lookup_returns_correct_operator(self):
         ops = [
@@ -192,9 +206,9 @@ class TestOperatorRegistry:
         assert "super-secret-token" not in r
 
 
-# --------------------------------------------------------------------------
+#
 # build_registry — OPERATORS_JSON parsing & validation
-# --------------------------------------------------------------------------
+#
 class TestBuildRegistry:
     def _settings(self, **kw):
         return Settings(**kw)
@@ -291,9 +305,9 @@ class TestBuildRegistry:
         assert secret_tok not in str(exc.value)
 
 
-# --------------------------------------------------------------------------
+#
 # get_operator_registry — module-level singleton
-# --------------------------------------------------------------------------
+#
 class TestGetOperatorRegistry:
     def test_returns_registry(self):
         reg = get_operator_registry()
@@ -316,9 +330,9 @@ class TestGetOperatorRegistry:
         assert r2.operator_count == 2
 
 
-# --------------------------------------------------------------------------
+#
 # authenticate_operator — API dependency
-# --------------------------------------------------------------------------
+#
 class TestAuthenticateOperatorDependency:
     def test_valid_executor_token(self, monkeypatch, auth_header):
         monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
@@ -418,9 +432,136 @@ class TestAuthenticateOperatorDependency:
         assert "not configured" in exc.value.detail
 
 
-# --------------------------------------------------------------------------
+#
+# regression — a non-ASCII credential is a uniform 401, never a 500
+#
+class TestNonAsciiCredentialIs401NeverFiveHundred:
+    """A non-ASCII Bearer credential collapses to the SAME uniform 401 on every
+    protected write path: no TypeError, no traceback, no 500, zero writes.
+
+    ``OperatorRegistry.lookup`` encodes BOTH sides to UTF-8 bytes before
+    ``secrets.compare_digest`` (api/v1/webhooks.py already did this for the
+    callback gate), so a byte >= 0x80 in the Authorization header can no longer
+    raise out of the auth dependency."""
+
+    @pytest.fixture()
+    def executor_configured(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
+            {"token": "tok-real", "name": "alice", "role": "executor"},
+        ]))
+        reset_operator_registry()
+        return "tok-real"
+
+    # unit level: the comparison itself must never raise ----------------
+
+    def test_registry_lookup_does_not_raise(self, executor_configured):
+        registry = get_operator_registry()
+        assert registry.lookup(NON_ASCII_CREDENTIAL) is None
+        # The legacy fallback takes the same comparison path.
+        assert registry.lookup(
+            NON_ASCII_CREDENTIAL, legacy_token="tok-real"
+        ) is None
+
+    def test_registry_lookup_legacy_only_does_not_raise(self):
+        registry = OperatorRegistry([], [])
+        assert registry.lookup(
+            NON_ASCII_CREDENTIAL, legacy_token="legacy-tok"
+        ) is None
+
+    def test_valid_token_still_authenticates(self, executor_configured):
+        # The fix must not weaken the happy path.
+        assert get_operator_registry().lookup("tok-real").name == "alice"
+
+    # dependency level --------------------------------------------------
+
+    def test_dependency_non_ascii_is_401(self, executor_configured):
+        from fastapi import HTTPException
+        from app.api.v1.response_execution import authenticate_operator
+        with pytest.raises(HTTPException) as exc:
+            authenticate_operator(authorization=NON_ASCII_BEARER)
+        assert exc.value.status_code == 401
+        assert exc.value.detail == "Invalid execution credentials"
+
+    def test_dependency_non_ascii_legacy_config_is_401(self, monkeypatch):
+        monkeypatch.setattr(settings, "OPERATORS_JSON", "")
+        monkeypatch.setattr(settings, "EXECUTION_TOKEN", "legacy-tok")
+        reset_operator_registry()
+        from fastapi import HTTPException
+        from app.api.v1.response_execution import authenticate_operator
+        with pytest.raises(HTTPException) as exc:
+            authenticate_operator(authorization=NON_ASCII_BEARER)
+        assert exc.value.status_code == 401
+
+    # over real HTTP, with raw wire bytes -------------------------------
+
+    def test_http_execute_non_ascii_401_zero_rows(
+        self, client, db_session, executor_configured
+    ):
+        approval = _seed_approval(db_session)
+        response = client.post(
+            EXECUTE,
+            json={
+                "execution_id": str(uuid.uuid4()),
+                "approval_id": str(approval.id),
+            },
+            headers=NON_ASCII_HEADER,
+        )
+        assert response.status_code == 401, response.text
+        assert response.json()["detail"] == "Invalid execution credentials"
+        assert "Traceback" not in response.text
+        assert list(db_session.query(ExecutionLog)) == []
+
+    def test_http_compensate_non_ascii_401_zero_rows(
+        self, client, db_session, executor_configured
+    ):
+        response = client.post(
+            COMPENSATE,
+            json={
+                "execution_id": str(uuid.uuid4()),
+                "compensates_execution_id": str(uuid.uuid4()),
+            },
+            headers=NON_ASCII_HEADER,
+        )
+        assert response.status_code == 401, response.text
+        assert list(db_session.query(ExecutionLog)) == []
+
+    def test_http_reconcile_non_ascii_401_zero_rows(
+        self, client, db_session, executor_configured
+    ):
+        response = client.post(
+            RECONCILE.format(execution_id=uuid.uuid4()),
+            json={},
+            headers=NON_ASCII_HEADER,
+        )
+        assert response.status_code == 401, response.text
+        assert list(db_session.query(ExecutionLog)) == []
+
+    def test_http_non_ascii_indistinguishable_from_a_wrong_token(
+        self, client, db_session, executor_configured
+    ):
+        """The non-ASCII credential, an ASCII wrong token and an absent header
+        are byte-identical responses — the gate is not an oracle."""
+        approval = _seed_approval(db_session)
+        body = {
+            "execution_id": str(uuid.uuid4()),
+            "approval_id": str(approval.id),
+        }
+        shapes = [
+            NON_ASCII_HEADER,
+            {"Authorization": "Bearer tok-wrong"},
+            {},
+        ]
+        seen = set()
+        for headers in shapes:
+            response = client.post(EXECUTE, json=body, headers=headers)
+            assert response.status_code == 401
+            seen.add((response.status_code, response.json()["detail"]))
+        assert len(seen) == 1
+
+
+#
 # API integration — operator from token, not body
-# --------------------------------------------------------------------------
+#
 def _seed_approval(db_session, *, status="approved"):
     now = datetime.now(timezone.utc)
     group = AlertGroup(
@@ -616,9 +757,9 @@ class TestAPIOperatorIntegration:
         assert list(db_session.query(ExecutionLog)) == []
 
 
-# --------------------------------------------------------------------------
+#
 # Token security — never in response / DB / repr / audit
-# --------------------------------------------------------------------------
+#
 class TestOperatorTokenSecurity:
     def test_token_never_in_response(
         self, client, db_session, monkeypatch
@@ -683,11 +824,11 @@ class TestOperatorTokenSecurity:
         assert "secret" not in str(s)
 
 
-# --------------------------------------------------------------------------
+#
 # Frozen clause: RBAC is authorization, not automation
-# --------------------------------------------------------------------------
+#
 class TestRBACIsNotAutomation:
-    """Phase 3.3 frozen principle: RBAC grants or denies access; it
+    """principle: RBAC grants or denies access; it
     never auto-approves or auto-executes. This test locks the invariant
     at the source-code level — no endpoint or service path calls
     execute_response / compensate_response without an explicit HTTP

@@ -1,16 +1,16 @@
-"""Execution Metrics read model (Phase 3.3.3.1).
+"""Execution Metrics read model.
 
-Metrics are a READ MODEL over execution facts — never a second source
+Metrics are a read model over execution facts — never a second source
 of truth:
 
     execution_log -> Metrics Service -> (future) GET /executions/metrics
 
-Frozen discipline:
+Discipline:
 
-- Pure read: ONE SELECT over execution_log; NO add / flush / commit /
+- Pure read: one SELECT over execution_log; no add / flush / commit /
   rollback, no writes of any kind. The same rows in, the same numbers
   out — deterministic by construction.
-- execution_log is the SOLE fact source: every counter, rate and
+- execution_log is the sole fact source: every counter, rate and
   classification is derived from stored rows (decision, direction,
   detail, created_at). There is no metrics table and no new column —
   the log's schema is untouched.
@@ -18,14 +18,14 @@ Frozen discipline:
   chain's ``requested`` row ``detail.executor`` (chosen by
   EXECUTION_ADAPTER -> registry -> actual executor). A client has no
   field through which it could claim an adapter.
-- Guard refusals are GOVERNANCE, not adapter health: guard_rejected
+- Guard refusals are governance, not adapter health: guard_rejected
   chains never reached the Executor, so they are counted separately
-  and NEVER pollute the adapter success/failure rates.
+  and never pollute the adapter success/failure rates.
 
-Rate definitions (frozen):
+Rate definitions:
 
     success_rate          = succeeded / (succeeded + failed)
-                            (chains with a terminal EXECUTOR outcome;
+                            (chains with a terminal executor outcome;
                             requested / dispatched are non-terminal and
                             guard_rejected never touched the adapter)
     executor_failure_rate = failed / (succeeded + failed)
@@ -37,11 +37,11 @@ Rate definitions (frozen):
 Rates are None (undefined) whenever their denominator is zero — the
 empty dataset is explicit, never a fake 0% or 100%.
 
-Latency is derived from the log's frozen database-stamped created_at (the
-frozen-clause note in service.py): for chains that reached a terminal executor
-outcome it is ``terminal.created_at - dispatched.created_at`` — the
-time the adapter actually spent. Chains rejected before dispatch have
-no adapter time and are excluded.
+Latency is derived from the log's database-stamped ``created_at`` (the
+database stamps it at INSERT): for chains that reached a terminal
+executor outcome it is ``terminal.created_at - dispatched.created_at``
+— the time the adapter actually spent. Chains rejected before dispatch
+have no adapter time and are excluded.
 
 Scope: direction="execute" chains only. Compensation chains are a
 separate direction with their own vocabulary and are not part of this
@@ -61,21 +61,21 @@ from app.models.execution_log import ExecutionLog
 from app.services.executions.models import FAILURE_CLASSIFICATIONS
 from app.services.executions.state import derive_execution_state
 
-#: Terminal EXECUTOR outcomes — the only states that feed the adapter
-#: success/failure rates.
+# Terminal executor outcomes — the only states that feed the adapter
+# success/failure rates.
 _TERMINAL_EXECUTOR_OUTCOMES = frozenset({"succeeded", "failed"})
 
-#: Derived states that are NOT outcomes: requested/dispatched are
-#: in-flight, compensation words belong to the other direction.
-#: guard_rejected is governance — counted separately.
+# Derived states that are not outcomes: requested/dispatched are
+# in-flight, compensation words belong to the other direction.
+# guard_rejected is governance — counted separately.
 
-#: Adapter identity for chains whose requested row carries no usable
-#: detail.executor (legacy / corrupted data). Derived placeholder only
-#: — never client-supplied.
+# Adapter identity for chains whose requested row carries no usable
+# detail.executor (legacy / corrupted data). Derived placeholder only
+# never client-supplied.
 UNKNOWN_ADAPTER = "unknown"
 
 
-#: The empty immutable mapping shared by every default field below.
+# The empty immutable mapping shared by every default field below.
 _EMPTY: Mapping[str, int] = MappingProxyType({})
 
 
@@ -112,18 +112,19 @@ class ExecutionMetrics:
     """The whole-platform read model over direction='execute' chains."""
 
     total_chains: int = 0
-    #: Chains with a terminal executor outcome (succeeded + failed).
+    # Chains with a terminal executor outcome (succeeded + failed).
     executed_chains: int = 0
     succeeded: int = 0
     failed: int = 0
     guard_rejected: int = 0
-    #: Chains whose derived state is still requested / dispatched.
+    # Chains whose derived state is still requested / dispatched.
     in_flight: int = 0
     success_rate: float | None = None
     executor_failure_rate: float | None = None
     guard_rejection_rate: float | None = None
-    #: guard_rejected chains split by provenance (detail.source):
-    #: "guard" (structural refusal) vs "policy" (3.3.2 governance).
+    # guard_rejected chains split by provenance (detail.source):
+    # "guard" (structural refusal) vs "policy" (execution-policy
+    # governance).
     rejections_by_source: Mapping[str, int] = field(default_factory=lambda: _EMPTY)
     failure_classifications: Mapping[str, int] = field(default_factory=lambda: _EMPTY)
     latency: LatencyStats = field(default_factory=LatencyStats)
@@ -131,8 +132,8 @@ class ExecutionMetrics:
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
-    """Frozen rate semantics: undefined (None) on a zero denominator —
-    the empty set is never reported as a fake percentage."""
+    """Rate semantics: undefined (None) on a zero denominator — the
+    empty set is never reported as a fake percentage."""
     if denominator == 0:
         return None
     return numerator / denominator
@@ -140,7 +141,7 @@ def _rate(numerator: int, denominator: int) -> float | None:
 
 def _classification_of(row: ExecutionLog) -> str | None:
     """The failure classification of a failed terminal row, validated
-    against the frozen vocabulary; None when absent or foreign (a
+    against the known vocabulary; None when absent or foreign (a
     foreign word is counted nowhere — the vocabulary is closed)."""
     detail = row.detail if isinstance(row.detail, dict) else {}
     classification = detail.get("classification")
@@ -167,7 +168,7 @@ def _count(mapping: dict[str, int], key: str) -> None:
 def collect_execution_metrics(session: Session) -> ExecutionMetrics:
     """Derive the execution metrics read model from execution_log.
 
-    ONE read-only SELECT, no writes, no executor calls, no outbound
+    One read-only SELECT, no writes, no executor calls, no outbound
     traffic. The result is a pure function of the stored rows —
     calling it twice over an unchanged log returns equal objects."""
     rows = list(

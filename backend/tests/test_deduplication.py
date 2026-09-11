@@ -1,4 +1,4 @@
-"""Phase 1 Step 4.3: DeduplicationEngine tests."""
+"""DeduplicationEngine tests."""
 
 from datetime import datetime, timedelta, timezone
 

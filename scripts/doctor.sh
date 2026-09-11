@@ -5,18 +5,18 @@
 # over and prints a clear PASS / WARN / FAIL per item plus a summary. Run this
 # BEFORE reading long troubleshooting docs.
 #
-#   Covered: Python, Node, npm, Docker, Docker Compose, PostgreSQL, the ports
-#   SentinelFlow binds, the root .env, DATABASE_URL / AI_PROVIDER / execution &
-#   external-adapter configuration, the frontend API base URL, the Alembic
-#   migration head vs current, and (unless SKIP_HTTP=1) the live backend
-#   /health and /ready endpoints.
+# Covered: Python, Node, npm, Docker, Docker Compose, PostgreSQL, the ports
+# SentinelFlow binds, the root .env, DATABASE_URL / AI_PROVIDER / execution &
+# external-adapter configuration, the frontend API base URL, the Alembic
+# migration head vs current, and (unless SKIP_HTTP=1) the live backend
+# /health and /ready endpoints.
 #
 # Exit code: 0 when there is no FAIL, 1 when at least one FAIL was found. WARN
 # never fails the run (Docker / PostgreSQL are optional per mode).
 #
 # Usage:
-#   ./scripts/doctor.sh
-#   BASE_URL=http://127.0.0.1:8000 SKIP_HTTP=1 ./scripts/doctor.sh
+# ./scripts/doctor.sh
+# BASE_URL=http://127.0.0.1:8000 SKIP_HTTP=1 ./scripts/doctor.sh
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -1,27 +1,27 @@
-"""M4-E: dedicated UNIT coverage for the M4-A forward dispatch binding primitives.
+"""E: dedicated UNIT coverage for the A forward dispatch binding primitives.
 
 WHY THIS FILE EXISTS. ``executions/binding.py`` is the immutable pre-dispatch target
-record (Amendment §12.2 A1-revised). Before M4-E its primitives were exercised only
+record. Before E its primitives were exercised only
 INDIRECTLY — ``test_verified_creation_proof.py`` builds a binding detail to drive the
 proof derivation, and ``test_execution_cross_layer_regression.py`` asserts the binding
 rides the ``dispatched`` row on the SUCCESS journey. Neither unit-tests the primitives
 themselves. This file closes that gap at the COMPONENT layer:
 
 - ``build_dispatch_binding`` records EVERY server-side platform fact, mints a FRESH
-  ``attempt_id``, and stores the dispatch START as an ISO server-clock detail fact;
+``attempt_id``, and stores the dispatch START as an ISO server-clock detail fact;
 - the contributor merge is an EXPLICIT WHITELIST — a malicious adapter contributor can
-  NEVER override a platform fact (execution_id / attempt_id / schema / ...) and can
-  NEVER smuggle an arbitrary key (a secret, a ``verified`` flag, a raw_response) into
-  the binding;
+NEVER override a platform fact (execution_id / attempt_id / schema / ...) and can
+NEVER smuggle an arbitrary key (a secret, a ``verified`` flag, a raw_response) into
+the binding;
 - ``to_detail`` projects to PURE JSON scalars over a CLOSED 14-key set;
 - ``parse_dispatch_binding`` is FAIL-CLOSED on the whole matrix — absent / non-dict /
-  no binding key (OLD HISTORY) / unknown schema / missing-or-blank-or-non-string on
-  ANY of the seven platform-identity facts ALL yield ``None``, and it NEVER raises;
+no binding key (OLD HISTORY) / unknown schema / missing-or-blank-or-non-string on
+ANY of the seven platform-identity facts ALL yield ``None``, and it NEVER raises;
 - ``started_at`` round-trips an aware UTC instant and returns ``None`` (never a
-  substituted server time) on a malformed stored string;
+substituted server time) on a malformed stored string;
 - ``DispatchBindingContributor`` is ``runtime_checkable`` on PRESENCE only — the real
-  offline ``MockExecutor`` is NOT a contributor (its binding carries platform facts
-  alone), and the protocol never vouches for trust (the call chain does).
+offline ``MockExecutor`` is NOT a contributor (its binding carries platform facts
+alone), and the protocol never vouches for trust (the call chain does).
 
 These are pure component tests: no DB, no HTTP, no external system, zero outbound.
 """
@@ -46,9 +46,9 @@ from app.services.executions.binding import (
 from app.services.executions.mock import MockExecutor
 from app.services.executions.models import ExecutionDispatch
 
-# --------------------------------------------------------------------------
+#
 # Fixed identities / instants (deterministic, no wall-clock dependence)
-# --------------------------------------------------------------------------
+#
 EXECUTION_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 APPROVAL_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 ATTEMPT_ID = uuid.UUID("33333333-3333-4333-8333-333333333333")
@@ -59,8 +59,8 @@ TARGET = "case"
 ADAPTER = "thehive"
 LAB_BASE_URL = "https://thehive.lab.local"
 
-#: The CLOSED key set ``to_detail`` may emit — the whitelist boundary. A binding
-#: detail carrying ANY key outside this set is smuggling.
+# The CLOSED key set ``to_detail`` may emit — the whitelist boundary. A binding
+# detail carrying ANY key outside this set is smuggling.
 DETAIL_KEYS = {
     "schema",
     "execution_id",
@@ -78,8 +78,8 @@ DETAIL_KEYS = {
     "target_tenant",
 }
 
-#: The seven platform-identity facts ``parse_dispatch_binding`` REQUIRES present,
-#: non-empty strings — missing/blank/non-string on ANY one fails the whole read closed.
+# The seven platform-identity facts ``parse_dispatch_binding`` REQUIRES present,
+# non-empty strings — missing/blank/non-string on ANY one fails the whole read closed.
 REQUIRED_FACTS = (
     "execution_id",
     "approval_id",
@@ -91,9 +91,9 @@ REQUIRED_FACTS = (
 )
 
 
-# --------------------------------------------------------------------------
+#
 # Helpers
-# --------------------------------------------------------------------------
+#
 def _build(**overrides) -> DispatchBinding:
     """Build a binding from SERVER-SIDE facts with optional overrides."""
     kwargs = dict(
@@ -111,7 +111,7 @@ def _build(**overrides) -> DispatchBinding:
 
 def _detail(**overrides) -> dict:
     """A VALID binding detail dict (the shape ``build().to_detail()`` emits) with
-    optional field overrides, for the parse fail-closed matrix."""
+optional field overrides, for the parse fail-closed matrix."""
     base = {
         "schema": BINDING_SCHEMA,
         "execution_id": str(EXECUTION_ID),
@@ -134,8 +134,8 @@ def _detail(**overrides) -> dict:
 
 def _binding_obj(**overrides) -> DispatchBinding:
     """Construct a ``DispatchBinding`` DIRECTLY (frozen+slots) — used to probe
-    ``started_at`` against a malformed stored ISO string that ``build`` would never
-    itself produce."""
+``started_at`` against a malformed stored ISO string that ``build`` would never
+itself produce."""
     fields = dict(
         schema=BINDING_SCHEMA,
         execution_id=str(EXECUTION_ID),
@@ -158,7 +158,7 @@ def _binding_obj(**overrides) -> DispatchBinding:
 
 class _TheHiveLikeContributor:
     """A HONEST contributor: returns ONLY the five whitelisted identity keys, with
-    TheHive 4.1.24-1's truthful UNKNOWN instance/tenant (no authoritative source)."""
+TheHive 4.1.24-1's truthful UNKNOWN instance/tenant (no authoritative source)."""
 
     name = "thehive"
 
@@ -174,8 +174,8 @@ class _TheHiveLikeContributor:
 
 class _MaliciousContributor:
     """A ROGUE contributor: tries to override platform facts AND smuggle arbitrary
-    keys (a secret, a client-controlled ``verified`` flag, a raw_response). The
-    whitelist must neutralise ALL of it."""
+keys (a secret, a client-controlled ``verified`` flag, a raw_response). The
+whitelist must neutralise ALL of it."""
 
     name = "thehive"
 
@@ -347,7 +347,7 @@ class TestParseFailClosed:
         assert parse_dispatch_binding(garbage) is None
 
     def test_detail_without_binding_key_returns_none(self):
-        # the OLD-HISTORY shape: a dispatched row that predates M4-A has NO binding
+        # the OLD-HISTORY shape: a dispatched row that predates A has NO binding
         assert parse_dispatch_binding({"executor": "thehive"}) is None
         assert parse_dispatch_binding({}) is None
 

@@ -1,4 +1,4 @@
-"""Pydantic schemas of the AI analysis API (Phase 2 Step 10.5)."""
+"""Pydantic schemas of the AI analysis API."""
 import uuid
 from datetime import datetime
 
@@ -8,9 +8,10 @@ from pydantic import BaseModel, ConfigDict
 class AIAnalysisRead(BaseModel):
     """One AI alert-explanation as returned by the API.
 
-    Mirrors the ai_analyses row field-for-field; the frozen output protocol
-    (summary / attack_type / why_risky / confidence) surfaces unchanged.
-    """
+Mirrors the ai_analyses row field-for-field, so the response carries the
+structured-output protocol (summary / attack_type / why_risky /
+confidence) that every provider must produce.
+"""
 
     model_config = ConfigDict(from_attributes=True)
 

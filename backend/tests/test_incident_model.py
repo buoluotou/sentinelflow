@@ -1,8 +1,8 @@
-"""Phase 1 Step 7.1: Incident data model tests.
+"""Incident data model tests.
 
 An Incident is the SOC case layered on top of one AlertGroup ("event"):
 Alert -> AlertGroup -> EventRisk (automatic) -> Incident (analyst case).
-The state machine itself is Step 7.2; here we verify the data model only.
+The state machine itself is ; here we verify the data model only.
 """
 import time
 from datetime import datetime, timezone
@@ -148,7 +148,7 @@ def test_lifecycle_checkpoints_are_settable(db_session):
 
 def test_incident_coexists_with_risk_on_same_event(db_session):
     """EventRisk (automatic) and Incident (analyst case) are independent
-    1:1 layers of the same event; risk_score is a snapshot, not a link."""
+1:1 layers of the same event; risk_score is a snapshot, not a link."""
     group = _make_group()
     db_session.add_all(
         [

@@ -11,7 +11,7 @@ def _normalize(client, source: str, raw_data: dict):
     )
 
 
-# ---------------------------------------------------------------- simulator
+# simulator
 
 
 def test_normalize_simulator_minimal_shape(client):
@@ -118,7 +118,7 @@ def test_normalize_persists_alert_into_database(client):
     assert alert["events"][0]["raw_data"]["type"] == "suspicious_process"
 
 
-# ------------------------------------------------------------------- wazuh
+# wazuh
 
 
 def test_normalize_wazuh_returns_501_placeholder(client):
@@ -131,7 +131,7 @@ def test_normalize_wazuh_returns_501_placeholder(client):
     assert "Phase 2" in response.json()["detail"]
 
 
-# ------------------------------------------------------- malformed / errors
+# malformed / errors
 
 
 def test_normalize_unknown_source_returns_400(client):

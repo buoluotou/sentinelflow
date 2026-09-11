@@ -1,56 +1,54 @@
-"""Read-adapter exception family (Phase 3.4.5-A1, design §8/§10/§16).
+"""Read-adapter exception family.
 
-Structurally parallel to the WRITE side's ``app.services.executions.exceptions``
+Structurally parallel to the write side's ``app.services.executions.exceptions``
 (``ExecutorError`` / ``ExecutorConfigError``): a lightweight, dependency-free
-domain-exception module for the READ / Reconcile side. One concern, one family.
+domain-exception module for the read / reconcile side. One concern, one family.
 
-It is deliberately NOT part of the 3.4.3 ``ContractValidationFailure`` family.
-Importing that base would drag SQLAlchemy (``app.models.execution_outcome``) and
-the whole write-adapter stack (``app.services.executions.registry`` -> the
- Shuffle/Wazuh/TheHive modules -> ``urllib.request``) into this PURE read layer,
-violating the A1 no-DB / no-HTTP import surface (design §12/§13/§16). A
-ContractValidationFailure means "the INPUT is malformed"; ``UnsupportedAdapterRead``
-means "the platform has NO reader for this adapter" — a registry-capability
-rejection, the exact read-side mirror of the write side's ``ExecutorConfigError``
-("the registry refuses to fake support"). Different concern, different family —
+It is not part of the ``ContractValidationFailure`` family. Importing that base
+would drag SQLAlchemy (``app.models.execution_outcome``) and the whole
+write-adapter stack (``app.services.executions.registry`` -> the
+Shuffle/Wazuh/TheHive modules -> ``urllib.request``) into this pure read layer,
+breaking the no-DB / no-HTTP import surface. A ``ContractValidationFailure`` means
+"the input is malformed"; ``UnsupportedAdapterRead`` means "the platform has no
+reader for this adapter" — a registry-capability rejection, the read-side mirror
+of the write side's ``ExecutorConfigError``. Different concern, different family —
 consistent with how the repo already separates ``ExecutorError`` from
 ``ContractValidationFailure``.
 
-This module has ZERO imports on purpose: it must stay importable without pulling
+This module has no imports on purpose: it must stay importable without pulling
 any DB / HTTP / executor coupling into the read layer.
 """
 
 
 class ReadAdapterError(Exception):
-    """Base class of all read-adapter-layer errors (never silent failures).
+    """Base class of all read-adapter-layer errors.
 
-    The read-side counterpart of ``ExecutorError``. Every rejection raised while
-    resolving or invoking a read adapter derives from this, so the 3.4.5-A2
-    Manual Reconcile pipeline can catch one base and translate it to a
-    ``rejected`` (no Outcome Fact) response.
-    """
+The read-side counterpart of ``ExecutorError``. Every rejection raised while
+resolving or invoking a read adapter derives from this, so the Manual Reconcile
+pipeline can catch one base and translate it to a ``rejected`` (no Outcome
+Fact) response.
+"""
 
 
 class UnsupportedAdapterRead(ReadAdapterError):
-    """The ReadAdapterRegistry has NO concrete reader for this adapter identity.
+    """The ReadAdapterRegistry has no concrete reader for this adapter identity.
 
-    Raised for: an unknown adapter name, ``mock`` (no external system, never
-    reconcilable — design §14), or a REAL adapter whose read path is still an
-    Evidence Gap (``shuffle`` / ``wazuh`` / ``thehive`` in 3.4.5-A1 — design
-    §16). It is the read-side mirror of the write side's ``ExecutorConfigError``:
-    the registry REFUSES to fake a reader (design §8/§15/§17).
+Raised for: an unknown adapter name, ``mock`` (no external system, never
+reconcilable), or an adapter whose read path has no runtime evidence yet
+(``shuffle`` / ``wazuh`` / ``thehive``). It is the read-side mirror of the
+write side's ``ExecutorConfigError``: the registry does not fake a reader.
 
-    Semantics (frozen): this is a REJECTION — NO Outcome Fact is produced, NO
-    external system is contacted, NO external state is fabricated. It is NEVER
-    ``reconciliation_failed`` (that requires a qualified reconcile action that
-    actually attempted a read and failed at transport level — impossible when no
-    reader exists) and NEVER ``confirmed_failure`` (design §10/§11).
+Semantics: this is a rejection — no Outcome Fact is produced, no external
+system is contacted, no external state is fabricated. It is never
+``reconciliation_failed`` (that requires a reconcile action that attempted a
+read and failed at transport level — impossible when no reader exists) and
+never ``confirmed_failure``.
 
-    Carries the offending ``adapter`` NAME so callers can render a stable message
-    (an adapter name is not a secret — the same transparency the executor
-    registry applies). It NEVER echoes an ``external_reference`` (an
-    external-system handle — the non-echo discipline of the 3.4.3 family).
-    """
+Carries the offending ``adapter`` name so callers can render a stable message
+(an adapter name is not a secret — the same transparency the executor
+registry applies). It never echoes an ``external_reference`` (an
+external-system handle — the non-echo discipline of the contract family).
+"""
 
     def __init__(self, message: str, adapter: object | None = None):
         super().__init__(message)
@@ -58,38 +56,37 @@ class UnsupportedAdapterRead(ReadAdapterError):
 
 
 class ReadTransportError(ReadAdapterError):
-    """A reader EXISTED and was INVOKED, but the external read failed in transit.
+    """A reader existed and was invoked, but the external read failed in transit.
 
-    The SIBLING of ``UnsupportedAdapterRead`` under ``ReadAdapterError`` — and the
-    two are STRICTLY disjoint (design §6, the crux of 3.4.5-A2-D):
+The sibling of ``UnsupportedAdapterRead`` under ``ReadAdapterError`` — and the
+two are strictly disjoint:
 
-      - ``UnsupportedAdapterRead`` = NO reader exists for the adapter (a
-        CAPABILITY failure) -> a REJECTION: HTTP 404, ZERO Outcome Facts, NEVER
-        ``reconciliation_failed``.
-      - ``ReadTransportError`` = a reader existed, ``read()`` was actually called,
-        and that call failed at the TRANSPORT layer (timeout / connection refused
-        / DNS / HTTP 5xx / adapter unavailable — design §7) -> the Manual
-        Reconcile service maps it to ``reconciliation_failed`` and appends ONE
-        Outcome Fact (design §8).
+- ``UnsupportedAdapterRead`` = no reader exists for the adapter (a
+capability failure) -> a rejection: HTTP 404, zero Outcome Facts, never
+``reconciliation_failed``.
+- ``ReadTransportError`` = a reader existed, ``read()`` was actually called,
+and that call failed at the transport layer (timeout / connection refused
+/ DNS / HTTP 5xx / adapter unavailable) -> the Manual Reconcile service
+maps it to ``reconciliation_failed`` and appends one Outcome Fact.
 
-    A concrete reader MAY raise this domain type explicitly, or it MAY raise a
-    builtin transport error (``TimeoutError`` / ``ConnectionError`` / ``OSError``)
-    — the A1 ``ReadAdapter.read`` contract documents both, and the A2-D service
-    catches the UNION so either shape closes to the SAME ``reconciliation_failed``
-    verdict. Because it derives from ``ReadAdapterError`` (NOT from a builtin) and
-    is a SIBLING — never a parent — of ``UnsupportedAdapterRead``, catching it can
-    NEVER swallow a capability rejection (design §6: capability != transport).
+A concrete reader may raise this domain type explicitly, or it may raise a
+builtin transport error (``TimeoutError`` / ``ConnectionError`` / ``OSError``)
+— the ``ReadAdapter.read`` contract documents both, and the service catches
+the union so either shape closes to the same ``reconciliation_failed``
+verdict. Because it derives from ``ReadAdapterError`` (not from a builtin) and
+is a sibling — never a parent — of ``UnsupportedAdapterRead``, catching it can
+never swallow a capability rejection: capability is not transport.
 
-    Carries an OPTIONAL ``category`` — a SAFE static classification (``timeout`` /
-    ``connection_failure`` / ``transport_error`` / ``adapter_unavailable``, design
-    §10) the service renders into the Outcome Fact detail. It NEVER carries a
-    callback token, operator token, adapter API key, Authorization header,
-    password, or raw external payload: the service records ONLY this static
-    category, never ``str(exc)`` (design §25).
+Carries an optional ``category`` — a static classification (``timeout`` /
+``connection_failure`` / ``transport_error`` / ``adapter_unavailable``) the
+service renders into the Outcome Fact detail. It never carries a callback
+token, operator token, adapter API key, Authorization header, password, or raw
+external payload: the service records only this static category, never
+``str(exc)``.
 
-    Zero imports, like the rest of this family (design §19 — the read layer stays
-    importable without any DB / HTTP / executor coupling).
-    """
+Zero imports, like the rest of this family: the read layer stays importable
+without any DB / HTTP / executor coupling.
+"""
 
     def __init__(self, message: str, category: str | None = None):
         super().__init__(message)

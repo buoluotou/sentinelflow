@@ -4,12 +4,12 @@ Revision ID: 0007
 Revises: 0006
 Create Date: 2026-08-26
 
-Phase 2 Step 12: AI response-recommendation history. Advisory only —
-this table stores suggestions, never executed actions (Step 13 keeps
-human approval between a recommendation and anything executable).
-alert_group_id is indexed but NOT unique — every recommendation run
-appends a record, exactly like ai_analyses / ai_risk_summaries. An empty
-recommendations JSON array is a valid record ("no action warranted").
+AI response-recommendation history. Advisory only: this table stores
+suggestions, never executed actions — a human approval row stands between a
+recommendation and anything executable. alert_group_id is indexed but not
+unique: every recommendation run appends a record, exactly like ai_analyses
+and ai_risk_summaries. An empty recommendations JSON array is a valid
+record ("no action warranted").
 """
 from typing import Sequence, Union
 

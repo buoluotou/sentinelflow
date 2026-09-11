@@ -1,7 +1,7 @@
-"""AI analysis orchestration (Phase 2 Step 10.3).
+"""AI analysis orchestration.
 
-    Event -> EventRisk + evidence -> AIRequest -> provider.explain()
-          -> AIAnalysis (validated) -> persisted ai_analyses row
+Event -> EventRisk + evidence -> AIRequest -> provider.explain()
+-> AIAnalysis (validated) -> persisted ai_analyses row
 
 The service follows the SentinelFlow transaction rule: it flushes, never
 commits — the API layer owns the transaction boundary. AI output is
@@ -30,9 +30,9 @@ class AIEventNotFound(Exception):
 def latest_analysis_for(db: Session, event_id: uuid.UUID) -> AIAnalysis | None:
     """Most recent analysis of an event; None when never analysed.
 
-    Module-level so other services (risk summary) reuse the exact same
-    latest-record semantics without constructing a provider.
-    """
+Module-level so other services (risk summary) reuse the exact same
+latest-record semantics without constructing a provider.
+"""
     return db.execute(
         select(AIAnalysis)
         .where(AIAnalysis.alert_group_id == event_id)
@@ -56,9 +56,9 @@ class AIAnalysisService:
     def explain_event(self, db: Session, event_id: uuid.UUID) -> AIAnalysis:
         """Explain one event and append the analysis to its history.
 
-        Repeated calls append records (models change, re-analysis is
-        expected) — ai_analyses is an analysis history, not a snapshot.
-        """
+Repeated calls append records (models change, re-analysis is
+expected) — ai_analyses is an analysis history, not a snapshot.
+"""
         group = db.execute(
             select(AlertGroup)
             .options(

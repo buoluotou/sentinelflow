@@ -1,4 +1,4 @@
-/** Console shell: fixed sidebar navigation + routed content area (Step 8.1). */
+/* * Console shell: fixed sidebar navigation + routed content area (). */
 import { NavLink, Outlet } from 'react-router-dom'
 
 const NAV_ITEMS = [

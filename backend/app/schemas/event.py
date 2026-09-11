@@ -1,4 +1,4 @@
-"""Schemas for the security events API (Phase 1 Step 4.4).
+"""Schemas for the security events API.
 
 An "event" is the SOC-facing view of an AlertGroup: one aggregated
 security event with N evidence alerts.
@@ -20,8 +20,9 @@ class EventListItem(BaseModel):
     alert_count: int
     first_seen: datetime
     last_seen: datetime
-    # Current risk assessment (Step 5.4) — None for legacy events without
-    # a risk record; populated by the API layer from group.risk.
+    # Current risk assessment, populated by the API layer from group.risk.
+    # Optional because events ingested before risk scoring existed have no
+    # risk record.
     risk_score: int | None = None
     risk_level: str | None = None
 

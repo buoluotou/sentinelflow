@@ -1,19 +1,20 @@
-"""RC1 / C-1 — real-adapter compensation is EXPERIMENTAL, fail-closed at boot.
+"""Real-adapter compensation is experimental and fail-closed at boot.
 
-The reverse (compensation) dispatch has NO durable pre-dispatch reservation
-(the forward path's M4-F §1 / M4-G §2 gate), so configuring a Shuffle reverse
-workflow WITHOUT the explicit ``EXECUTION_COMPENSATION_EXPERIMENTAL``
-acknowledgment must refuse at ``validate_adapter_config()`` — the same gate the
-app lifespan (``main._lifespan``) calls, so a mis-set lab config never boots
-into an unprotected external reverse call.
+The reverse (compensation) dispatch writes no durable pre-dispatch reservation
+(unlike the forward path, which reserves before it dispatches), so configuring
+a Shuffle reverse workflow without the explicit
+``EXECUTION_COMPENSATION_EXPERIMENTAL`` acknowledgment is rejected by
+``validate_adapter_config()`` — the same check the app lifespan
+(``main._lifespan``) calls, so a mis-set lab config never boots into an
+unprotected external reverse call.
 
-The offline mock is exempt (DryRun, no external call) — Demo compensation never
-needs the flag. ZERO real external HTTP here: this exercises only the startup
-configuration gate. Every assertion is hermetic against an ambient ``.env``:
-``_settings`` seeds both reverse ids empty and the experimental flag off, then
-applies each test's overrides (later keys win in the dict merge), so a test can
-set exactly one reverse id while the other stays empty — with no duplicate
-keyword clash.
+The offline mock is exempt (DryRun, no external call) — demo compensation never
+needs the flag. No real external HTTP is involved: this exercises only the
+startup configuration check. Every assertion is hermetic against an ambient
+``.env``: ``_settings`` seeds both reverse ids empty and the experimental flag
+off, then applies each test's overrides (later keys win in the dict merge), so a
+test can set exactly one reverse id while the other stays empty — with no
+duplicate keyword clash.
 """
 import pytest
 
@@ -59,7 +60,7 @@ class TestCompensationExperimentalGate:
             )
 
     def test_experimental_acknowledgment_allows_lab_use(self):
-        # Opting in (lab only) lets the identical configuration pass the gate.
+        # Opting in (lab only) lets the identical configuration pass validation.
         validate_adapter_config(
             _settings(
                 EXECUTION_ADAPTER="shuffle",
@@ -70,14 +71,14 @@ class TestCompensationExperimentalGate:
         )
 
     def test_forward_only_shuffle_needs_no_acknowledgment(self):
-        # No reverse ids => no compensation => the gate never fires; forward
+        # No reverse ids => no compensation => validation does not fire; forward
         # dispatch is unaffected by this flag.
         validate_adapter_config(
             _settings(EXECUTION_ADAPTER="shuffle", **_SHUFFLE_CREDS)
         )
 
     def test_mock_demo_unaffected_with_and_without_flag(self):
-        # Demo (mock) compensates via DryRun and never touches the gate, whether
+        # Demo (mock) compensates via DryRun and skips this validation, whether
         # or not the experimental flag is set.
         validate_adapter_config(_settings(EXECUTION_ADAPTER="mock"))
         validate_adapter_config(

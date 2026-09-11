@@ -1,10 +1,10 @@
 """TheHive WRITE -> READ closure at THREE honestly-labelled test levels
-(Phase 3.4.5-M2 §6; M2-R §2/§5 re-scope — NONE is a real external E2E).
+.
 
-§6 asked for a full platform chain. The real ``GET`` against a live TheHive is LAB
+asked for a full platform chain. The real ``GET`` against a live TheHive is LAB
 BLOCKED (no container runtime / virtualization / memory on this host), so this file
 proves the closure at three DISTINCT levels, each labelled with exactly what it does
-and does NOT establish (reviewer P1-3 / M2-R §5: 区分单元、service 集成、HTTP 集成
+and does NOT establish (reviewer P1-3 / M2-R : 区分单元、service 集成、HTTP 集成
 和真实外部 E2E — never pass a seeded chain off as a complete HTTP run):
 
   1. COMPONENT handshake (``TestWriteReadCorrelationHandshake``, no DB): the REAL
@@ -12,17 +12,17 @@ and does NOT establish (reviewer P1-3 / M2-R §5: 区分单元、service 集成�
      INJECTED stub transports — the correlation-tag + STRING-reference handshake.
   2. SERVICE integration (``TestSeededChainIsolation``, in-memory DB): the dispatch
      chain is SEEDED with the executor's REAL ``detail`` and ``reconcile_execution``
-     is called DIRECTLY with a test-injected reader. Under M2-R §2 FAIL-CLOSED the
+     is called DIRECTLY with a test-injected reader. Under M2-R FAIL-CLOSED the
      thehive vocabulary is EMPTY, so the mapping REFUSES the reader's verified
      ``case_created`` -> ZERO Outcome Fact. NOT an HTTP run, NOT named as one.
-  3. HTTP integration (``TestHttpRouteChain``, M2-R §5): the REAL FastAPI routes are
+  3. HTTP integration: the REAL FastAPI routes are
      driven end to end — ``POST /api/v1/executions`` (the REAL ``TheHiveExecutor``
      via the ``get_response_executor`` seam + a stub transport, so the REAL execution
      SERVICE writes the chain) then ``POST /api/v1/executions/{id}/reconcile``. The
      reconcile route correlates the persisted reference but resolves NO reader (the
      SEALED EMPTY production registry — the route exposes NO injection seam) ->
      ``UnsupportedAdapterRead`` 404 -> ZERO Outcome Fact: the production read path is
-     UNWIRED by design (M2-R §4), so NO confirmed_success is reachable over HTTP.
+     UNWIRED by design, so NO confirmed_success is reachable over HTTP.
 
 The REAL external E2E (a live ``GET /api/case/{_id}``) is ``TestRealLabRead`` in
 ``test_read_adapter_thehive.py`` — ``@pytest.mark.external``, DESELECTED, LAB BLOCKED.
@@ -40,11 +40,11 @@ WHAT THIS PROVES THAT NO SINGLE-ADAPTER TEST CAN:
   * a DIFFERENT execution can NEVER claim the same case (its tag does not match) ->
     ``case_unverified`` -> REFUSED -> zero fact (no cross-execution / historical
     mis-attribution);
-  * M2-R §2 fail-closed: even THIS execution's own verified creation is REFUSED at
+  * M2-R fail-closed: even THIS execution's own verified creation is REFUSED at
     the empty mapping -> ZERO fact (no path launders ``case_created`` into success);
-  * M2-R §5 HTTP-route: driven through the REAL approval -> execution -> reconcile
+  * M2-R HTTP-route: driven through the REAL approval -> execution -> reconcile
     routes, the write side persists the case reference + correlation tag via the REAL
-    service, and the reconcile route honestly 404s at the UNWIRED production registry
+    service, and the reconcile route 404s at the UNWIRED production registry
     -> ZERO fact (no seeded-chain substitute, no fabricated HTTP success).
 
 FAITHFULNESS NOTE: levels 1-2 stub ONLY the transport and (level 2) reproduce the
@@ -90,7 +90,7 @@ from app.services.read_adapters.thehive import (
     TheHiveReadAdapter,
 )
 
-# M4-G §2: the level-3 HTTP chain drives a RECOGNIZED real adapter (thehive), so
+# the level-3 HTTP chain drives a RECOGNIZED real adapter (thehive), so
 # the fail-closed durable-store gate now requires a store before the external
 # request. Inject the no-DB FakeStore so this HTTP journey takes the REAL durable
 # path (the conftest client fixture defaults the seam to None for legacy/mock
@@ -107,16 +107,16 @@ CASE_NUMBER = 42  # the Int human case NUMBER — audit-only, NEVER the referenc
 OPERATOR = "recon-op"
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
-#: The REAL FastAPI route paths driven by level 3 (``TestHttpRouteChain``).
+# The REAL FastAPI route paths driven by level 3 (``TestHttpRouteChain``).
 EXECUTE = "/api/v1/executions"
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
-#: Legacy EXECUTION_TOKEN fallback -> a synthetic EXECUTOR operator (can_execute).
+# Legacy EXECUTION_TOKEN fallback -> a synthetic EXECUTOR operator (can_execute).
 EXEC_TOKEN = "exec-secret-thehive-http-chain"
 
 
-# ---------------------------------------------------------------------------
-# HTTP-route fixtures (M2-R §5 level 3 — the REAL FastAPI routes)
-# ---------------------------------------------------------------------------
+#
+# HTTP-route fixtures
+#
 @pytest.fixture()
 def app():
     """The FastAPI app — the ``get_response_executor`` override seam. The conftest
@@ -135,9 +135,9 @@ def exec_auth(monkeypatch):
     return {"Authorization": f"Bearer {EXEC_TOKEN}"}
 
 
-# ---------------------------------------------------------------------------
+#
 # stub transport (the isolation seam — NO socket is ever opened)
-# ---------------------------------------------------------------------------
+#
 class _Resp:
     def __init__(self, status, body_bytes):
         self.status = status
@@ -221,9 +221,9 @@ def _create_case(execution_id, approval_id):
     return outcome, posted_tags, created
 
 
-# ---------------------------------------------------------------------------
+#
 # DB seeding (mirrors test_manual_reconcile_read_failure.py's isolation pattern)
-# ---------------------------------------------------------------------------
+#
 def _seed_chain(db_session, execution_id, *, rows):
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex,
@@ -317,7 +317,7 @@ def _drive_http_execution(client, app, db_session, exec_auth):
     app.dependency_overrides[get_response_executor] = lambda: TheHiveExecutor(
         _creds(), timeout=1.0, transport=write
     )
-    # M4-G §2: satisfy the fail-closed durable-store gate for this RECOGNIZED
+    # satisfy the fail-closed durable-store gate for this RECOGNIZED
     # adapter so the REAL service writes the chain over HTTP (real durable path).
     app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
     resp = client.post(
@@ -388,12 +388,12 @@ class TestWriteReadCorrelationHandshake:
 
 # ===========================================================================
 # 2. SEEDED-chain isolation over the REAL reconcile pipeline (in-memory DB) —
-#    M2-R §5: NOT a complete HTTP E2E; under §2 fail-closed the verified
-#    creation is REFUSED at the empty mapping (zero fact).
+# M2-R : NOT a complete HTTP E2E; under fail-closed the verified
+# creation is REFUSED at the empty mapping (zero fact).
 # ===========================================================================
 class TestSeededChainIsolation:
     def test_write_then_seeded_reconcile_is_refused_fail_closed_zero_facts(self, db_session):
-        # M2-R §2/§5: the REAL executor creates the case, the chain is SEEDED with the
+        # M2-R /: the REAL executor creates the case, the chain is SEEDED with the
         # executor's REAL detail, and the REAL reader VERIFIES it (identity +
         # correlation + a valid createdAt) and re-fetches BY THE STRING reference —
         # but the fail-closed EMPTY mapping REFUSES case_created -> ZERO Outcome Fact.
@@ -405,7 +405,7 @@ class TestSeededChainIsolation:
         outcome, _posted_tags, created = _create_case(eid, aid)
         case_id = outcome.detail["case_id"]
         # (b) persist the dispatch chain with the executor's REAL detail — exactly
-        #     what the execution service writes onto the terminal execution_log row.
+        # what the execution service writes onto the terminal execution_log row.
         _seed_chain(
             db_session,
             eid,
@@ -416,13 +416,13 @@ class TestSeededChainIsolation:
             ],
         )
         # (c) explicit Manual Reconcile with the REAL reader injected; the GET echoes
-        #     the persisted case (same _id, same tags) so the reader VERIFIES creation.
+        # the persisted case (same _id, same tags) so the reader VERIFIES creation.
         read = StubTransport(status=200, payload=created)
         reader = TheHiveReadAdapter(_creds(), timeout=1.0, transport=read)
         with pytest.raises(UnrecognizedExternalState):
             reconcile_execution(db_session, eid, OPERATOR, ReadAdapterRegistry([reader]))
         # (d) the reader still re-fetched BY THE STRING REFERENCE the executor produced
-        #     (never the numeric case number), exactly once — but fail-closed = ZERO fact.
+        # (never the numeric case number), exactly once — but fail-closed = ZERO fact.
         assert read.last.full_url.endswith(f"/api/case/{case_id}")
         assert f"/api/case/{CASE_NUMBER}" not in read.last.full_url
         assert read.call_count == 1
@@ -431,7 +431,7 @@ class TestSeededChainIsolation:
     def test_cross_execution_reconcile_is_refused_zero_facts(self, db_session):
         # A chain for execution OTHER pointing at the SAME case the executor created
         # for EID: the reader verifies identity but NOT correlation -> REFUSED, zero
-        # fact. Proves no historical / cross-execution mis-attribution (§5 / §6).
+        # fact. Proves no historical / cross-execution mis-attribution.
         eid = uuid.uuid4()
         aid = uuid.uuid4()
         other = uuid.uuid4()
@@ -452,7 +452,7 @@ class TestSeededChainIsolation:
         assert _outcome_count(db_session) == 0
 
     def test_repeat_seeded_reconcile_stays_fail_closed_zero_facts(self, db_session):
-        # M2-R §2: reconciling a verified creation TWICE still REFUSES both times
+        # M2-R : reconciling a verified creation TWICE still REFUSES both times
         # (fail-closed) -> ZERO facts, never a laundered success and never an
         # overwrite. (Append-only TWO-fact behaviour lives on the read-FAILURE
         # reconciliation_failed path, unchanged by the vocabulary fix.)
@@ -478,15 +478,15 @@ class TestSeededChainIsolation:
 
 
 # ===========================================================================
-# 3. HTTP-ROUTE platform chain (M2-R §5 level 3, reviewer P1-3): the REAL
-#    FastAPI approval -> execution -> reconcile routes, NOT a seeded chain + a
-#    direct reconcile_execution call. The write side runs the REAL TheHiveExecutor
-#    (get_response_executor seam + a stub transport) so the REAL execution SERVICE
-#    persists the chain; the reconcile route resolves NO reader (the SEALED EMPTY
-#    production registry — the route exposes NO injection seam) ->
-#    UnsupportedAdapterRead 404 -> ZERO fact. HTTP INTEGRATION, NOT a real external
-#    E2E (transport stubbed) and NOT a confirmed_success closure (the production
-#    read path is UNWIRED by design, M2-R §4).
+# 3. HTTP-ROUTE platform chain: the REAL
+# FastAPI approval -> execution -> reconcile routes, NOT a seeded chain + a
+# direct reconcile_execution call. The write side runs the REAL TheHiveExecutor
+# (get_response_executor seam + a stub transport) so the REAL execution SERVICE
+# persists the chain; the reconcile route resolves NO reader (the SEALED EMPTY
+# production registry — the route exposes NO injection seam) ->
+# UnsupportedAdapterRead 404 -> ZERO fact. HTTP INTEGRATION, NOT a real external
+# E2E (transport stubbed) and NOT a confirmed_success closure (the production
+# read path is UNWIRED by design, M2-R ).
 # ===========================================================================
 class TestHttpRouteChain:
     def test_http_execution_then_reconcile_is_unwired_zero_facts(
@@ -497,7 +497,7 @@ class TestHttpRouteChain:
         )
 
         # (a) the HTTP execution succeeded through the REAL service + REAL executor:
-        #     201 = an execution FACT exists; derived_state carries the verdict.
+        # 201 = an execution FACT exists; derived_state carries the verdict.
         assert exec_resp.status_code == 201
         body = exec_resp.json()
         assert body["derived_state"] == "succeeded"
@@ -525,11 +525,11 @@ class TestHttpRouteChain:
         assert rows[-1].detail["case_id"] == REFERENCE
 
         # (b) the HTTP reconcile correlates that reference but the PRODUCTION registry
-        #     is EMPTY and the route exposes NO reader seam -> UnsupportedAdapterRead
-        #     -> 404 (static detail) -> ZERO Outcome Fact. The unwired production read
-        #     path can NEVER fabricate a confirmed_success over HTTP (M2-R §4); the
-        #     fail-closed mapping (level 2) and the webhook forgery refusal
-        #     (test_webhook_persistence.py) close the other two entries.
+        # is EMPTY and the route exposes NO reader seam -> UnsupportedAdapterRead
+        # > 404 (static detail) -> ZERO Outcome Fact. The unwired production read
+        # path can NEVER fabricate a confirmed_success over HTTP; the
+        # fail-closed mapping (level 2) and the webhook forgery refusal
+        # (test_webhook_persistence.py) close the other two entries.
         recon_resp = client.post(
             RECONCILE.format(eid=execution_id), json={}, headers=exec_auth
         )

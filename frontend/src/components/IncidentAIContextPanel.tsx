@@ -1,4 +1,4 @@
-/** Incident AI Investigation panel (Phase 2 Step 14.5): observe / review /
+/* * Incident AI Investigation panel: observe / review /
  * audit — NEVER decide.
  *
  * Consumes the single read-only endpoint GET /incidents/{id}/ai-context and
@@ -8,12 +8,12 @@
  * Frozen boundaries enforced by this component:
  * - GET-only on mount; no automatic POST of any kind
  * - histories are rendered COMPLETE (newest first for readability, but every
- *   record stays in state — never "latest overwrites previous")
+ * record stays in state — never "latest overwrites previous")
  * - approval === null renders as "Pending Review" — a derived UI label, never
- *   a status sent back to the backend (the Approval Queue owns decisions)
+ * a status sent back to the backend (the Approval Queue owns decisions)
  * - no Approve / Reject affordance exists here; the ONLY write affordance is
- *   the Phase 3.1.8 Execute console, shown for approved recommendations and
- *   gated entirely server-side (Token + Guard + Approval + Policy + Executor)
+ * the Execute console, shown for approved recommendations and
+ * gated entirely server-side (Token + Guard + Approval + Policy + Executor)
  * - only the snapshot score is shown; the UI never recomputes risk
  */
 import { useEffect, useState } from 'react'

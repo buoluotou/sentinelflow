@@ -1,6 +1,6 @@
-/** Step 12.5: ResponseRecommendationPanel unit tests (jsdom, fetch mocked).
+/* * ResponseRecommendationPanel unit tests (jsdom, fetch mocked).
  *
- * Locks the frozen UI contract: GET-only on load (never an automatic POST),
+ * Locks the UI contract: GET-only on load (never an automatic POST),
  * 404 as a normal empty state DISTINCT from 200 + recommendations=[] ("no
  * action warranted" is a success), explicit trigger, backend 503/502 details
  * surfaced verbatim, no risk score ever rendered, and NO execution
@@ -22,7 +22,7 @@ const SIX_ACTIONS = [
   'monitor_only',
 ] as const
 
-/** Protocol-frozen sample payload; includes a smuggled risk_score to prove
+/* * Protocol-sample payload; includes a smuggled risk_score to prove
  * the UI never renders one (backend rejects it, the UI must not either). */
 function recommendationBody(overrides: Record<string, unknown> = {}) {
   return {

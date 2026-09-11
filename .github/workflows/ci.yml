@@ -1,23 +1,36 @@
-# SentinelFlow CI — RC2 §14.
+# SentinelFlow CI.
 #
-# What this pipeline DOES prove: the exact-lock install, the default (zero-
-# outbound) backend suite, the frontend typecheck/test/production build, the
-# compose file's structural validity, a REAL fresh-PostgreSQL migration to the
-# single head, both Docker images building, a dependency advisory report and a
-# high-signal secret scan.
+# Nine jobs. What they cover:
 #
-# What it deliberately does NOT do (frozen discipline, RC2 §14):
-#   - never touches a production system, never needs real credentials
-#     (the only secret in this file is a throwaway local service password);
-#   - never runs the EXTERNAL-lab suites (TheHive / Shuffle / Wazuh real
-#     targets) — those stay opt-in on a lab host (`pytest -m external`);
-#   - the PostgreSQL durable suite runs in its own job (postgres-external).
+#   backend             the default suite from the exact dev lock, under
+#                       coverage, against per-module floors
+#   frontend            npm ci, typecheck, unit tests, production build
+#   quality             whitespace, shell syntax, rendered compose config
+#   migration           a fresh PostgreSQL 16 migrated to the single head, plus
+#                       an upgrade from revision 0009 holding rows to head
+#   docker              both images build
+#   postgres-external   the durable concurrency and recovery suites on a real
+#                       PostgreSQL service, gated so a skip cannot pass
+#   security            pip-audit, the npm audit policy, and a secret scan
+#   compose-demo-e2e    the documented compose demo, booted in order on
+#                       PostgreSQL, with scripts/smoke.py run inside the
+#                       backend container; it fails unless the full
+#                       "demo smoke test: PASS" banner is produced
+#   browser-e2e         the Playwright suite against PostgreSQL, gated on the
+#                       pytest counts (collected > 0, passed == collected,
+#                       skipped == 0)
 #
-# CI STATUS: CONFIGURED / LOCALLY VALIDATED (see docs/audit/CI-VALIDATION.md).
-# Until this file actually runs on GitHub, no "GITHUB CI PASS" claim is made.
+# What it deliberately does not do:
+#   - it never touches a production system and needs no real credentials; the
+#     only secret in this file is a throwaway local service password
+#   - it never runs the external-lab suites (real TheHive / Shuffle / Wazuh
+#     targets); those stay opt-in on a lab host with `pytest -m external`
+#   - it never collects backend/tests/e2e in the default suite: those tests need
+#     PostgreSQL, a Chromium download and two dev ports, so they are keyed off
+#     SENTINELFLOW_BROWSER_E2E and run only in the browser-e2e job
 #
-# Actions are pinned to major-version tags (the stable, reviewable choice;
-# SHA-pinning is a future hardening step once this repo has a release cadence).
+# Actions are pinned to major-version tags. Pinning them to SHAs is a hardening
+# step for when this repository has a release cadence that needs it.
 
 name: CI
 
@@ -50,8 +63,12 @@ jobs:
           python-version: "3.12"
       - name: Install exact dev lock (no floating ranges)
         run: pip install --no-cache-dir -r requirements/dev.lock
-      - name: Default suite (zero outbound; external deselected by conftest)
-        run: python -m pytest -q -ra
+      - name: Default suite with coverage (zero outbound; external deselected by conftest)
+        run: |
+          python -m pytest -q -ra \
+            --cov=app --cov-report=term --cov-report=json:coverage.json
+      - name: Coverage gate (package floor + per-module floors)
+        run: python ../scripts/ci/check_coverage.py coverage.json
 
   # --------------------------------------------------------------- frontend
   frontend:
@@ -148,6 +165,18 @@ jobs:
           assert not missing, f"missing tables: {sorted(missing)}"
           print("SCHEMA_SPOT_CHECK_OK", len(required), "tables")
           PY
+      - name: Historical upgrade (0009 with rows -> head)
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          url = os.environ["DATABASE_URL"].replace("+psycopg", "")
+          with psycopg.connect(url.rsplit("/", 1)[0] + "/postgres", autocommit=True) as c:
+              c.execute("DROP DATABASE IF EXISTS sentinelflow_upgrade")
+              c.execute("CREATE DATABASE sentinelflow_upgrade")
+          print("created sentinelflow_upgrade")
+          PY
+          python ../scripts/ci/check_migration_upgrade.py \
+            --database-url "${DATABASE_URL%/*}/sentinelflow_upgrade"
 
   # --------------------------------------------------------------- docker
   docker:
@@ -252,3 +281,326 @@ jobs:
         # (the JSON above) and tracked in the audit doc.
       - name: High-confidence secret gate (real FAIL, precise allowlist)
         run: bash scripts/ci/secret-scan.sh
+
+  # ------------------------------------------------------- compose-demo-e2e
+  # THE GAP THIS CLOSES: every other job proves a PIECE (the unit suite, the
+  # image builds, the compose file's validity, a fresh migration). None of them
+  # ever STARTED the stack, so nothing proved the enforced boot order
+  # (`depends_on: service_healthy` / `service_completed_successfully`), the
+  # nginx same-origin reverse proxy, or the full business chain on a real
+  # PostgreSQL. This job runs the documented Demo (AI_PROVIDER=mock,
+  # EXECUTION_ADAPTER=mock, every external system disabled => zero outbound)
+  # exactly the way scripts/quickstart.sh does, then runs the project's own
+  # black-box scripts/smoke.py INSIDE the backend container over real HTTP.
+  #
+  # No repository secret and no externally supplied credential: POSTGRES_PASSWORD
+  # and EXECUTION_TOKEN are generated in-job (openssl rand, python fallback) and
+  # are never printed — `docker compose config` is piped straight into python so
+  # its secret-bearing rendering never reaches the log. Teardown is `if:
+  # always()` (including on failure, where the container logs are dumped first),
+  # and the health wait is BOUNDED (420 s) so a broken stack fails fast with
+  # logs instead of hanging until the runner's global timeout.
+  compose-demo-e2e:
+    name: Docker Compose demo stack — ordered boot + real end-to-end smoke (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build a FUNCTIONAL .env (random secrets generated in-job, never printed)
+        run: |
+          set -euo pipefail
+          # Mirrors scripts/quickstart.sh's rand_secret: openssl first, stdlib fallback.
+          rand_hex() {
+            if command -v openssl >/dev/null 2>&1; then openssl rand -hex "$1"
+            else python3 -c "import secrets;print(secrets.token_hex($1))"; fi
+          }
+          cp .env.example .env
+          # compose FAILS CLOSED on an empty POSTGRES_PASSWORD (${POSTGRES_PASSWORD:?});
+          # both values are generated HERE — no repository secret is required and
+          # neither value is ever echoed (the assignment is the only place they appear).
+          sed -i "s|^POSTGRES_PASSWORD=$|POSTGRES_PASSWORD=$(rand_hex 24)|" .env
+          sed -i "s|^EXECUTION_TOKEN=$|EXECUTION_TOKEN=$(rand_hex 32)|" .env
+          # Shape assertions: the substitution must actually have happened (48 / 64 hex).
+          grep -Eq '^POSTGRES_PASSWORD=[0-9a-f]{48}$' .env
+          grep -Eq '^EXECUTION_TOKEN=[0-9a-f]{64}$' .env
+          # Demo Mode + ZERO outbound: the smoke run must never reach a lab system.
+          grep -Eq '^DEPLOYMENT_MODE=demo$' .env
+          grep -Eq '^AI_PROVIDER=mock$' .env
+          grep -Eq '^EXECUTION_ADAPTER=mock$' .env
+          for key in THEHIVE_BASE_URL WAZUH_BASE_URL SHUFFLE_BASE_URL; do
+            grep -Eq "^${key}=$" .env
+          done
+          echo "ENV_READY (POSTGRES_PASSWORD + EXECUTION_TOKEN generated in-job; values not printed)"
+      - name: Assert the ordered-boot contract in the RENDERED compose model
+        run: |
+          set -euo pipefail
+          # `docker compose config` renders the generated secrets (that is the point
+          # of it), so its stdout is piped STRAIGHT into python and never printed —
+          # only this script's boolean verdict is.
+          # (The heredoc-free form is deliberate: the script is fed to `python3 -c`
+          #  so nothing lands on disk. Every line below carries the YAML block
+          #  indentation and is stripped back to column 0 before bash sees it.)
+          docker compose config --format json | python3 -c '
+          import json, sys
+
+          model = json.load(sys.stdin)
+          services = model["services"]
+
+
+          def gate(service, dependency):
+              depends_on = services[service].get("depends_on") or {}
+              assert isinstance(depends_on, dict), f"{service}.depends_on is not the long form"
+              return (depends_on.get(dependency) or {}).get("condition")
+
+
+          # The enforced boot chain: postgres(healthy) -> migrate(one-shot, must exit 0)
+          # -> backend(healthy) -> frontend(healthy). Weaken any gate and this fails.
+          assert gate("migrate", "postgres") == "service_healthy", gate("migrate", "postgres")
+          assert gate("backend", "postgres") == "service_healthy", gate("backend", "postgres")
+          assert gate("backend", "migrate") == "service_completed_successfully", gate("backend", "migrate")
+          assert gate("frontend", "backend") == "service_healthy", gate("frontend", "backend")
+
+          # The backend must really talk to the postgres SERVICE on PostgreSQL (the .env
+          # DATABASE_URL says localhost/change_me on purpose; the service override is what
+          # makes the stack work). Printed below as a boolean, never as a URL.
+          url = services["backend"]["environment"]["DATABASE_URL"]
+          assert url.startswith("postgresql+psycopg://"), "backend DATABASE_URL is not PostgreSQL"
+          assert "@postgres:5432/" in url, "backend DATABASE_URL does not target the postgres service"
+
+          # The optional ollama profile must stay OPT-IN (absent from the default model).
+          assert "ollama" not in services, "the ollama profile leaked into the default model"
+
+          print("BOOT_GATE_CONTRACT_OK (postgres healthy -> migrate 0 -> backend healthy -> frontend healthy)")
+          '
+      - name: Start the stack (postgres -> migrate -> backend -> frontend)
+        run: docker compose up -d --build
+      - name: Wait for the ordered boot to complete (bounded 420s, fail-closed)
+        run: |
+          set -euo pipefail
+          BUDGET=420
+          deadline=$(( $(date +%s) + BUDGET ))
+
+          health_of() {
+            # Resolve the container through the compose SERVICE (never a fixed
+            # container_name) — the quickstart rule.
+            local cid
+            cid="$(docker compose ps -q "$1" 2>/dev/null || true)"
+            [ -n "$cid" ] || { printf ''; return 0; }
+            docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+              "$cid" 2>/dev/null || true
+          }
+          wait_healthy() {
+            local service="$1" got=""
+            while :; do
+              got="$(health_of "$service")"
+              if [ "$got" = "healthy" ]; then echo "  [ok] ${service} is healthy"; return 0; fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::${service} never became healthy within ${BUDGET}s (last status='${got:-absent}')"
+                docker compose ps -a || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_one_shot_ok() {
+            # `migrate` is a ONE-SHOT service: the gate is service_completed_
+            # successfully, i.e. it must EXIT 0 (alembic upgrade head applied).
+            local cid="" state="" code=""
+            while :; do
+              cid="$(docker compose ps -aq migrate 2>/dev/null || true)"
+              if [ -n "$cid" ]; then
+                state="$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null || true)"
+                code="$(docker inspect -f '{{.State.ExitCode}}' "$cid" 2>/dev/null || true)"
+                if [ "$state" = "exited" ]; then
+                  if [ "$code" != "0" ]; then
+                    echo "::error::the one-shot migrate service exited ${code} — alembic upgrade head FAILED"
+                    docker compose logs --no-color --tail 100 migrate || true
+                    return 1
+                  fi
+                  echo "  [ok] migrate exited 0 (alembic upgrade head applied)"
+                  return 0
+                fi
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "::error::migrate did not finish within ${BUDGET}s (state='${state:-absent}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          wait_healthy postgres
+          wait_one_shot_ok
+          wait_healthy backend
+          wait_healthy frontend
+          echo "ORDERED_BOOT_OK"
+      - name: Assert the nginx reverse proxy + PostgreSQL driver (published port)
+        run: |
+          set -euo pipefail
+          base=http://127.0.0.1:5173
+          for _ in $(seq 1 30); do
+            if curl -fsS --max-time 5 "$base/" -o /tmp/sf-index.html; then break; fi
+            sleep 2
+          done
+          # 1. nginx serves the built SPA (frontend image stage 2).
+          if [ ! -s /tmp/sf-index.html ]; then
+            echo "::error::nginx never served the SPA on the published frontend port (${base}/)"
+            exit 1
+          fi
+          grep -q 'id="root"' /tmp/sf-index.html
+          # 2. nginx reverse-proxies /health to the backend, which reports the
+          #    NON-SENSITIVE driver scheme (app/main.py:82) — one hop that proves
+          #    nginx -> backend -> PostgreSQL. The credential never appears.
+          #    The patterns tolerate JSON whitespace (FastAPI renders compact).
+          curl -fsS --max-time 10 "$base/health" -o /tmp/sf-health.json
+          grep -Eq '"service":[[:space:]]*"sentinelflow-backend"' /tmp/sf-health.json
+          grep -Eq '"database":[[:space:]]*"connected"' /tmp/sf-health.json
+          grep -Eq '"database_driver":[[:space:]]*"postgresql' /tmp/sf-health.json
+          echo "NGINX_PROXY_OK + POSTGRESQL_DRIVER_OK"
+      - name: Run scripts/smoke.py INSIDE the backend container (quickstart recipe)
+        run: |
+          # scripts/quickstart.sh step 7 verbatim in spirit: the black-box driver
+          # is exec'd into the RUNNING backend container over stdin, so it drives
+          # the real HTTP API on the real PostgreSQL-backed stack. --token is
+          # deliberately NOT passed: the container already carries
+          # EXECUTION_TOKEN from env_file .env, so the secret never lands on a
+          # command line, in a process list or in this log.
+          set -o pipefail
+          set +e
+          docker compose exec -T backend python - \
+            --base-url http://127.0.0.1:8000 --wait 60 < scripts/smoke.py 2>&1 \
+            | tee /tmp/smoke.txt
+          smoke_rc=$?
+          set -e
+          echo "SMOKE_EXIT_CODE=${smoke_rc}"
+          if [ "$smoke_rc" -ne 0 ]; then
+            echo "::error::scripts/smoke.py exited ${smoke_rc} inside the backend container"
+            exit 1
+          fi
+      - name: FAIL unless the FULL PostgreSQL banner was produced
+        run: |
+          set -euo pipefail
+          # The two banners are mutually exclusive (scripts/smoke.py:279 vs :331).
+          # A SQLite banner here means the stack did NOT run on PostgreSQL, i.e.
+          # the execution step hit the fail-closed MVCC boundary instead of
+          # dispatching — that is NOT this job's success condition.
+          if grep -qF 'SentinelFlow core smoke test (SQLite): PASS' /tmp/smoke.txt; then
+            echo "::error::SQLite banner: the stack ran on SQLite, not PostgreSQL — the durable-dispatch execution step failed closed"
+            exit 1
+          fi
+          # Exact whole-line match on the full-demo banner (scripts/smoke.py:331).
+          grep -qxF 'SentinelFlow demo smoke test: PASS' /tmp/smoke.txt
+          echo "POSTGRES_DEMO_BANNER_OK"
+      - name: Dump container logs (failure only)
+        # `|| true` here is deliberate and NOT on the critical path: this step only
+        # exists to make a failing stack diagnosable — the job has already failed.
+        if: failure()
+        run: |
+          docker compose ps -a || true
+          docker compose logs --no-color --tail 300 || true
+      - name: Tear the stack down (always, including on failure)
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  # ------------------------------------------------------------- browser-e2e
+  # The Playwright suites in backend/tests/e2e/ drive real Chromium against a
+  # real uvicorn backend and the real vite dev server. They need PostgreSQL: the
+  # execution path commits the dispatch attempt on an independent connection
+  # before the external call, which SQLite's single-writer lock cannot interleave
+  # with the caller's transaction. A missing DATABASE_URL, an unreachable server
+  # or a busy port fails the run — never a skip — and the gate at the end
+  # requires collected > 0 with passed == collected, skipped == 0, failed == 0.
+  # Only the mock adapter runs, so the job makes no external request and needs no
+  # credential beyond the local execution token it generates itself.
+  browser-e2e:
+    name: Browser E2E — PostgreSQL + Playwright
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sentinelflow
+          POSTGRES_USER: sentinelflow
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinelflow -d sentinelflow"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
+      # Lifts the tests/e2e/ collection exclusion for this job only.
+      SENTINELFLOW_BROWSER_E2E: "1"
+      # The harness archives the uvicorn/vite output here so a failure is
+      # diagnosable from the job log.
+      SENTINELFLOW_E2E_LOG_DIR: /tmp/browser-e2e-logs
+      # The opt-in Ollama suite (marker `ollama`, tests/e2e/test_ai_risk_summary_ollama.py)
+      # is outside the browser selection: when Ollama is unreachable it skips at
+      # import time, which adds a "1 skipped" entry to the run tally that
+      # --collect-only never reports — the collect and run steps must select the
+      # same tests, and the browser selection must contain no skip path.
+      IGNORE_OLLAMA: "--ignore=tests/e2e/test_ai_risk_summary_ollama.py"
+    # No job-level working-directory: every step below cd's where it needs to be,
+    # so nothing depends on how a step-level path would compose with a default.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exact dev lock (playwright + pytest-playwright pinned)
+        run: pip install --no-cache-dir -r backend/requirements/dev.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend dependencies (npm ci)
+        # The suite starts the vite dev server from frontend/, so node_modules
+        # must be installed there.
+        run: cd frontend && npm ci
+      - name: Install Chromium (bounded)
+        timeout-minutes: 15
+        run: python -m playwright install --with-deps chromium
+      - name: Migrate the service database to head
+        timeout-minutes: 5
+        run: |
+          cd backend
+          python -m alembic upgrade head
+          python -m alembic current | tee /tmp/browser-e2e-alembic.txt
+      - name: Collect the browser suite (must be non-empty)
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          cd backend
+          python -m pytest tests/e2e -m browser -q --collect-only "$IGNORE_OLLAMA" | tee /tmp/e2e-collect.txt
+      - name: Browser E2E against PostgreSQL (bounded)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cd backend
+          python -m pytest tests/e2e -m browser -q "$IGNORE_OLLAMA" | tee /tmp/e2e-run.txt
+      - name: Anti-false-green gate (collected>0, passed==collected, skipped=0)
+        run: python scripts/ci/check_browser_e2e_result.py /tmp/e2e-collect.txt /tmp/e2e-run.txt
+      - name: Dump uvicorn/vite logs (failure only)
+        # This step only makes a failing run diagnosable; the job has already
+        # failed by the time it runs.
+        if: failure()
+        run: |
+          ls -la /tmp/browser-e2e-logs 2>/dev/null || echo "no log directory"
+          for log in /tmp/browser-e2e-logs/*.log; do
+            [ -e "$log" ] || continue
+            echo "===== ${log} (tail) ====="
+            tail -n 200 "$log" || true
+          done
+          echo "===== surviving stack processes ====="
+          ps -ef | grep -E "[u]vicorn|[v]ite" || echo "none"
+      - name: Assert the suite left no orphan stack process (always)
+        # The harness kills the vite and uvicorn process groups at teardown; a
+        # survivor would hold the fixed dev ports against the next run.
+        if: always()
+        run: |
+          if pgrep -af "[u]vicorn app.main:app|[v]ite"; then
+            echo "::error::a stack process survived the browser E2E teardown"
+            exit 1
+          fi
+          echo "NO_ORPHAN_STACK_PROCESS"

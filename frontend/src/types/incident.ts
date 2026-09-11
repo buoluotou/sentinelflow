@@ -1,5 +1,5 @@
 /**
- * TypeScript mirror of the Incident API schemas (Phase 1 Step 7.3).
+ * TypeScript mirror of the Incident API schemas.
  */
 
 export type IncidentStatus =

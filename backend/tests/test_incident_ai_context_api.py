@@ -1,17 +1,17 @@
-"""Phase 2 Step 14.3: Incident AI Context API tests.
+"""Incident AI Context API tests.
 
 GET /api/v1/incidents/{incident_id}/ai-context is a thin read-only HTTP
-passthrough into ``get_incident_ai_context`` (Step 14.2). Five blocks,
-mirroring the frozen contract:
+passthrough into ``get_incident_ai_context`` (). Five blocks,
+mirroring the contract:
 
-  A. unknown incident -> 404 with the unified "Incident not found" detail,
-     no context body, and no leak of other incidents' AI data
-  B. incident without any AI history -> 200 with EMPTY lists (legal state)
-  C. full context: snapshot + complete histories, approved/rejected
-     approvals attached, approval=null meaning pending (derived, not stored)
-  D. isolation: requesting incident A never exposes incident B's AI data
-  E. HTTP read-only boundary: the GET changes nothing — incident status,
-     risk_score, AI history row counts and approval row counts stay put
+A. unknown incident -> 404 with the unified "Incident not found" detail,
+no context body, and no leak of other incidents' AI data
+B. incident without any AI history -> 200 with EMPTY lists (legal state)
+C. full context: snapshot + complete histories, approved/rejected
+approvals attached, approval=null meaning pending (derived, not stored)
+D. isolation: requesting incident A never exposes incident B's AI data
+E. HTTP read-only boundary: the GET changes nothing — incident status,
+risk_score, AI history row counts and approval row counts stay put
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -126,9 +126,9 @@ def _ai_counts(db) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
+#
 # A. unknown incident -> 404, unified detail, no leak
-# ---------------------------------------------------------------------------
+#
 
 
 def test_unknown_incident_returns_404_with_unified_detail(client, db_session):
@@ -149,7 +149,7 @@ def test_invalid_uuid_returns_404(client):
 
 def test_unknown_incident_leaks_no_other_ai_data(client, db_session):
     """404 after other cases hold AI history: the response must never echo
-    any of it (the service raises before assembling anything)."""
+any of it (the service raises before assembling anything)."""
     incident = _seed_incident(db_session, "b" * 64)
     analysis = _add_analysis(db_session, incident)
     rec = _add_recommendation(db_session, incident)
@@ -164,9 +164,9 @@ def test_unknown_incident_leaks_no_other_ai_data(client, db_session):
     assert str(rec.id) not in text
 
 
-# ---------------------------------------------------------------------------
+#
 # B. empty context is a legal 200, not a 404
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incident_without_ai_history_returns_empty_context(client, db_session):
@@ -185,9 +185,9 @@ def test_incident_without_ai_history_returns_empty_context(client, db_session):
     assert body["incident"]["risk_score_snapshot"] == SNAPSHOT_SCORE
 
 
-# ---------------------------------------------------------------------------
+#
 # C. full context: snapshot + every history + approval semantics
-# ---------------------------------------------------------------------------
+#
 
 
 def test_full_context_returns_every_history_with_approvals(client, db_session):
@@ -223,9 +223,9 @@ def test_full_context_returns_every_history_with_approvals(client, db_session):
     assert by_id[str(rec_pending.id)] is None
 
 
-# ---------------------------------------------------------------------------
+#
 # D. isolation between incidents
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incident_a_context_never_contains_incident_b_data(client, db_session):
@@ -249,9 +249,9 @@ def test_incident_a_context_never_contains_incident_b_data(client, db_session):
         assert str(foreign) not in text
 
 
-# ---------------------------------------------------------------------------
+#
 # E. HTTP read-only boundary: the GET mutates nothing
-# ---------------------------------------------------------------------------
+#
 
 
 def test_get_ai_context_is_strictly_read_only(client, db_session):

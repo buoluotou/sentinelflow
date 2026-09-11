@@ -1,12 +1,12 @@
 """Deduplication engine: aggregates normalized alerts into AlertGroups.
 
-Phase 1 Step 4.3 flow:
+flow:
 
-    NormalizedAlert
-        -> FingerprintGenerator  (stable SHA256 identity)
-        -> find active AlertGroup (same fingerprint, within window)
-            ├── hit  -> alert_count++, last_seen updated, Alert linked
-            └── miss -> new AlertGroup created, Alert linked
+NormalizedAlert
+-> FingerprintGenerator  (stable SHA256 identity)
+-> find active AlertGroup (same fingerprint, within window)
+├── hit  -> alert_count++, last_seen updated, Alert linked
+└── miss -> new AlertGroup created, Alert linked
 
 Every individual alert is persisted as evidence; the group is the
 SOC-facing "one security event" view.
@@ -34,7 +34,7 @@ def _ensure_aware(dt: datetime) -> datetime:
 
 class DeduplicationEngine:
     """Aggregates repeated alerts into AlertGroups based on fingerprint +
-    time window."""
+time window."""
 
     def __init__(self, rule: AggregationRule = DEFAULT_RULE):
         self._rule = rule
@@ -46,11 +46,9 @@ class DeduplicationEngine:
         alert_create: AlertCreate,
     ) -> DeduplicationResult:
         """Process one normalized alert: link it to an active group or open
-        a new one, persist the alert as evidence, refresh the risk snapshot
-        and auto-open the SOC case when the policy threshold is crossed —
-        all in ONE transaction committed HERE (RC2 / H-1: the deduplication
-        engine is the pipeline transaction boundary; no participant commits
-        on its own, so alert + risk + incident land or roll back together)."""
+a new one, persist the alert as evidence, refresh the risk snapshot
+and auto-open the SOC case when the policy threshold is crossed —
+all in ONE transaction committed HERE."""
         fingerprint = FingerprintGenerator.generate(normalized)
         event_time = _ensure_aware(
             alert_create.timestamp or datetime.now(timezone.utc)
@@ -76,17 +74,17 @@ class DeduplicationEngine:
 
         alert = self._build_alert(alert_create, event_time, group)
         db.add(alert)
-        # Step 5.3 / RC2 H-1: the event changed (new evidence / count++), so
+        # / H-1: the event changed (new evidence / count++), so
         # refresh its current risk snapshot — flush-only, INSIDE this one
         # pipeline transaction. Reading the lazy alerts relationship flushes
         # the pending alert first.
         risk_service.recalculate(db, group)
-        # Step 7.4: the creation policy runs on the fresh snapshot; opens the
+        # the creation policy runs on the fresh snapshot; opens the
         # SOC case when the threshold is crossed (no-op otherwise; idempotent —
         # one current incident per event, also under a true concurrent race
         # via the unique constraint + nested savepoint).
         auto_create_from_risk(db, group)
-        # RC2 / H-1 — THE pipeline transaction boundary: the alert evidence,
+        # / H-1 — THE pipeline transaction boundary: the alert evidence,
         # the EventRisk update and the automatic Incident commit TOGETHER (or
         # roll back together on any failure). No participant above commits.
         db.commit()
@@ -116,7 +114,7 @@ class DeduplicationEngine:
         payload: AlertCreate, event_time: datetime, group: AlertGroup
     ) -> Alert:
         """Build the evidence Alert (same mapping as ingestion; will be
-        consolidated when the ingestion flow is rewired in Step 4.4)."""
+consolidated when the ingestion flow is rewired in )."""
         alert = Alert(
             source=payload.source,
             event_type=payload.event_type,
@@ -146,5 +144,5 @@ class DeduplicationEngine:
         return alert
 
 
-#: engine shared by the API layer (wired in Step 4.4)
+# engine shared by the API layer (wired in )
 engine = DeduplicationEngine()

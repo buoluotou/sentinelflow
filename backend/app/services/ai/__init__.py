@@ -1,19 +1,19 @@
-"""AI provider layer (Phase 2 Step 9) + alert explanation (Step 10).
+"""AI provider layer and alert explanation.
 
 Unified interface for AI analysis behind one contract — Incident and Risk
 Engine code only ever sees AIProvider.explain(AIRequest) -> AIAnalysis.
 
-    AIProvider
-    ├── MockProvider              deterministic, default (tests/demo/offline)
-    ├── OllamaProvider            local model via /api/chat
-    └── OpenAICompatibleProvider  /chat/completions; "cloud" is an alias
+AIProvider
+├── MockProvider              deterministic, default (tests/demo/offline)
+├── OllamaProvider            local model via /api/chat
+└── OpenAICompatibleProvider  /chat/completions; "cloud" is an alias
 
-Frozen here: the contract, the structured-output protocol (AIAnalysis),
-the error taxonomy and the settings-based registry. Step 10 adds the
-Event -> AIRequest translation (build_alert_explanation) and the
-AIAnalysisService that persists explanations as ai_analyses history.
-No provider executes any response — AI output is advisory only
-(approval gate lands in Step 13).
+This package owns the contract, the structured-output protocol (AIAnalysis),
+the error taxonomy, the settings-based registry, the Event -> AIRequest
+translation (build_alert_explanation) and the AIAnalysisService that
+persists explanations as ai_analyses history. No provider executes any
+response — AI output is advisory only and needs human approval through
+AIResponseApprovalService before any action follows from it.
 """
 
 from app.services.ai.base import AIProvider

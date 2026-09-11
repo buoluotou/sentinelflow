@@ -1,14 +1,14 @@
-/** Step 14.5: IncidentAIContextPanel unit tests (jsdom, fetch mocked).
+/* * IncidentAIContextPanel unit tests (jsdom, fetch mocked).
  *
- * Locks the frozen UI contract of the read-only incident AI view:
- *   A. a full context renders snapshot + every history section
- *   B. multiple history rows all render — never "latest only"
- *   C. approved / rejected / pending (approval=null) approval states
- *   D. all-empty histories are a legal empty state, not an error
- *   E. a partial pipeline (analyses only) still renders cleanly
- *   F. safety boundary: no Approve/Reject/Retry affordance; the ONLY one is
- *      the 3.1.8 Execute console for approved entries — GET-only, zero POSTs
- *   G. only risk_score_snapshot is shown; the UI never recomputes risk
+ * Locks the UI contract of the read-only incident AI view:
+ * A. a full context renders snapshot + every history section
+ * B. multiple history rows all render — never "latest only"
+ * C. approved / rejected / pending (approval=null) approval states
+ * D. all-empty histories are a legal empty state, not an error
+ * E. a partial pipeline (analyses only) still renders cleanly
+ * F. safety boundary: no Approve/Reject/Retry affordance; the ONLY one is
+ * the 3.1.8 Execute console for approved entries — GET-only, zero POSTs
+ * G. only risk_score_snapshot is shown; the UI never recomputes risk
  */
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -105,7 +105,7 @@ function contextBody(overrides: Record<string, unknown> = {}) {
 function mockFetch(response: () => Response) {
   const fn = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input)
-    // Phase 3.1.8: approved entries carry the Execute console, whose mount
+    // approved entries carry the Execute console, whose mount
     // lookup is GET /executions?approval_id=… — answer an empty paged
     // envelope for it (3.1.9 read contract).
     if (url.startsWith('/api/v1/executions'))

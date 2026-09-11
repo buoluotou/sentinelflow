@@ -1,43 +1,43 @@
-"""Durable pre-compensation attempt record (RC2 / C-1 production debt fix).
+"""Durable pre-compensation attempt record.
 
-THE PROBLEM (C-1). Forward dispatch received its durable pre-dispatch
-reservation in M4-F §1 / M4-G §2: the immutable binding commits on its OWN
-transaction BEFORE the external request fires. The reverse (compensation) path
-never got the same protection — ``compensate_response`` flushed the
-``compensation_requested`` row, called ``executor.compensate()`` and only then
-appended the terminal, all inside the caller's ONE business transaction. The
-SAME "flush 不等于持久提交" gap applies: a caller rollback / terminal-write
-failure / process crash AFTER the external reverse request already fired erases
-every durable trace of the attempt, and a later retry has no committed
-reservation to refuse it (the partial unique index on
-``execution_log.compensates_execution_id`` only bites at caller COMMIT — AFTER
-the wire call).
+The forward dispatch path gets a durable pre-dispatch reservation: the immutable
+binding commits on its own transaction before the external request fires. The
+reverse (compensation) path needs the same protection for the same reason:
+``compensate_response`` flushes the ``compensation_requested`` row, calls
+``executor.compensate()`` and only then appends the terminal row, all inside the
+caller's single business transaction. A flush is not a durable commit, so a
+caller rollback, a terminal-write failure or a process crash after the external
+reverse request has already fired erases every durable trace of the attempt, and
+a later retry has no committed reservation to refuse it: the partial unique index
+on ``execution_log.compensates_execution_id`` only bites at caller commit, after
+the wire call.
 
-THE FIX. ``compensation_attempt`` is an INDEPENDENT, append-only durable record
-of the compensation intent + reverse binding, committed on its OWN transaction
-(a separate Session/connection) BEFORE the external compensation request is
-sent. Committed independently of the caller's execution_log transaction, it
-SURVIVES a caller rollback, a terminal-write failure or a process crash. The
-terminal compensation row still REFERENCES the same ``compensation_attempt_id``;
-recovery correlates a committed attempt with no terminal row -> a MANUAL
-reconciliation candidate (never an auto-retry).
+``compensation_attempt`` is therefore an independent, append-only durable record
+of the compensation intent and reverse binding, committed on its own transaction
+(a separate Session/connection) before the external compensation request is sent.
+Because it commits independently of the caller's execution_log transaction, it
+survives a caller rollback, a terminal-write failure or a process crash. The
+terminal compensation row still references the same ``compensation_attempt_id``,
+so recovery correlates a committed attempt that has no terminal row into a manual
+reconciliation candidate; it never triggers an automatic retry. The committed
+attempt record is the idempotency key for the external reverse call, which is
+delivered at least once.
 
-WHAT IT RECORDS — AND NEVER RECORDS. The immutable reverse identity of THIS
-compensation attempt: the compensation chain's execution identity, the original
-(compensated) execution identity, the original's forward durable-attempt
-reference when it exists, approval, adapter, the reversed action / target, the
-adapter-declared endpoint (validated secret-free base URL), the operator
-principal, the server-clock prepared / dispatch-start instants, the original
-outcome state being undone, and the full binding projection in ``detail``
-(authoritative instance / tenant only when an adapter contributor provides
-them; otherwise honest UNKNOWN). It NEVER records a secret: every field passes
-``redact_detail`` at the single write point and no field IS a credential.
+What it records: the immutable reverse identity of this compensation attempt —
+the compensation chain's execution identity, the original (compensated) execution
+identity, the original's forward durable-attempt reference when it exists, the
+approval, the adapter, the reversed action and target, the adapter-declared
+endpoint (a validated secret-free base URL), the operator principal, the
+server-clock prepared and dispatch-start instants, the original outcome state
+being undone, and the full binding projection in ``detail`` (authoritative
+instance / tenant only when an adapter contributor provides them, and left unset
+otherwise). It records no secret: every field passes ``redact_detail`` at the
+single write point, and no field is a credential.
 
-NO FOREIGN KEY, deliberately (same precedent as dispatch_attempt /
-execution_outcome / execution_log.compensates_execution_id): execution ids are
-caller-supplied chain keys, not primary keys; the durable attempt must NOT
-cascade away and is read-only evidence. Append-only: INSERT only, never UPDATE,
-never DELETE.
+No foreign key, for the same reason as dispatch_attempt, execution_outcome and
+execution_log.compensates_execution_id: execution ids are caller-supplied chain
+keys, not primary keys, and the durable attempt must not cascade away — it is
+read-only evidence. Append-only: INSERT only, never UPDATE, never DELETE.
 """
 import uuid
 from datetime import datetime
@@ -50,7 +50,7 @@ from app.models.types import JSONVariant
 
 
 class CompensationAttempt(Base):
-    """One append-only durable pre-compensation attempt (RC2 C-1, migration 0013)."""
+    """One append-only durable pre-compensation attempt record (migration 0013)."""
 
     __tablename__ = "compensation_attempt"
     __table_args__ = (
@@ -61,20 +61,20 @@ class CompensationAttempt(Base):
             "compensation_attempt_id",
             unique=True,
         ),
-        # ONE durable compensation attempt per COMPENSATION execution_id — the
+        # One durable compensation attempt per compensation execution_id — the
         # replay guard: a duplicate request for the same compensation chain can
-        # never commit a second durable attempt BEFORE any external request.
+        # never commit a second durable attempt before any external request.
         Index(
             "ux_compensation_attempt_execution_id",
             "execution_id",
             unique=True,
         ),
-        # THE C-1 RESERVATION: ONE durable compensation per ORIGINAL execution.
-        # The durable refill of "at most one compensation per original" —
-        # enforced at the independent commit BEFORE the reverse adapter runs,
-        # so a caller rollback / crash (which erases the flushed
-        # compensation_requested row) cannot open a retry path that fires the
-        # external reverse request twice.
+        # One durable compensation per original execution. This reservation
+        # keeps "at most one compensation per original" durable: it is enforced
+        # at the independent commit before the reverse adapter runs, so a caller
+        # rollback or crash (which erases the flushed compensation_requested
+        # row) cannot open a retry path that fires the external reverse request
+        # twice.
         Index(
             "ux_compensation_attempt_original_execution_id",
             "original_execution_id",
@@ -90,19 +90,19 @@ class CompensationAttempt(Base):
     # compensation row references; never re-minted, never reused.
     compensation_attempt_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
-    # The COMPENSATION chain's own execution_id (a FRESH identity undoing the
-    # original). UNIQUE here so a replay cannot commit a second durable attempt.
+    # The compensation chain's own execution_id (a fresh identity undoing the
+    # original). Unique here so a replay cannot commit a second durable attempt.
     execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
-    # The compensated forward execution. UNIQUE (see the reservation index
+    # The compensated forward execution. Unique (see the reservation index
     # above): the durable last line against a second external compensation for
     # the same original execution.
     original_execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
     # The original forward chain's durable attempt reference
     # (detail["dispatch_attempt_id"] on its terminal row) when the original
-    # executed through a durable store; NULL for old history / store-less mock
-    # runs — an honest UNKNOWN, never back-filled.
+    # executed through a durable store; NULL for old history and for store-less
+    # mock runs — it is never back-filled.
     original_dispatch_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, nullable=True
     )
@@ -117,8 +117,8 @@ class CompensationAttempt(Base):
     target: Mapped[str] = mapped_column(String(256), nullable=False)
 
     # Adapter-declared endpoint (validated secret-free base URL) when an
-    # adapter contributor provides one — None for a non-contributor (honest
-    # UNKNOWN, never a substitute).
+    # adapter contributor provides one — NULL for a non-contributor, and never
+    # substituted with a guess.
     endpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # The authenticated operator principal that requested the compensation
@@ -128,9 +128,9 @@ class CompensationAttempt(Base):
     # The operator's comment / reason, when provided.
     reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
-    # The ORIGINAL chain's derived state being undone ("succeeded" / "failed")
-    # — the immutable "what was being reversed" fact (never re-derived at
-    # reconciliation time).
+    # The original chain's derived state being undone ("succeeded" / "failed")
+    # the immutable "what was being reversed" fact, never re-derived at
+    # reconciliation time.
     original_outcome_state: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Server-clock instants: when the binding was prepared, and the last
@@ -145,10 +145,10 @@ class CompensationAttempt(Base):
     )
 
     # The full binding projection (binding.to_detail()), secret-gated through
-    # redact_detail at the single write point. Redundant with the columns above
-    # by design: the columns serve the recovery query, the detail preserves the
-    # exact immutable binding for audit (version evidence / instance / tenant
-    # ride here).
+    # redact_detail at the single write point. It is redundant with the columns
+    # above on purpose: the columns serve the recovery query, while the detail
+    # preserves the exact immutable binding for audit (version evidence /
+    # instance / tenant ride here).
     detail: Mapped[dict] = mapped_column(JSONVariant, nullable=False, default=dict)
 
     # Server clock only: when the durable record was committed.

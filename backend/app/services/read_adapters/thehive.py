@@ -1,25 +1,25 @@
-"""TheHive READ adapter (Phase 3.4.5-M2 §5) — the case-CREATION effect verifier.
+"""TheHive READ adapter — the case-CREATION effect verifier.
 
 The READ-side counterpart of ``app.services.executions.thehive.TheHiveExecutor``
 (the WRITE side that creates the case). Where the executor turns an approved
 ``escalate_to_incident`` decision into ONE ``POST /api/case``, this adapter
 answers exactly one question for the Manual Reconcile pipeline::
 
-    "Does the case this execution created STILL exist, is it provably THE case
-     THIS execution created, and when was it created?"
+"Does the case this execution created STILL exist, is it provably THE case
+THIS execution created, and when was it created?"
 
 It is a ``ReadAdapter`` (3.4.5-A1 contract): ``read`` is the SOLE verb. It
 structurally CANNOT execute / compensate / dispatch / create_case / close_case —
 those verbs do not exist on this contract. It performs a single ``GET`` and NEVER
 mutates the external world (read / query ONLY), NEVER retries, NEVER polls.
 
-M3 (Phase 3.4.5-M3 §3) ADDS one INTERNAL read verb, ``read_creation``, for the
-SOURCE-ISOLATED trusted-proof channel (Amendment §5.3): it performs the SAME
+M3 ADDS one INTERNAL read verb, ``read_creation``, for the
+SOURCE-ISOLATED trusted-proof channel: it performs the SAME
 single ``GET`` (sharing the no-redirect transport, the HTTP-error discrimination
 and the secret sanitizer) but returns a TYPED ``VerifiedReadResult`` OBSERVATION
 instead of the synthesized ``case_created`` word — the VERDICT is adjudicated by
 ``verified.verify_creation_effect`` against a platform-derived immutable context,
-NEVER here. The frozen PUBLIC ``read`` (the A1 contract's SOLE abstract verb) is
+NEVER here. The PUBLIC ``read`` (the A1 contract's SOLE abstract verb) is
 UNCHANGED byte-for-byte; ``read_creation`` is an ADDITIONAL READ verb on the
 concrete subclass (never a write verb, so BOTH the write-verb-absence seal
 (``test_read_adapter_thehive.py``) and the ABC-level ``vars(ReadAdapter) == {read}``
@@ -36,53 +36,47 @@ import check. A concrete reader that issues a real ``GET`` CANNOT live inside
 that package without breaking the sealed purity tests. So this adapter lives in a
 SEPARATE ``app/services/read_adapters/`` package — physically isolated from BOTH
 the sealed read-contract package AND the write-adapters package
-(``app/services/executions/``), exactly as design §21 requires Read and Write to
+(``app/services/executions/``), exactly as requires Read and Write to
 stay separated. It IMPORTS the A1 contract shapes (``ReadAdapter`` /
 ``AdapterReadRequest`` / ``AdapterReadResult``) and the read-side exception family
 (``ReadTransportError``) — the dependency direction is one-way (concrete reader ->
 pure contract), never the reverse.
 
-THE CERTIFIED READ CONTRACT (TheHive 4.1.24-1 = git ``b6649bb``, ScalliGraph
-``2c2a7a4``; M2 §2 source forensics — SOURCE-certified, real-Lab runtime evidence
-GAPPED / LAB BLOCKED):
+THE CERTIFIED READ CONTRACT:
 
-  - ``GET /api/case/{id}`` resolves ``id`` through ``EntityIdOrName``: a ``~``
-    prefix means "by EntityId". SentinelFlow persists the OutputCase ``_id``
-    (== ``id`` == ``EntityId.toString``) as the STRING resource reference
-    (``_EXTERNAL_REFERENCE_KEYS["thehive"] = "case_id"``), so the read re-fetches
-    the exact vertex the write created — NEVER the numeric ``caseId`` (the human
-    case number, audit-only).
-  - ``OutputCase._id`` / ``id`` are Strings; ``createdAt`` is a ``Date``
-    serialized as epoch MILLISECONDS (ScalliGraph ``Mapping.scala``:
-    ``case d: Date => JsNumber(d.getTime)``); ``tags`` is the ``Set[String]``
-    echoed back from ``CaseSrv.create`` (which persists ``InputCase.tags``).
-  - error -> HTTP: 401 ``AuthenticationError``, 403 ``AuthorizationError``, 404
-    ``NotFoundError`` — and ``NotFoundError`` covers BOTH a genuinely absent case
-    AND a tenant-invisible one (``visible`` -> 404), so a 404 is deliberately
-    AMBIGUOUS between "deleted" and "cross-tenant invisible".
+- ``GET /api/case/{id}`` resolves ``id`` through ``EntityIdOrName``: a ``~``
+prefix means "by EntityId". SentinelFlow persists the OutputCase ``_id``
+(== ``id`` == ``EntityId.toString``) as the STRING resource reference
+(``_EXTERNAL_REFERENCE_KEYS["thehive"] = "case_id"``), so the read re-fetches
+the exact vertex the write created — NEVER the numeric ``caseId`` (the human
+case number, audit-only).
+- ``OutputCase._id`` / ``id`` are Strings; ``createdAt`` is a ``Date``
+serialized as epoch MILLISECONDS (ScalliGraph ``Mapping.scala``:
+``case d: Date => JsNumber(d.getTime)``); ``tags`` is the ``Set[String]``
+echoed back from ``CaseSrv.create`` (which persists ``InputCase.tags``).
+- error -> HTTP: 401 ``AuthenticationError``, 403 ``AuthorizationError``, 404
+``NotFoundError`` — and ``NotFoundError`` covers BOTH a absent case
+AND a tenant-invisible one (``visible`` -> 404), so a 404 is AMBIGUOUS between "deleted" and "cross-tenant invisible".
 
-THE VERIFICATION CONJUNCTION (M2 §5 — the crux; a bare HTTP 200 / resource
-existence NEVER maps to ``confirmed_success``). ``read`` returns the synthesized
+THE VERIFICATION CONJUNCTION. ``read`` returns the synthesized
 creation-effect word ``case_created`` ONLY when ALL THREE hold at once:
 
-  1. IDENTITY — the fetched resource's string ``_id`` (fallback ``id``) EQUALS
-     ``request.external_reference``. A different case, a numeric-only ``caseId``,
-     or an absent/empty/non-string id is NEVER this execution's effect.
-  2. CORRELATION — the resource's ``tags`` carry THIS execution's correlation tag
-     ``sentinelflow:execution:{execution_id}`` (the EXACT string the write side
-     persisted, imported from ``executions.thehive`` so the two sides can never
-     drift). Without it the case is not provably THIS execution's creation — it
-     could be a same-id case from another tenant / history, or a case whose tag
-     was stripped after create.
-  3. CREATION EFFECT (design §5.2 gate 3 — MANDATORY; M2-R §3 unifies the code to
-     the frozen design, which already listed a missing ``createdAt`` as
-     ``case_unverified``) — ``createdAt`` supplies the authoritative creation
-     timestamp (-> ``observed_at``, the EXTERNAL creation time, never a server
-     observation time). An absent / invalid / absurd ``createdAt`` now FAILS the
-     gate -> ``case_unverified`` (reason ``missing_created_at``): without an
-     authenticated creation time the read cannot independently prove THIS execution
-     created THIS case (identity + a re-attachable tag are not enough — a historical
-     or cross-instance same-id case must not verify).
+1. IDENTITY — the fetched resource's string ``_id`` (fallback ``id``) EQUALS
+``request.external_reference``. A different case, a numeric-only ``caseId``,
+or an absent/empty/non-string id is NEVER this execution's effect.
+2. CORRELATION — the resource's ``tags`` carry THIS execution's correlation tag
+``sentinelflow:execution:{execution_id}`` (the EXACT string the write side
+persisted, imported from ``executions.thehive`` so the two sides can never
+drift). Without it the case is not provably THIS execution's creation — it
+could be a same-id case from another tenant / history, or a case whose tag
+was stripped after create.
+3. CREATION EFFECT — ``createdAt`` supplies the authoritative creation
+timestamp (-> ``observed_at``, the EXTERNAL creation time, never a server
+observation time). An absent / invalid / absurd ``createdAt`` now FAILS the
+gate -> ``case_unverified`` (reason ``missing_created_at``): without an
+authenticated creation time the read cannot independently prove THIS execution
+created THIS case (identity + a re-attachable tag are not enough — a historical
+or cross-instance same-id case must not verify).
 
 Any 200 that FAILS the conjunction yields ``case_unverified`` — a word that is
 NOT in the 3.4.3-B thehive vocabulary, so the mapping REFUSES it
@@ -90,26 +84,24 @@ NOT in the 3.4.3-B thehive vocabulary, so the mapping REFUSES it
 adapter NEVER guesses, NEVER downgrades an unverified read to ``unknown``, and
 NEVER fabricates a correlation.
 
-ERROR DISCRIMINATION (M2 §5 — 401 / 403 / 404 / timeout / deleted / tenant-
-invisible are READ FAILURES, never effect verdicts). A transport-level failure
+ERROR DISCRIMINATION. A transport-level failure
 raises ``ReadTransportError`` with a SAFE STATIC ``category``; the A2-D pipeline
 converts it to ``reconciliation_failed`` (ONE fact) — NEVER ``confirmed_failure``
 (the case may have been created then deleted, or be cross-tenant invisible; a
 failed READ cannot prove the CREATION failed):
 
-  - 401 -> ``authentication_failure``;  403 -> ``authorization_failure``;
-  - 404 -> ``not_found`` (absent OR tenant-invisible — deliberately merged, the
-    TheHive security design does not distinguish them, and NEITHER is proof the
-    creation failed);
-  - 502/503/504 -> ``adapter_unavailable``;  other 5xx -> ``transport_error``;
-  - ``TimeoutError`` -> ``timeout``;  ``URLError`` / ``OSError`` ->
-    ``connection_failure``.
+- 401 -> ``authentication_failure``;  403 -> ``authorization_failure``;
+- 404 -> ``not_found`` (absent OR tenant-invisible — merged, the
+TheHive security design does not distinguish them, and NEITHER is proof the
+creation failed);
+- 502/503/504 -> ``adapter_unavailable``;  other 5xx -> ``transport_error``;
+- ``TimeoutError`` -> ``timeout``;  ``URLError`` / ``OSError`` ->
+``connection_failure``.
 
 ``case Resolved`` / task ``Completed`` / a Cortex job finishing / a human
 investigation conclusion are NEVER read as this action's effect: the ONLY word
 this adapter can emit for a verified effect is ``case_created`` (the creation),
-and it maps NO native TheHive lifecycle state ("case created != case resolved",
-design §8).
+and it maps NO native TheHive lifecycle state.
 
 SECRET HYGIENE (3.2.2 boundary, mirrors the write adapter): credentials arrive
 ONLY via ``AdapterCredentials`` and ride ONLY in the ``Authorization`` header;
@@ -153,50 +145,50 @@ from app.services.read_adapters.verified import (
     created_at_to_datetime,
 )
 
-#: The synthesized case-CREATION effect word — the ONLY external_state this
-#: adapter emits for a VERIFIED creation, produced ONLY on the full identity +
-#: correlation + creation conjunction (never on a bare 200). It is a
-#: SentinelFlow-synthesized creation-effect signal, NOT a native TheHive lifecycle
-#: state. M2 §5 added it to the 3.4.3-B thehive vocabulary; M2-R §2 REMOVED it
-#: again (fail-closed) because that vocabulary is PATH-AGNOSTIC and the frozen
-#: 2-param mapping contract cannot express source isolation — so the word is now
-#: REFUSED at the mapping layer on EVERY path (zero fact), including this trusted
-#: reader's, until a source-isolation channel is approved (see the M2-R Amendment).
-#: The reader still EMITS it (isolation-tested); the mapping just does not yet
-#: ACCEPT it from any source.
+# The synthesized case-CREATION effect word — the ONLY external_state this
+# adapter emits for a VERIFIED creation, produced ONLY on the full identity +
+# correlation + creation conjunction (never on a bare 200). It is a
+# SentinelFlow-synthesized creation-effect signal, NOT a native TheHive lifecycle
+# state. M2 added it to the 3.4.3-B thehive vocabulary; M2-R REMOVED it
+# again (fail-closed) because that vocabulary is PATH-AGNOSTIC and the frozen
+# 2-param mapping contract cannot express source isolation — so the word is now
+# REFUSED at the mapping layer on EVERY path (zero fact), including this trusted
+# reader's, until a source-isolation channel is approved (see the M2-R Amendment).
+# The reader still EMITS it (isolation-tested); the mapping just does not yet
+# ACCEPT it from any source.
 CASE_CREATED = "case_created"
 
-#: Emitted when a read SUCCEEDS at transport level (HTTP 200) but the identity /
-#: correlation conjunction is NOT established (a different case, a missing or
-#: mismatched ``_id``, no execution correlation tag, a malformed body). This word
-#: is DELIBERATELY ABSENT from the thehive vocabulary, so the mapping REFUSES it
-#: (``UnrecognizedExternalState`` -> 422, ZERO facts) — an unverified read is
-#: NEVER laundered into ``confirmed_success`` and NEVER guessed to ``unknown``.
+# Emitted when a read SUCCEEDS at transport level (HTTP 200) but the identity /
+# correlation conjunction is NOT established (a different case, a missing or
+# mismatched ``_id``, no execution correlation tag, a malformed body). This word
+# is DELIBERATELY ABSENT from the thehive vocabulary, so the mapping REFUSES it
+# (``UnrecognizedExternalState`` -> 422, ZERO facts) — an unverified read is
+# NEVER laundered into ``confirmed_success`` and NEVER guessed to ``unknown``.
 CASE_UNVERIFIED = "case_unverified"
 
-#: The EXACT TheHive version this reader's read semantics are SOURCE-certified
-#: against (TheHive 4.1.24-1 = git ``b6649bb`` / ScalliGraph ``2c2a7a4``). M2-R §4:
-#: the factory authorizes a reader ONLY when ``THEHIVE_EXPECTED_VERSION`` equals
-#: this string — an unset or mismatched expectation fails CLOSED, so 4.1.24-1
-#: read semantics (``GET /api/case/{id}``, ``EntityIdOrName``, epoch-millis
-#: ``createdAt``, ``OutputCase._id``) can never be silently applied to a different
-#: server version by a one-line wiring. This is a CONFIGURATION assertion gate, not
-#: a live probe: the factory issues NO HTTP at build time (a pinned invariant), so
-#: the operator binds the certified version explicitly and a real Lab re-certifies
-#: it against the running server before the router is ever wired.
+# The EXACT TheHive version this reader's read semantics are SOURCE-certified
+# against (TheHive 4.1.24-1 = git ``b6649bb`` / ScalliGraph ``2c2a7a4``). M2-R :
+# the factory authorizes a reader ONLY when ``THEHIVE_EXPECTED_VERSION`` equals
+# this string — an unset or mismatched expectation fails CLOSED, so 4.1.24-1
+# read semantics (``GET /api/case/{id}``, ``EntityIdOrName``, epoch-millis
+# ``createdAt``, ``OutputCase._id``) can never be silently applied to a different
+# server version by a one-line wiring. This is a CONFIGURATION assertion gate, not
+# a live probe: the factory issues NO HTTP at build time (a pinned invariant), so
+# the operator binds the certified version explicitly and a real Lab re-certifies
+# it against the running server before the router is ever wired.
 CERTIFIED_THEHIVE_VERSION = "4.1.24-1"
 
 
 def _tags_carry_execution(tags: object, execution_id: object) -> bool:
     """Whether the case's ``tags`` carry THIS execution's correlation tag.
 
-    ``OutputCase.tags`` is a ``Set[String]`` rendered as a JSON array, so the
-    normal shape is a list of strings; a bare string and other iterables are
-    accepted defensively. The comparison is EXACT (== the canonical
-    ``sentinelflow_execution_tag(execution_id)``) — never a prefix / substring /
-    case-folded match, so a sibling execution's tag can never be mistaken for
-    this one.
-    """
+``OutputCase.tags`` is a ``Set[String]`` rendered as a JSON array, so the
+normal shape is a list of strings; a bare string and other iterables are
+accepted defensively. The comparison is EXACT (== the canonical
+``sentinelflow_execution_tag(execution_id)``) — never a prefix / substring /
+case-folded match, so a sibling execution's tag can never be mistaken for
+this one.
+"""
     expected = sentinelflow_execution_tag(execution_id)
     if isinstance(tags, str):
         return tags == expected
@@ -207,15 +199,15 @@ def _tags_carry_execution(tags: object, execution_id: object) -> bool:
 
 def _created_at_to_datetime(value: object) -> datetime | None:
     """Convert an ``OutputCase.createdAt`` (epoch MILLISECONDS) to an aware UTC
-    datetime, or ``None`` when it is absent / malformed / absurd.
+datetime, or ``None`` when it is absent / malformed / absurd.
 
-    ScalliGraph serializes a ``Date`` as ``JsNumber(d.getTime)`` (milliseconds).
-    A ``bool`` is NOT a timestamp (``isinstance(True, int)`` is True in Python, so
-    it is excluded explicitly). ``datetime.fromtimestamp`` can raise on an
-    out-of-range value; any failure yields ``None`` so the platform supplies a
-    SERVER-OBSERVATION time and ``validate_observation`` stays the final gate
-    (this adapter never enforces the future-skew bound itself).
-    """
+ScalliGraph serializes a ``Date`` as ``JsNumber(d.getTime)`` (milliseconds).
+A ``bool`` is NOT a timestamp (``isinstance(True, int)`` is True in Python, so
+it is excluded explicitly). ``datetime.fromtimestamp`` can raise on an
+out-of-range value; any failure yields ``None`` so the platform supplies a
+SERVER-OBSERVATION time and ``validate_observation`` stays the final gate
+(this adapter never enforces the future-skew bound itself).
+"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
@@ -226,8 +218,8 @@ def _created_at_to_datetime(value: object) -> datetime | None:
 
 def _unverified(reason: str, status: object = None) -> AdapterReadResult:
     """A REFUSED-shaped success read: ``case_unverified`` (absent from the
-    vocabulary -> 422 / zero fact), ``observed_at=None``, and a NON-SECRET
-    diagnostic ``raw_evidence`` (``manual_persist`` never persists it)."""
+vocabulary -> 422 / zero fact), ``observed_at=None``, and a NON-SECRET
+diagnostic ``raw_evidence`` (``manual_persist`` never persists it)."""
     evidence: dict[str, object] = {"reason": reason, "correlation": "unverified"}
     if status is not None:
         evidence["status"] = status
@@ -237,23 +229,22 @@ def _unverified(reason: str, status: object = None) -> AdapterReadResult:
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """M2-R §4: REFUSE to follow ANY HTTP redirect on the case read.
+    """M2-R : REFUSE to follow ANY HTTP redirect on the case read.
 
-    ``urllib.request.urlopen`` follows 3xx automatically and — critically —
-    FORWARDS the ``Authorization`` header to the redirect target, INCLUDING a
-    CROSS-HOST one. For a credential-bearing read that is a leak (CWE-522): a
-    compromised or misconfigured proxy could 302 the ``GET`` to an attacker host
-    and harvest the Bearer key. A case ``GET`` must resolve DIRECTLY on the
-    certified instance, so any redirect is treated as a transport anomaly:
-    returning ``None`` makes urllib raise ``HTTPError`` for the 3xx, which
-    ``read()`` already maps to ``ReadTransportError`` (-> ``reconciliation_failed``)
-    — fail-closed, NEVER a cross-host credential leak, NEVER a fabricated verdict.
+``urllib.request.urlopen`` follows 3xx automatically and — critically —
+FORWARDS the ``Authorization`` header to the redirect target, INCLUDING a
+CROSS-HOST one. For a credential-bearing read that is a leak (CWE-522): a
+compromised or misconfigured proxy could 302 the ``GET`` to an attacker host
+and harvest the Bearer key. A case ``GET`` must resolve DIRECTLY on the
+certified instance, so any redirect is treated as a transport anomaly:
+returning ``None`` makes urllib raise ``HTTPError`` for the 3xx, which
+``read()`` already maps to ``ReadTransportError`` (-> ``reconciliation_failed``)
+— fail-closed, NEVER a cross-host credential leak, NEVER a fabricated verdict.
 
-    This ONLY declines redirects. TLS certificate verification and base-URL
-    validation are UNCHANGED (§4 forbids solving connectivity by disabling TLS or
-    relaxing URL checks); ``build_opener`` still installs the default verifying
-    ``HTTPSHandler``.
-    """
+This ONLY declines redirects. TLS certificate verification and base-URL
+validation are UNCHANGED; ``build_opener`` still installs the default verifying
+``HTTPSHandler``.
+"""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
         return None
@@ -261,27 +252,25 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _build_opener() -> urllib.request.OpenerDirector:
     """The production read opener: default handlers (verifying TLS) with the
-    redirect handler REPLACED by ``_NoRedirectHandler``. ``.open(request,
-    timeout=...)`` matches the ``urlopen`` call shape the reader uses."""
+redirect handler REPLACED by ``_NoRedirectHandler``. ``.open(request,
+timeout=...)`` matches the ``urlopen`` call shape the reader uses."""
     return urllib.request.build_opener(_NoRedirectHandler)
 
 
 class TheHiveReadAdapter(ReadAdapter):
     """Case-CREATION effect verifier over the TheHive Case API (one ``GET``, no
-    retry).
+retry).
 
-    Constructor arguments (mirror ``TheHiveExecutor``):
-      credentials -- ``AdapterCredentials`` for THEHIVE_BASE_URL /
-          THEHIVE_API_KEY (Bearer), already validated by the factory.
-      timeout -- seconds for the single outbound ``GET``.
-      transport -- the deployment/test seam: a callable
-          ``transport(request, timeout=...) -> response`` where response has
-          ``status`` / ``read()`` — matching ``urllib.request.urlopen``.
-          Production uses a NO-REDIRECT urllib opener (M2-R §4: a 3xx is refused,
-          so the ``Authorization`` header is NEVER forwarded to a cross-host
-          redirect target); there is NO retry layer, NO polling and NO callback
-          surface around it.
-    """
+Constructor arguments (mirror ``TheHiveExecutor``):
+credentials -- ``AdapterCredentials`` for THEHIVE_BASE_URL /
+THEHIVE_API_KEY (Bearer), already validated by the factory.
+timeout -- seconds for the single outbound ``GET``.
+transport -- the deployment/test seam: a callable
+``transport(request, timeout=...) -> response`` where response has
+``status`` / ``read()`` — matching ``urllib.request.urlopen``.
+Production uses a NO-REDIRECT urllib opener; there is NO retry layer, NO polling and NO callback
+surface around it.
+"""
 
     def __init__(
         self,
@@ -305,28 +294,28 @@ class TheHiveReadAdapter(ReadAdapter):
             )
         self._credentials = credentials
         self._timeout = float(timeout)
-        # M2-R §4: the production default is a NO-REDIRECT opener, never bare
+        # M2-R : the production default is a NO-REDIRECT opener, never bare
         # ``urlopen`` — a case ``GET`` must resolve directly on the certified
         # instance, and a 3xx must NOT carry the Bearer key to another host.
         self._transport = transport or _build_opener().open
 
-    # -- contract ----------------------------------------------------------
+    # contract ----------------------------------------------------------
 
     @property
     def name(self) -> str:
         return "thehive"
 
-    # -- read --------------------------------------------------------------
+    # read --------------------------------------------------------------
 
     def read(self, request: AdapterReadRequest) -> AdapterReadResult:
         """One ``GET /api/case/{reference}`` -> the verified creation effect.
 
-        Returns ``case_created`` ONLY on the full identity + correlation +
-        creation conjunction; ``case_unverified`` (refused downstream) when a 200
-        fails it; raises ``ReadTransportError`` (-> ``reconciliation_failed``) on
-        any transport failure. NEVER ``confirmed_failure``, NEVER a mutation,
-        NEVER a retry.
-        """
+Returns ``case_created`` ONLY on the full identity + correlation +
+creation conjunction; ``case_unverified`` (refused downstream) when a 200
+fails it; raises ``ReadTransportError`` (-> ``reconciliation_failed``) on
+any transport failure. NEVER ``confirmed_failure``, NEVER a mutation,
+NEVER a retry.
+"""
         reference = request.external_reference
         if not isinstance(reference, str) or not reference:
             # Defensive: the pipeline guarantees a non-empty str reference
@@ -380,38 +369,36 @@ class TheHiveReadAdapter(ReadAdapter):
             return _unverified("non_object_body", status)
         return self._verify(request, payload, status)
 
-    # -- trusted creation read (M3 §3 — the source-isolated proof channel) --
+    # trusted creation read --
 
     def read_creation(self, request: AdapterReadRequest) -> VerifiedReadResult:
-        """One ``GET /api/case/{reference}`` -> the TYPED creation OBSERVATION (M3 §3).
+        """One ``GET /api/case/{reference}`` -> the TYPED creation OBSERVATION.
 
-        The INTERNAL trusted-reader verb for the source-isolated proof channel
-        (Amendment §5.3). It performs the SAME single ``GET`` as ``read`` and returns
-        a ``VerifiedReadResult`` — a faithful OBSERVATION of what the ONE ``GET`` saw,
-        NEVER a VERDICT: ``verified.verify_creation_effect`` adjudicates it against the
-        platform-derived immutable ``ReadCorrelationContext`` through the six conjunctive
-        gates (Amendment §4). The frozen public ``read`` is UNCHANGED; this is an
-        ADDITIONAL internal READ verb (never a write verb, never a mutation, never a
-        retry, never a poll).
+The INTERNAL trusted-reader verb for the source-isolated proof channel. It performs the SAME single ``GET`` as ``read`` and returns
+a ``VerifiedReadResult`` — a faithful OBSERVATION of what the ONE ``GET`` saw,
+NEVER a VERDICT: ``verified.verify_creation_effect`` adjudicates it against the
+platform-derived immutable ``ReadCorrelationContext`` through the six conjunctive
+gates. The public ``read`` is UNCHANGED; this is an
+ADDITIONAL internal READ verb (never a write verb, never a mutation, never a
+retry, never a poll).
 
-        Transport failures (401 / 403 / 404 / timeout / 5xx / a refused redirect / an
-        unexpected non-200) raise ``ReadTransportError`` EXACTLY as ``read`` does, so the
-        orchestration maps them to ``reconciliation_failed`` — the INDEPENDENT read-failure
-        semantics Amendment §4 requires (NEVER ``confirmed_failure``). A 200 whose body
-        yields no string resource id returns an observation with ``resource_id=None`` (the
-        verifier refuses at gate 1 — ZERO fact, mirroring ``read``'s ``case_unverified``,
-        NOT a transport failure).
+Transport failures (401 / 403 / 404 / timeout / 5xx / a refused redirect / an
+unexpected non-200) raise ``ReadTransportError`` EXACTLY as ``read`` does, so the
+orchestration maps them to ``reconciliation_failed`` — the INDEPENDENT read-failure
+semantics Amendment requires (NEVER ``confirmed_failure``). A 200 whose body
+yields no string resource id returns an observation with ``resource_id=None`` (the
+verifier refuses at gate 1 — ZERO fact, mirroring ``read``'s ``case_unverified``,
+NOT a transport failure).
 
-        ``observed_instance`` / ``observed_tenant`` are ALWAYS ``None``: TheHive 4.1.24-1
-        ``OutputCase`` carries NEITHER an instance nor a tenant/organisation identity
-        (Amendment §11.3 / §12.1), so gate 5 FAILS CLOSED for every real read — no real
-        historical execution can reach ``confirmed_success`` until the §12 forward-binding
-        Amendment lands. This method NEVER back-fills them from the current config.
-        """
+``observed_instance`` / ``observed_tenant`` are ALWAYS ``None``: TheHive 4.1.24-1
+``OutputCase`` carries NEITHER an instance nor a tenant/organisation identity, so gate 5 FAILS CLOSED for every real read — no real
+historical execution can reach ``confirmed_success`` until the forward-binding
+Amendment lands. This method NEVER back-fills them from the current config.
+"""
         payload = self._read_creation_payload(request)
         if payload is None:
             # A 200 with a non-JSON / non-object body: NO string resource id was observed
-            # -> the verifier refuses at gate 1 (no_string_resource_id), ZERO fact. This
+            # > the verifier refuses at gate 1 (no_string_resource_id), ZERO fact. This
             # mirrors read()'s case_unverified (a refusal, never a transport failure, never
             # a fabricated id).
             return VerifiedReadResult(
@@ -426,7 +413,7 @@ class TheHiveReadAdapter(ReadAdapter):
 
         # IDENTITY observation — the string _id (fallback id) EXACTLY as observed, EVEN when
         # it does NOT match the persisted reference: the verifier (not this reader) adjudicates
-        # the match -> resource_id_mismatch. The numeric caseId is NEVER a substitute (M1 §4).
+        # the match -> resource_id_mismatch. The numeric caseId is NEVER a substitute.
         resource_id = payload.get("_id")
         if not isinstance(resource_id, str) or not resource_id:
             resource_id = payload.get("id")
@@ -460,29 +447,28 @@ class TheHiveReadAdapter(ReadAdapter):
             external_created_at=external_created_at,
             external_created_at_millis=external_created_at_millis,
             case_number=case_number,
-            # 4.1.24-1 OutputCase carries NO instance / tenant identity (Amendment §11.3 /
-            # §12.1) -> ALWAYS None -> gate 5 fails CLOSED for every real read.
+            # 4.1.24-1 OutputCase carries NO instance / tenant identity (Amendment /
+            # ) -> ALWAYS None -> gate 5 fails CLOSED for every real read.
             observed_instance=None,
             observed_tenant=None,
         )
 
     def _read_creation_payload(self, request: AdapterReadRequest) -> dict | None:
         """The single ``GET /api/case/{reference}`` for ``read_creation`` -> the parsed dict
-        body, or ``None`` when a 200 carried a non-JSON / non-object body (an observation the
-        verifier refuses at gate 1, mirroring ``read``'s ``case_unverified`` — ZERO fact, NOT a
-        transport failure). Raises ``ReadTransportError`` on ANY transport failure (timeout /
-        401 / 403 / 404 / 5xx / a refused redirect / an unexpected non-200) EXACTLY as the
-        frozen ``read`` does.
+body, or ``None`` when a 200 carried a non-JSON / non-object body (an observation the
+verifier refuses at gate 1, mirroring ``read``'s ``case_unverified`` — ZERO fact, NOT a
+transport failure). Raises ``ReadTransportError`` on ANY transport failure (timeout /
+401 / 403 / 404 / 5xx / a refused redirect / an unexpected non-200) EXACTLY as the
+``read`` does.
 
-        DELIBERATE MIRROR, NOT A REFACTOR (Amendment §11.4: "冻结 read() 保持不变"). ``read``
-        keeps its own inline GET sequence byte-identical; this helper mirrors ONLY the mechanical
-        try/except skeleton for ``read_creation``. EVERY security-critical decision is
-        SINGLE-SOURCED in the shared members BOTH paths call — the no-redirect ``self._transport``
-        (M2-R §4: a 3xx never carries Authorization cross-host), ``_on_http_error`` (the
-        401/403/404/5xx -> SAFE STATIC category mapping) and ``_sanitize`` (3.2.2 secret
-        redaction) — so the two GET paths can never drift on security semantics; only the
-        control-flow skeleton is duplicated.
-        """
+DELIBERATE MIRROR, NOT A REFACTOR (Amendment : "冻结 read() 保持不变"). ``read``
+keeps its own inline GET sequence byte-identical; this helper mirrors ONLY the mechanical
+try/except skeleton for ``read_creation``. EVERY security-critical decision is
+SINGLE-SOURCED in the shared members BOTH paths call — the no-redirect ``self._transport``, ``_on_http_error`` (the
+401/403/404/5xx -> SAFE STATIC category mapping) and ``_sanitize`` (3.2.2 secret
+redaction) — so the two GET paths can never drift on security semantics; only the
+control-flow skeleton is duplicated.
+"""
         reference = request.external_reference
         if not isinstance(reference, str) or not reference:
             # The orchestration short-circuits an UNKNOWN reference BEFORE the GET (gate 1
@@ -520,7 +506,7 @@ class TheHiveReadAdapter(ReadAdapter):
         if status != 200:
             # urllib raises HTTPError for 4xx/5xx, so a NON-raising non-200 is an unexpected
             # transport shape (an odd 2xx, or a stub returning one) — a read UNCERTAINTY, never
-            # a confirmed effect (identical discipline to the frozen read()).
+            # a confirmed effect (identical discipline to the read()).
             raise ReadTransportError(
                 self._sanitize(
                     f"thehive case creation read returned unexpected status {status}"
@@ -536,36 +522,36 @@ class TheHiveReadAdapter(ReadAdapter):
             return None
         return payload
 
-    # -- read-side identity / version evidence (M4-B, Amendment §12.2-B) -----
+    # read-side identity / version evidence -----
 
     def read_identity(self) -> IdentityEvidence:
-        """M4-B: probe the target instance's AUTHORITATIVE runtime version + the reader's
-        organisation / roles via TWO read-only GETs, for the read-side identity/version
-        evidence seam (Amendment §12.2-B). Returns a TYPED ``IdentityEvidence`` OBSERVATION
-        (NEVER a raw body, NEVER a verdict — ``verified.assess_identity_evidence`` adjudicates).
+        """B: probe the target instance's AUTHORITATIVE runtime version + the reader's
+organisation / roles via TWO read-only GETs, for the read-side identity/version
+evidence seam. Returns a TYPED ``IdentityEvidence`` OBSERVATION
+(NEVER a raw body, NEVER a verdict — ``verified.assess_identity_evidence`` adjudicates).
 
-        SOURCE-CERTIFIED endpoints (TheHive 4.1.24-1 = ``b6649bb``; ``/api/`` -> the v0 default
-        router, the SAME API the frozen ``read``'s ``/api/case/{id}`` uses):
+SOURCE-CERTIFIED endpoints (TheHive 4.1.24-1 = ``b6649bb``; ``/api/`` -> the v0 default
+router, the SAME API the ``read``'s ``/api/case/{id}`` uses):
 
-          - ``GET /api/status`` (PUBLIC) -> ``versions.TheHive``: the REAL RUNTIME version (a
-            liveness observation, NOT the config-declared ``THEHIVE_EXPECTED_VERSION``). The body
-            ALSO carries ``config.protectDownloadsWith`` (the attachment-ZIP password — a SECRET),
-            so this extracts ONLY the version field and NEVER returns / logs / persists the body.
-          - ``GET /api/user/current`` (AUTHENTICATED with the INDEPENDENT read-only key) ->
-            ``organisation`` + ``roles``: the READER's OWN tenant context and RBAC roles.
+- ``GET /api/status`` (PUBLIC) -> ``versions.TheHive``: the REAL RUNTIME version (a
+liveness observation, NOT the config-declared ``THEHIVE_EXPECTED_VERSION``). The body
+ALSO carries ``config.protectDownloadsWith`` (the attachment-ZIP password — a SECRET),
+so this extracts ONLY the version field and NEVER returns / logs / persists the body.
+- ``GET /api/user/current`` (AUTHENTICATED with the INDEPENDENT read-only key) ->
+``organisation`` + ``roles``: the READER's OWN tenant context and RBAC roles.
 
-        ``GET /api/system`` is NOT assumed to exist (it does NOT in the 4.1.24-1 source) and is
-        NEVER probed. A base URL / config string is NEVER passed off as a real identity.
+``GET /api/system`` is NOT assumed to exist (it does NOT in the 4.1.24-1 source) and is
+NEVER probed. A base URL / config string is NEVER passed off as a real identity.
 
-        FAIL-CLOSED: ANY probe failure (timeout / 401 / 403 / 404 / 5xx / a refused redirect / a
-        non-JSON body / an absent field) yields the corresponding ``None`` field + an
-        ``unavailable`` probe kind — NEVER a raise that aborts the reconcile, NEVER a fabricated
-        identity. This is a READ (never a write / mutation / retry / poll). For 4.1.24-1 the
-        CASE-owned tenant / instance is UNOBSERVABLE (OutputCase has no organisation; /api/status
-        has no stable instance id), so the assessor keeps the gate-5 binding ``None`` — this seam
-        NEVER unlocks ``confirmed_success`` on its own. Shares the no-redirect transport (M2-R §4),
-        the HTTP-error discrimination and the secret sanitizer with ``read`` / ``read_creation``.
-        """
+FAIL-CLOSED: ANY probe failure (timeout / 401 / 403 / 404 / 5xx / a refused redirect / a
+non-JSON body / an absent field) yields the corresponding ``None`` field + an
+``unavailable`` probe kind — NEVER a raise that aborts the reconcile, NEVER a fabricated
+identity. This is a READ (never a write / mutation / retry / poll). For 4.1.24-1 the
+CASE-owned tenant / instance is UNOBSERVABLE (OutputCase has no organisation; /api/status
+has no stable instance id), so the assessor keeps the gate-5 binding ``None`` — this seam
+NEVER unlocks ``confirmed_success`` on its own. Shares the no-redirect transport,
+the HTTP-error discrimination and the secret sanitizer with ``read`` / ``read_creation``.
+"""
         version, version_probe = self._probe_status_version()
         organisation, roles, organisation_probe = self._probe_reader_organisation()
         return IdentityEvidence(
@@ -578,14 +564,13 @@ class TheHiveReadAdapter(ReadAdapter):
 
     def _identity_get(self, path: str) -> dict | None:
         """ONE read-only GET to an identity endpoint -> the parsed dict body, or ``None`` on ANY
-        failure. FAIL-CLOSED, NOT a raise: an identity-probe failure is INSUFFICIENT EVIDENCE
-        (the assessor keeps gate 5 closed), NEVER a transport error that aborts the reconcile and
-        NEVER a fabricated identity. Shares the no-redirect ``self._transport`` (M2-R §4: a 3xx
-        never carries Authorization cross-host) and NEVER returns / logs the raw body of
-        ``/api/status`` (it carries the attachment password) — only the caller-extracted field
-        survives. A timeout / 401 / 403 / 404 / 5xx / refused redirect / non-200 / non-JSON body
-        all yield ``None``.
-        """
+failure. FAIL-CLOSED, NOT a raise: an identity-probe failure is INSUFFICIENT EVIDENCE
+(the assessor keeps gate 5 closed), NEVER a transport error that aborts the reconcile and
+NEVER a fabricated identity. Shares the no-redirect ``self._transport`` and NEVER returns / logs the raw body of
+``/api/status`` (it carries the attachment password) — only the caller-extracted field
+survives. A timeout / 401 / 403 / 404 / 5xx / refused redirect / non-200 / non-JSON body
+all yield ``None``.
+"""
         url = f"{self._credentials.base_url}{path}"
         http_request = urllib.request.Request(
             url, headers=self._credentials.auth_headers(), method="GET"
@@ -608,9 +593,9 @@ class TheHiveReadAdapter(ReadAdapter):
 
     def _probe_status_version(self) -> tuple[str | None, str]:
         """``GET /api/status`` -> ``(versions.TheHive | None, probe-kind)``. Extracts ONLY the
-        version field; the raw body (which carries ``config.protectDownloadsWith``, the attachment
-        password) is NEVER returned / logged / persisted. ``None`` + ``unavailable`` on any failure
-        or an absent / non-string / empty version."""
+version field; the raw body (which carries ``config.protectDownloadsWith``, the attachment
+password) is NEVER returned / logged / persisted. ``None`` + ``unavailable`` on any failure
+or an absent / non-string / empty version."""
         payload = self._identity_get("/api/status")
         if payload is None:
             return None, IDENTITY_PROBE_UNAVAILABLE
@@ -624,10 +609,10 @@ class TheHiveReadAdapter(ReadAdapter):
 
     def _probe_reader_organisation(self) -> tuple[str | None, tuple[str, ...], str]:
         """``GET /api/user/current`` -> ``(organisation | None, roles, probe-kind)``. The READER's
-        OWN organisation (tenant context) + RBAC ``roles``, authenticated with the INDEPENDENT
-        read-only key (a 401 -> ``None`` + ``unavailable``, fail-closed). ``roles`` is sorted for a
-        stable observation; ``()`` when absent / non-iterable. NEVER the CASE's owner (unobservable
-        in 4.1.24-1), NEVER a base URL / config string."""
+OWN organisation (tenant context) + RBAC ``roles``, authenticated with the INDEPENDENT
+read-only key (a 401 -> ``None`` + ``unavailable``, fail-closed). ``roles`` is sorted for a
+stable observation; ``()`` when absent / non-iterable. NEVER the CASE's owner (unobservable
+in 4.1.24-1), NEVER a base URL / config string."""
         payload = self._identity_get("/api/user/current")
         if payload is None:
             return None, (), IDENTITY_PROBE_UNAVAILABLE
@@ -640,16 +625,16 @@ class TheHiveReadAdapter(ReadAdapter):
             roles = tuple(sorted(r for r in raw_roles if isinstance(r, str)))
         return organisation, roles, IDENTITY_PROBE_OBSERVED
 
-    # -- internals ---------------------------------------------------------
+    # internals ---------------------------------------------------------
 
     def _verify(
         self, request: AdapterReadRequest, payload: dict, status: object
     ) -> AdapterReadResult:
-        """Apply the identity + correlation + creation conjunction (M2 §5)."""
+        """Apply the identity + correlation + creation conjunction."""
         # 1. IDENTITY — the string resource id must EQUAL the persisted
-        #    reference. OutputCase guarantees _id == id, so "id" is a defensive
-        #    fallback for the SAME string; the numeric caseId is NEVER a
-        #    substitute (M1 §4).
+        # reference. OutputCase guarantees _id == id, so "id" is a defensive
+        # fallback for the SAME string; the numeric caseId is NEVER a
+        # substitute.
         resource_id = payload.get("_id")
         if not isinstance(resource_id, str) or not resource_id:
             resource_id = payload.get("id")
@@ -662,26 +647,26 @@ class TheHiveReadAdapter(ReadAdapter):
             return _unverified("resource_id_mismatch", status)
 
         # 2. CORRELATION — the case must carry THIS execution's tag. Without it
-        #    the resource is not provably the one THIS execution created.
+        # the resource is not provably the one THIS execution created.
         if not _tags_carry_execution(payload.get("tags"), request.execution_id):
             return _unverified("missing_execution_correlation_tag", status)
 
-        # 3. CREATION EFFECT (design §5.2 gate 3 — MANDATORY; M2-R §3 unifies the
-        #    code to the frozen design). createdAt is the authoritative creation
-        #    time (epoch millis -> observed_at). A MISSING / INVALID / absurd
-        #    createdAt yields None, which NO LONGER verifies: without an
-        #    authenticated creation time the read cannot independently prove "THIS
-        #    execution created THIS case" (a same-id case from history, or one whose
-        #    correlation tag was re-attached, would otherwise pass on identity +
-        #    correlation alone — the reviewer's ten-year-old-re-tagged-case probe).
-        #    Third AND gate: absent it -> case_unverified (reason=missing_created_at,
-        #    matching design §5.2), REFUSED downstream, ZERO fact. observed_at (the
-        #    EXTERNAL creation time) stays deliberately distinct from a SERVER
-        #    observation time — the reader never substitutes "now" for the historical
-        #    creation time and never lets an absent/early time gain a sorting
-        #    advantage. The stricter createdAt-vs-DISPATCH-time / instance / tenant
-        #    correlation needs the immutable dispatch record carried on the frozen
-        #    AdapterReadRequest DTO -> deferred to the M2-R Amendment (§3 stop).
+        # 3. CREATION EFFECT (gate 3 — MANDATORY; M2-R unifies the
+        # code to the design). createdAt is the authoritative creation
+        # time (epoch millis -> observed_at). A MISSING / INVALID / absurd
+        # createdAt yields None, which NO LONGER verifies: without an
+        # authenticated creation time the read cannot independently prove "THIS
+        # execution created THIS case" (a same-id case from history, or one whose
+        # correlation tag was re-attached, would otherwise pass on identity +
+        # correlation alone — the reviewer's ten-year-old-re-tagged-case probe).
+        # Third AND gate: absent it -> case_unverified (reason=missing_created_at,
+        # matching ), REFUSED downstream, ZERO fact. observed_at (the
+        # EXTERNAL creation time) stays distinct from a SERVER
+        # observation time — the reader never substitutes "now" for the historical
+        # creation time and never lets an absent/early time gain a sorting
+        # advantage. The stricter createdAt-vs-DISPATCH-time / instance / tenant
+        # correlation needs the immutable dispatch record carried on the frozen
+        # AdapterReadRequest DTO -> deferred to the M2-R Amendment.
         observed_at = _created_at_to_datetime(payload.get("createdAt"))
         if observed_at is None:
             return _unverified("missing_created_at", status)
@@ -703,11 +688,10 @@ class TheHiveReadAdapter(ReadAdapter):
 
     def _on_http_error(self, exc: urllib.error.HTTPError) -> ReadTransportError:
         """Map an HTTP error to a ``ReadTransportError`` with a SAFE STATIC
-        category (M2 §5 discrimination). NO error body is parsed or carried — a
-        401/403/404/5xx is a READ FAILURE (-> ``reconciliation_failed``), NEVER
-        ``confirmed_failure`` and NEVER a fabricated effect. A 404 deliberately
-        merges "absent" and "tenant-invisible" (the TheHive ``visible`` design):
-        neither proves the creation failed."""
+category. NO error body is parsed or carried — a
+401/403/404/5xx is a READ FAILURE (-> ``reconciliation_failed``), NEVER
+``confirmed_failure`` and NEVER a fabricated effect. A 404 merges "absent" and "tenant-invisible" (the TheHive ``visible`` design):
+neither proves the creation failed."""
         status = exc.code
         if status == 401:
             category = "authentication_failure"
@@ -726,5 +710,5 @@ class TheHiveReadAdapter(ReadAdapter):
 
     def _sanitize(self, text: str) -> str:
         """Strip any secret value from a message before it can surface in a
-        raised exception (3.2.2 boundary, mirrors the write adapter)."""
+raised exception (3.2.2 boundary, mirrors the write adapter)."""
         return redact_text(text, current_secret_values())

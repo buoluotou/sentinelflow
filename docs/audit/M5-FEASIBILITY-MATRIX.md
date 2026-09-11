@@ -1,5 +1,9 @@
 # SentinelFlow M5 — Feasibility / Validation Matrix
 
+> **Historical snapshot (M5 baseline).** The environment facts, test counts and
+> Alembic head below are from that round; the current suite is larger and the
+> Alembic head has moved on. Read this as a dated record, not current state.
+
 > Purpose (§15/§17/§18): record what was **actually verified**, on **which environment**, with **what evidence** — and mark everything this machine cannot run as **UNVERIFIED**. No "theoretically supported" is reported as PASS. Demo Mode is prioritized to a real PASS wherever this host allows.
 >
 > Rule: **PASS** = executed here with captured output. **UNVERIFIED** = required tooling/OS absent on this host. **N/A** = intentionally not applicable.

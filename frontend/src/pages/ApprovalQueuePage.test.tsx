@@ -1,6 +1,6 @@
-/** Step 13.5: ApprovalQueuePage unit tests (jsdom, fetch mocked).
+/* * ApprovalQueuePage unit tests (jsdom, fetch mocked).
  *
- * Locks the frozen UI contract of the Step 13.3 backend projection:
+ * Locks the UI contract of the backend projection:
  * GET /approvals is the ONLY queue source (rendered as-is, never re-sorted,
  * never recomputed), approve/reject POST { reviewer, review_comment } only
  * (never reviewed_at), 201 -> local removal, 409 -> server queue re-fetched

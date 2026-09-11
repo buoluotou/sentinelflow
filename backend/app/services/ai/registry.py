@@ -1,11 +1,11 @@
-"""Provider registry: settings -> configured AIProvider (Phase 2 Step 9).
+"""Provider registry: settings -> configured AIProvider.
 
 Business code calls create_provider(settings) and only ever sees the
 AIProvider contract — the concrete model (mock / local Ollama / any cloud
 endpoint) is a deployment decision living in .env:
 
-    AI_PROVIDER=mock|ollama|openai_compatible|cloud
-    AI_MODEL, AI_BASE_URL, AI_API_KEY
+AI_PROVIDER=mock|ollama|openai_compatible|cloud
+AI_MODEL, AI_BASE_URL, AI_API_KEY
 
 "cloud" is an alias of openai_compatible (same protocol, different
 deployment). Defaults to mock so the platform always runs, even air-gapped.
@@ -17,8 +17,8 @@ from app.services.ai.mock import MockProvider
 from app.services.ai.ollama import OllamaProvider
 from app.services.ai.openai_compatible import OpenAICompatibleProvider
 
-#: Names accepted in AI_PROVIDER; "cloud" is a deployment alias of the
-#: OpenAI-compatible protocol, not a separate implementation.
+# Names accepted in AI_PROVIDER; "cloud" is a deployment alias of the
+# OpenAI-compatible protocol, not a separate implementation.
 PROVIDER_NAMES = ("mock", "ollama", "openai_compatible", "cloud")
 
 

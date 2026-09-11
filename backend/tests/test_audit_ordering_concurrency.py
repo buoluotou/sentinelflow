@@ -1,16 +1,16 @@
-"""RC2 / H-2 — audit ordering under concurrency (no process-global clock state).
+"""Audit ordering under concurrency (no process-global clock state).
 
-Pre-RC2 the audit clock was a process-global high-water mark
+An earlier implementation stamped rows from a process-global high-water mark
 (``_LAST_AUDIT_STAMP``): not thread-safe (a read-modify-write race could give
-two rows the SAME stamp) and per-process only, and the frozen
-``(created_at, id)`` tie-break degraded to a random-uuid lottery. RC2 moves
-ordering to the DATABASE + an insert-ordered uuid7 id:
+two rows the same stamp) and per-process only, so the
+``(created_at, id)`` tie-break degraded to a random-uuid lottery. Ordering now
+comes from the database plus an insert-ordered uuid7 id:
 
-- ``created_at`` is stamped by the DATABASE at INSERT (SQLite keeps
-  second-precision ``CURRENT_TIMESTAMP`` — the hardest tie case — while
-  PostgreSQL production uses ``clock_timestamp()``, migration 0014);
+- ``created_at`` is stamped by the database at INSERT (SQLite keeps
+second-precision ``CURRENT_TIMESTAMP`` — the hardest tie case — while
+PostgreSQL production uses ``clock_timestamp()``, migration 0014);
 - ``id`` (``app.core.ids.uuid7``) is strictly increasing within the writing
-  process, so a ``created_at`` tie resolves to the TRUE insertion order.
+process, so a ``created_at`` tie resolves to the true insertion order.
 
 This module proves the local properties: the uuid7 contract itself, rapid
 consecutive writes on the hardest (second-precision) dialect, interleaved
@@ -63,7 +63,7 @@ def _append_row(session: Session, execution_id, decision: str, marker: int) -> N
 def _assert_chain_ordered(session: Session, execution_id, expected: list[int]) -> None:
     rows = _rows_for_execution(session, execution_id)  # created_at DESC, id DESC
     assert [r.detail["i"] for r in rows] == list(reversed(expected))
-    # non-decreasing timestamps and STRICTLY increasing insert-ordered ids
+    # non-decreasing timestamps and strictly increasing insert-ordered ids
     ascending = list(reversed(rows))
     stamps = [r.created_at for r in ascending]
     assert all(a <= b for a, b in zip(stamps, stamps[1:]))
@@ -71,9 +71,9 @@ def _assert_chain_ordered(session: Session, execution_id, expected: list[int]) -
     assert all(a < b for a, b in zip(ids, ids[1:]))
 
 
-# --------------------------------------------------------------------------
+#
 # The uuid7 contract itself
-# --------------------------------------------------------------------------
+#
 class TestUuid7Contract:
     def test_burst_is_strictly_increasing_and_well_formed(self):
         ids = [uuid7() for _ in range(10_000)]
@@ -84,11 +84,11 @@ class TestUuid7Contract:
     def test_clock_regression_is_clamped_not_reordered(self, monkeypatch):
         saved_last, saved_counter = ids_module._LAST_MS, ids_module._COUNTER
         try:
-            fixed_ns = 1_800_000_000_000_000_000  # far future for the frozen clock
+            fixed_ns = 1_800_000_000_000_000_000  # far-future value for the patched clock
             monkeypatch.setattr(ids_module.time, "time_ns", lambda: fixed_ns)
             first = uuid7()
             second = uuid7()
-            # the wall clock steps BACKWARD by 5 seconds — the generator must
+            # the wall clock steps backward by 5 seconds — the generator must
             # keep minting strictly greater ids (counter path, clamped ms)
             monkeypatch.setattr(
                 ids_module.time, "time_ns", lambda: fixed_ns - 5_000_000_000
@@ -100,14 +100,14 @@ class TestUuid7Contract:
             ids_module._COUNTER = saved_counter
 
 
-# --------------------------------------------------------------------------
+#
 # Rapid consecutive writes on the hardest (second-precision) dialect
-# --------------------------------------------------------------------------
+#
 class TestRapidWrites:
     def test_insertion_order_survives_second_precision_ties(self, file_engine):
         """300 rows written in one burst: SQLite stamps them all with (at most)
-        one-second precision — the uuid7 tie-break alone must reconstruct the
-        exact insertion order."""
+one-second precision — the uuid7 tie-break alone must reconstruct the
+exact insertion order."""
         session = Session(file_engine)
         execution_id = uuid.uuid4()
         total = 300
@@ -137,16 +137,16 @@ class TestRapidWrites:
             session.close()
 
 
-# --------------------------------------------------------------------------
+#
 # Interleaved sessions and parallel threads
-# --------------------------------------------------------------------------
+#
 class TestConcurrentWriters:
     def test_two_sessions_interleave_chains_without_cross_contamination(
         self, file_engine
     ):
-        """Two sessions alternate write BATCHES (each committing before the
-        other resumes — SQLite is single-writer by nature), interleaving two
-        chains: each chain must still reconstruct its own order."""
+        """Two sessions alternate write batches (each committing before the
+other resumes — SQLite is single-writer by nature), interleaving two
+chains: each chain must still reconstruct its own order."""
         first, second = Session(file_engine), Session(file_engine)
         chain_a, chain_b = uuid.uuid4(), uuid.uuid4()
         expected_a, expected_b = [], []
@@ -177,8 +177,8 @@ class TestConcurrentWriters:
 
     def test_threaded_writers_keep_each_chain_ordered(self, file_engine):
         """Multiple threads (the multi-session / multi-worker-equivalent shape)
-        write independent chains in parallel: every chain must reconstruct its
-        OWN insertion order, with no loss and no duplicates across writers."""
+write independent chains in parallel: every chain must reconstruct its
+own insertion order, with no loss and no duplicates across writers."""
         threads_count, per_thread = 3, 25
         chains: dict[int, uuid.UUID] = {}
         errors: list[str] = []

@@ -1,45 +1,45 @@
-"""Execution Policy (Phase 3.3.2, design B-3).
+"""Execution Policy.
 
 The Policy answers exactly one question the Guard does not ask:
 
     Guard  = "Is this execution structurally and permission-wise legal?"
-    Policy = "Even though it is legal, is it ALLOWED right now?"
+    Policy = "Even though it is legal, is it allowed right now?"
 
-Position in the frozen chain (B-3):
+Position in the chain:
 
     Execute Intent -> Approval -> Guard -> Execution Policy -> Executor
 
-State semantics stay frozen: a Policy refusal produces NO new state —
-the verdict lands as ``requested -> guard_rejected`` exactly like a
-Guard refusal, distinguished only by the audit detail's provenance:
+A Policy refusal produces no new state: the verdict lands as
+``requested -> guard_rejected`` exactly like a Guard refusal,
+distinguished only by the audit detail's provenance:
 
     Guard refusal    detail.source = "guard"
     Policy refusal   detail.source = "policy"   (this module)
 
-Frozen discipline (mirrors guard.py):
+Discipline (mirrors guard.py):
 
-- Pure decision: the Policy NEVER touches the database — no add, no
+- Pure decision: the Policy never touches the database — no add, no
   flush, no commit, no rollback. Appending the guard_rejected row is
-  the Execute Service's job (same transaction, D13 lineage).
+  the Execute Service's job, in the same transaction.
 - Read-only on risk: the Policy consumes the server-side risk fact
-  (EventRisk.score, loaded by the Service) and NEVER recomputes risk,
+  (EventRisk.score, loaded by the Service) and never recomputes risk,
   never writes EventRisk / Incident / Recommendation / Approval.
 - Server-side facts only: PolicyContext carries no client-controlled
   field. The request schema accepts no risk / severity / timestamp,
   so a forged client value has no channel into this module.
 - Deterministic: the verdict is a pure function of (context, config,
-  now). ``now`` is always the SERVER clock (the Service stamps it via
+  now). ``now`` is always the server clock (the Service stamps it via
   datetime.now(timezone.utc)); naive datetimes are treated as UTC.
-  The Policy time basis is UTC — never the deployment host's local
+  The Policy time basis is UTC, never the deployment host's local
   timezone, so one policy gives one verdict on every machine.
-- Disabled means ALLOW: EXECUTION_POLICY_ENABLED=false short-circuits
+- Disabled means allow: EXECUTION_POLICY_ENABLED=false short-circuits
   to an allow decision. It never disables the Guard, RBAC or approval
   checks — Policy off is not a security bypass.
-- The Executor is NEVER called from here; a refusal must reach the
+- The Executor is never called from here; a refusal must reach the
   caller before dispatch so Executor.execute() stays at zero calls.
 
-First-version rule set (frozen, configuration-driven from .env ->
-Settings; no database rules, no DSL, no online editor, no AI):
+Rule set (configuration-driven from .env -> Settings; no database
+rules, no DSL, no online editor, no AI):
 
     A. Time window — execute only inside [start, end) UTC.
     B. Risk threshold — each action needs a minimum server-side risk
@@ -55,23 +55,23 @@ from typing import Mapping
 
 from app.services.executions.guard import EXECUTABLE_ACTIONS
 
-#: Frozen policy rejection-code vocabulary. A rejected PolicyDecision
-#: carries exactly one; the guard_rejected row's detail records it
-#: verbatim alongside source="policy" (3.3.2.4 service integration).
+# The closed set of policy rejection codes. A rejected PolicyDecision
+# carries exactly one; the guard_rejected row's detail records it
+# verbatim alongside source="policy".
 POLICY_REJECTION_CODES = frozenset(
     {"outside_execution_window", "risk_threshold_not_met"}
 )
 
-#: detail.source discriminator — lets the audit trail split
-#: guard_rejected rows into source=guard vs source=policy without any
-#: state-machine change (B-3 compatibility requirement).
+# detail.source discriminator — lets the audit trail split
+# guard_rejected rows into source=guard vs source=policy without any
+# change to the state machine.
 POLICY_SOURCE = "policy"
 
 _HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 
 
 class PolicyViolation(Exception):
-    """A malformed policy CONFIGURATION — a deployment fault, never a
+    """A malformed policy configuration — a deployment fault, never a
     business rejection. Raised at policy construction; the Service
     layer maps it fail-closed (a broken policy never silently becomes
     an allow). Business refusals are PolicyDecision objects, never
@@ -82,16 +82,16 @@ class PolicyViolation(Exception):
 class PolicyDecision:
     """The verdict of one policy evaluation — allow or refuse.
 
-    The Policy returns this object; it NEVER writes a log row itself.
+    The Policy returns this object; it never writes a log row itself.
     On refusal the Execute Service appends the guard_rejected row with
     ``detail = decision.detail()`` (source / code / reason)."""
 
     allowed: bool
     code: str = ""
     reason: str = ""
-    #: Every policy decision is provenance-tagged "policy"; the audit
-    #: query splits guard_rejected on this value. init=False makes it a
-    #: frozen constant — no constructor can ever forge another source.
+    # Every policy decision is provenance-tagged "policy"; the audit
+    # query splits guard_rejected on this value. init=False makes it a
+    # constant — no constructor can ever forge another source.
     source: str = field(init=False, default=POLICY_SOURCE)
 
     @classmethod
@@ -101,7 +101,7 @@ class PolicyDecision:
 
     @classmethod
     def reject(cls, code: str, reason: str) -> "PolicyDecision":
-        """A refusal; the code must belong to the frozen vocabulary."""
+        """A refusal; the code must be one of POLICY_REJECTION_CODES."""
         if code not in POLICY_REJECTION_CODES:
             raise PolicyViolation(f"Unknown policy rejection code: {code!r}")
         return cls(allowed=False, code=code, reason=reason)
@@ -115,7 +115,7 @@ class PolicyDecision:
         return {"source": self.source, "code": self.code, "reason": self.reason}
 
 
-#: The always-allow verdict for the disabled-policy short-circuit.
+# The always-allow verdict for the disabled-policy short-circuit.
 ALLOW = PolicyDecision.allow()
 
 
@@ -125,21 +125,20 @@ class PolicyContext:
 
     Built by the Execute Service from entities it already loaded:
     the approved recommendation's action snapshot and the event's
-    EventRisk. Contains NO client-controlled field — the request
+    EventRisk. Contains no client-controlled field — the request
     schema (extra="forbid") accepts no risk / severity / timestamp,
     so forged client values have no channel in.
 
     ``risk_score`` is the authoritative live value (EventRisk.score);
     Incident.risk_score is only a creation-time snapshot and is never
-    consulted. None means the event has NO risk fact yet — that is
+    consulted. None means the event has no risk fact yet — that is
     fail-closed (refuse), never treated as a passing zero."""
 
     action: str
     risk_score: int | None = None
 
 
-#: Frozen first-version risk thresholds — the minimum server-side risk
-#: score each executable action requires (design §3.3.2 rule B).
+# Minimum server-side risk score each executable action requires.
 DEFAULT_MIN_RISK_BY_ACTION = MappingProxyType(
     {
         "block_source_ip": 70,
@@ -167,8 +166,7 @@ def parse_hhmm(value: str, field_name: str) -> time:
 class ExecutionPolicy:
     """Deterministic, configuration-driven execution policy.
 
-    First version freezes exactly two rules (evaluated in order, first
-    refusal wins):
+    Evaluates exactly two rules, in order, first refusal wins:
 
         A. Time window   — server-time-of-day in [window_start,
                            window_end), UTC. Start bound is inclusive,
@@ -179,24 +177,25 @@ class ExecutionPolicy:
 
     Construction validates the whole configuration eagerly: a
     PolicyViolation at build time means the deployment never runs with
-    a half-understood policy."""
+    a partially valid policy."""
 
-    #: Policy off = every evaluation returns ALLOW (never a bypass of
-    #: Guard / RBAC / approval — those live outside this module).
+    # Policy off = every evaluation returns the ALLOW verdict (never a
+    # bypass of Guard / RBAC / approval — those live outside this
+    # module).
     enabled: bool = False
-    #: Window bounds, UTC. Defaults encode business hours 09:00-18:00.
+    # Window bounds, UTC. Defaults encode business hours 09:00-18:00.
     window_start: str = "09:00"
     window_end: str = "18:00"
-    #: action -> minimum required risk score; keys must be executable
-    #: actions, values integers in [0, 100]. Actions absent from the
-    #: mapping carry no risk requirement.
+    # action -> minimum required risk score; keys must be executable
+    # actions, values integers in [0, 100]. Actions absent from the
+    # mapping carry no risk requirement.
     min_risk_by_action: Mapping[str, int] = field(
         default_factory=lambda: DEFAULT_MIN_RISK_BY_ACTION
     )
 
     def __post_init__(self) -> None:
-        # Eager validation — parsed bounds and the frozen threshold map
-        # become instance state; every error is a PolicyViolation.
+        # Eager validation — parsed bounds and the threshold map become
+        # instance state; every error is a PolicyViolation.
         object.__setattr__(
             self, "_window_start_time", parse_hhmm(self.window_start, "window_start")
         )
@@ -225,7 +224,7 @@ class ExecutionPolicy:
             self, "_min_risk", MappingProxyType(dict(thresholds))
         )
 
-    # -- evaluated bounds (parsed once at construction) -----------------
+    # evaluated bounds (parsed once at construction) -----------------
 
     @property
     def window_start_time(self) -> time:
@@ -235,14 +234,14 @@ class ExecutionPolicy:
     def window_end_time(self) -> time:
         return self._window_end_time
 
-    # -- evaluation ------------------------------------------------------
+    # evaluation ------------------------------------------------------
 
     def evaluate(
         self, context: PolicyContext, now: datetime
     ) -> PolicyDecision:
         """Pure verdict: (context, config, now) -> allow / refuse.
 
-        ``now`` is the SERVER time supplied by the Execute Service
+        ``now`` is the server time supplied by the Execute Service
         (datetime.now(timezone.utc)); a naive datetime is treated as
         UTC. Client-supplied timestamps have no path here — the time
         basis is always the server clock converted to UTC."""
@@ -297,16 +296,14 @@ def evaluate_execution_policy(
 
 def policy_from_settings(settings) -> ExecutionPolicy:
     """Build the deployment's ExecutionPolicy from application settings
-    (Phase 3.3.2.4 — .env -> Settings -> Policy Config; no database
-    rules, no DSL).
+    (.env -> Settings -> Policy Config; no database rules, no DSL).
 
-    Structural typing on purpose: this module never imports the config
-    layer — any object exposing the EXECUTION_POLICY_* attributes
-    works, which keeps the decision model pure and directly testable.
-    Malformed values raise PolicyViolation EAGERLY (fail-closed: a
-    broken policy never silently becomes an allow), even when the
-    policy is disabled — the configuration is validated the moment it
-    is read."""
+    Structural typing: this module never imports the config layer — any
+    object exposing the EXECUTION_POLICY_* attributes works, which
+    keeps the decision model pure and directly testable. Malformed
+    values raise PolicyViolation eagerly (fail-closed: a broken policy
+    never silently becomes an allow), even when the policy is disabled
+    — the configuration is validated the moment it is read."""
     return ExecutionPolicy(
         enabled=bool(settings.EXECUTION_POLICY_ENABLED),
         window_start=str(settings.EXECUTION_POLICY_WINDOW_START),
@@ -328,8 +325,8 @@ def policy_from_settings(settings) -> ExecutionPolicy:
 
 def _to_utc(moment: datetime) -> datetime:
     """Normalize the server clock to UTC. Aware datetimes convert;
-    naive ones are treated as UTC (frozen time basis — never the host's
-    local timezone)."""
+    naive ones are treated as UTC — the time basis is UTC, never the
+    host's local timezone."""
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)

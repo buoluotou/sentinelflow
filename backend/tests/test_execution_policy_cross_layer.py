@@ -1,15 +1,15 @@
-"""Phase 3.3.2.6: Cross-layer regression — the Execution Policy proven
+"""Cross-layer regression — the Execution Policy proven
 inside the REAL chain, end to end:
 
     Token -> Operator / RBAC -> Approval -> Guard -> Policy
     -> ResponseExecutor -> ExecutionLog
 
-This suite deliberately does NOT re-test pure policy unit logic
+This suite does NOT re-test pure policy unit logic
 (3.3.2.1) or the Service seam in isolation (3.3.2.4). Every journey
 runs through the REAL production stack — real HTTP API, real operator
 authentication, real Service, real Guard, real policy_from_settings
 (.env -> Settings), real adapters (Mock registry-produced; Shuffle /
-Wazuh / TheHive through their frozen offline transport seam), real DB.
+Wazuh / TheHive through their offline transport seam), real DB.
 
 Journeys (acceptance gate):
 1. Policy Allow    approved -> RBAC pass -> Guard pass -> Policy allow
@@ -58,7 +58,7 @@ from app.services.executions.shuffle import ShuffleExecutor
 from app.services.executions.thehive import TheHiveExecutor
 from app.services.executions.wazuh import WazuhExecutor
 
-# M4-G §2: the real-adapter journeys below drive RECOGNIZED external adapters
+# the real-adapter journeys below drive RECOGNIZED external adapters
 # (shuffle / wazuh / thehive) over HTTP, so the fail-closed durable-store gate
 # now requires a store before the external request. Inject the no-DB FakeStore so
 # these journeys take the REAL durable path; the mock journey stays on the legacy
@@ -75,9 +75,9 @@ OPERATORS_JSON = json.dumps(
 )
 
 
-# --------------------------------------------------------------------------
+#
 # Deterministic server clock (Policy judges SERVER time only)
-# --------------------------------------------------------------------------
+#
 class _FrozenDatetime:
     fixed = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -96,9 +96,9 @@ def frozen_server_clock(monkeypatch):
     yield
 
 
-# --------------------------------------------------------------------------
+#
 # Deployment fixtures: auth paths + policy switch
-# --------------------------------------------------------------------------
+#
 @pytest.fixture()
 def legacy_auth(monkeypatch):
     """Legacy EXECUTION_TOKEN path (must traverse the Policy too)."""
@@ -115,8 +115,8 @@ def operator_auth(monkeypatch):
 
 @pytest.fixture()
 def policy_on(monkeypatch):
-    """Policy enabled, window open around the frozen 10:00 instant,
-    default frozen thresholds. Journeys narrow the window / risk per
+    """Policy enabled, window open around the 10:00 instant,
+    default thresholds. Journeys narrow the window / risk per
     case via extra monkeypatching."""
     monkeypatch.setattr(settings, "EXECUTION_POLICY_ENABLED", True)
     monkeypatch.setattr(settings, "EXECUTION_POLICY_WINDOW_START", "00:00")
@@ -138,9 +138,9 @@ def app():
     return fastapi_app
 
 
-# --------------------------------------------------------------------------
-# Seeding: complete Phase 1+2 world (event + risk + incident + approval)
-# --------------------------------------------------------------------------
+#
+# Seeding: complete +2 world (event + risk + incident + approval)
+#
 def seed_world(
     db_session,
     *,
@@ -203,7 +203,7 @@ def seed_world(
 
 
 def world_snapshot(db_session, world) -> dict:
-    """Byte-level capture of every Phase 2/3.1 entity the Policy must
+    """Byte-level capture of every /3.1 entity the Policy must
     never touch."""
     approval, recommendation = world["approval"], world["recommendation"]
     db_session.expire_all()
@@ -266,7 +266,7 @@ def assert_world_unchanged(db_session, world, before: dict) -> None:
         ),
     }
     assert after == before
-    # No NEW Phase 2/3.1 entities may appear either.
+    # No NEW /3.1 entities may appear either.
     assert len(db_session.scalars(select(EventRisk)).all()) == (1 if risk else 0)
     assert len(db_session.scalars(select(Incident)).all()) == 1
     assert len(db_session.scalars(select(AIResponseRecommendation)).all()) == 1
@@ -287,9 +287,9 @@ def execute_body(approval) -> dict:
     return {"execution_id": str(uuid.uuid4()), "approval_id": str(approval.id)}
 
 
-# --------------------------------------------------------------------------
+#
 # Zero-call canary executor (proves refusal stops BEFORE the adapter)
-# --------------------------------------------------------------------------
+#
 class CanaryExecutor:
     name = "canary"
 
@@ -320,9 +320,9 @@ class CanaryExecutor:
         }
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Policy Allow journey: full chain to succeeded
-# --------------------------------------------------------------------------
+#
 class TestPolicyAllowChain:
     def test_legacy_token_full_chain_succeeds(
         self, client, db_session, legacy_auth, policy_on
@@ -374,9 +374,9 @@ class TestPolicyAllowChain:
         assert db_session.query(ExecutionLog).count() == 0
 
 
-# --------------------------------------------------------------------------
+#
 # 2/5. Policy Reject journeys + dual-policy ordering
-# --------------------------------------------------------------------------
+#
 class TestPolicyRejectChains:
     def test_time_denied_with_risk_passed(
         self, client, db_session, legacy_auth, policy_on, monkeypatch, app
@@ -481,9 +481,9 @@ class TestPolicyRejectChains:
         assert body["chain"] == ["requested", "dispatched", "succeeded"]
 
 
-# --------------------------------------------------------------------------
+#
 # 7. Real adapter chains: Mock / Shuffle / Wazuh / TheHive
-# --------------------------------------------------------------------------
+#
 class _StubResponse:
     def __init__(self, status: int, body: bytes):
         self.status = status
@@ -621,7 +621,7 @@ class TestRealAdapterChains:
 
         # TheHive 4.1.24-1 v0 OutputCase shape: "_id"/"id" (the string
         # resource reference) + "caseId" (Int number). It never emits
-        # "case_id" (G3/G5 doc §3/§4).
+        # "case_id".
         allow_stub = StubTransport(
             payload={"_id": "case-1", "id": "case-1", "caseId": 1}
         )

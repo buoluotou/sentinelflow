@@ -1,4 +1,4 @@
-"""Phase 1 Step 7.5: Dashboard summary API tests.
+"""Dashboard summary API tests.
 
 GET /api/v1/dashboard/summary aggregates everything the React Console
 home page needs in ONE backend call — no new tables, pure real-time
@@ -47,7 +47,7 @@ def _seed_alert(db_session, group: AlertGroup, created_at: datetime) -> Alert:
     return alert
 
 
-# ---------------------------------------------------------------- empty db
+# empty db
 
 
 def test_empty_dashboard_is_all_zeros(client):
@@ -64,12 +64,12 @@ def test_empty_dashboard_is_all_zeros(client):
     }
 
 
-# ------------------------------------------------------- risk distribution
+# risk distribution
 
 
 def test_risk_distribution_counts_event_risk_levels(client, db_session):
     """5 events: 2 high + 1 critical + 2 medium -> {critical:1, high:2,
-    medium:2, low:0}; an event WITHOUT risk contributes nothing."""
+medium:2, low:0}; an event WITHOUT risk contributes nothing."""
     levels = ["high", "high", "critical", "medium", "medium"]
     for i, level in enumerate(levels):
         group = _seed_group(db_session, f"{i:064d}", severity="high")
@@ -98,7 +98,7 @@ def test_today_events_excludes_yesterday(client, db_session):
     assert body["today_events"] == 0
 
 
-# ------------------------------------------------------------- today alerts
+# today alerts
 
 
 def test_today_alerts_counts_only_today(client, db_session):
@@ -115,11 +115,11 @@ def test_today_alerts_counts_only_today(client, db_session):
     assert client.get("/api/v1/dashboard/summary").json()["today_alerts"] == 3
 
 
-# ----------------------------------------------------- incident aggregates
+# incident aggregates
 
 
 def test_auto_created_incident_increments_open_incidents(client):
-    """The Step 7.4 pipeline: risk >= 70 -> incident -> dashboard +1."""
+    """The pipeline: risk >= 70 -> incident -> dashboard +1."""
     payload = {
         "source": "scenario-simulator",
         "event_type": "malicious_ioc",

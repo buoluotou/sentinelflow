@@ -1,7 +1,7 @@
-"""Phase 3.1.7: Execution API tests — the first HTTP surface of the
+"""Execution API tests — the first HTTP surface of the
 response-execution layer.
 
-Locks the frozen HTTP contract:
+Locks the HTTP contract:
 
     HTTP Auth -> Request Schema -> Service
 
@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from app.api.v1 import response_execution as api_module
 from app.api.v1.response_execution import get_response_executor
@@ -61,9 +61,9 @@ def app():
     return fastapi_app
 
 
-# --------------------------------------------------------------------------
+#
 # Seeding + executor stubs
-# --------------------------------------------------------------------------
+#
 def seed_approval(db_session, *, status="approved") -> AIResponseApproval:
     now = datetime.now(timezone.utc)
     group = AlertGroup(
@@ -162,9 +162,9 @@ def post_execute(client, auth, approval, execution_id=None, **overrides):
     return client.post(EXECUTE, json=execute_body(approval, execution_id, **overrides), headers=auth)
 
 
-# --------------------------------------------------------------------------
+#
 # 401 — write-path auth (zero rows, uniform status, fail-closed)
-# --------------------------------------------------------------------------
+#
 class TestWritePathAuth:
     def test_missing_token_401_and_zero_rows(self, client, db_session, auth):
         approval = seed_approval(db_session)
@@ -220,9 +220,9 @@ class TestWritePathAuth:
         assert response.status_code == 401
 
 
-# --------------------------------------------------------------------------
+#
 # 422 — schema boundary: every smuggling attempt dies before the Service
-# --------------------------------------------------------------------------
+#
 class TestSchemaSmuggling:
     @pytest.mark.parametrize(
         "smuggled_field",
@@ -281,9 +281,9 @@ class TestSchemaSmuggling:
         assert all_rows(db_session) == []
 
 
-# --------------------------------------------------------------------------
+#
 # POST /executions — the 201 semantics (fact formed, verdict varies)
-# --------------------------------------------------------------------------
+#
 class TestExecuteEndpoint:
     def test_201_succeeded_full_chain(self, client, db_session, auth):
         approval = seed_approval(db_session)
@@ -305,7 +305,7 @@ class TestExecuteEndpoint:
         assert body["target"] == "203.0.113.10"
         assert len(body["history"]) == 3
         assert body["history"][0]["detail"]["comment"] == "contain the brute force"
-        # H-2 frozen clause: database-stamped times are non-decreasing (ties
+        # H-2 clause: database-stamped times are non-decreasing (ties
         # allowed) and the chain order is deterministic — resolved by the
         # insert-ordered uuid7 id, never a random uuid4 lottery.
         stamps = [row["created_at"] for row in body["history"]]
@@ -383,9 +383,9 @@ class TestExecuteEndpoint:
         assert {str(row.approval_id) for row in rows} == {str(approval_a.id)}
 
 
-# --------------------------------------------------------------------------
+#
 # POST /executions/compensate
-# --------------------------------------------------------------------------
+#
 class TestCompensateEndpoint:
     def _execute_first(self, client, db_session, auth, approval):
         execution_id = uuid.uuid4()
@@ -531,9 +531,9 @@ class TestCompensateEndpoint:
         assert last_detail["code"] == "executor_unsupported"
 
 
-# --------------------------------------------------------------------------
+#
 # GET — read-only audit views, no token
-# --------------------------------------------------------------------------
+#
 class TestReadEndpoints:
     def test_list_empty(self, client, db_session, auth):
         seed_approval(db_session)
@@ -583,7 +583,7 @@ class TestReadEndpoints:
         assert directions[str(compensation_id)] == "compensate"
 
     def test_list_most_recent_activity_first(self, client, db_session, auth):
-        """Design §10 frozen read order: the chain with the latest
+        """Design read order: the chain with the latest
         activity leads the page (the compensation settled last)."""
         approval = seed_approval(db_session)
         original_id = uuid.uuid4()
@@ -608,7 +608,7 @@ class TestReadEndpoints:
 
     def test_list_filters_status_direction_approval_id(self, client, db_session, auth):
         """Filters narrow the derived-state view server-side; they never
-        re-derive anything (3.1.9 frozen query contract)."""
+        re-derive anything (3.1.9 query contract)."""
         approval_a = seed_approval(db_session)
         approval_b = seed_approval(db_session, status="rejected")
         ok_id = uuid.uuid4()
@@ -645,6 +645,91 @@ class TestReadEndpoints:
         second_ids = {item["execution_id"] for item in second["items"]}
         assert first_ids.isdisjoint(second_ids)
         assert client.get(EXECUTE, params={"page": 3, "size": 2}).json()["items"] == []
+
+    def test_list_query_is_chain_level_and_bounded(self, client, db_session, auth):
+        """pagination happens in SQL at the EXECUTION-CHAIN level.
+
+        The previous implementation loaded the ENTIRE execution_log table into
+        Python, grouped it, filtered it and only then sliced a page — O(table)
+        memory and latency per request. This pins the shape of the fix: the
+        ranking/state expression and the LIMIT/OFFSET are in SQL, and the audit
+        rows are fetched for the PAGE's chains only."""
+        for _ in range(3):
+            assert post_execute(client, auth, seed_approval(db_session)).status_code == 201
+
+        statements: list[str] = []
+
+        def _record(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+
+        engine = db_session.get_bind()
+        event.listen(engine, "before_cursor_execute", _record)
+        try:
+            response = client.get(EXECUTE, params={"page": 1, "size": 2})
+        finally:
+            event.remove(engine, "before_cursor_execute", _record)
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 3
+        assert len(response.json()["items"]) == 2
+
+        executed = " ".join(statements).lower()
+        # 1. the per-chain ranking (and therefore the state filter) is SQL
+        assert "row_number() over" in executed
+        # 2. the chain page itself is bounded by the database
+        assert "limit" in executed and "offset" in executed
+        # 3. the audit rows are hydrated for the page's chains only
+        assert "execution_id in" in executed
+
+    def test_list_derived_state_agrees_with_the_frozen_function(
+        self, client, db_session, auth
+    ):
+        """the list endpoint filters and orders chains in SQL, so its
+        expression must agree with the ``derive_execution_state`` on
+        real data — for every chain the endpoint reports, the Python derivation
+        over the same rows produces the same state, and a state-filtered request
+        returns exactly the chains whose derivation yields that state (neither
+        dropping nor adding one)."""
+        from app.services.executions.state import derive_execution_state
+
+        approval_a = seed_approval(db_session)
+        approval_b = seed_approval(db_session, status="rejected")
+        original_id = uuid.uuid4()
+        assert post_execute(client, auth, approval_a, original_id).status_code == 201
+        assert post_execute(client, auth, approval_b).status_code == 201
+        assert client.post(
+            COMPENSATE,
+            json={
+                "execution_id": str(uuid.uuid4()),
+                "compensates_execution_id": str(original_id),
+                "operator": "ops-2",
+            },
+            headers=auth,
+        ).status_code == 201
+
+        grouped: dict[uuid.UUID, list[ExecutionLog]] = {}
+        for row in db_session.scalars(select(ExecutionLog)):
+            grouped.setdefault(row.execution_id, []).append(row)
+
+        body = client.get(EXECUTE).json()
+        assert body["total"] == len(grouped) == 3
+        for item in body["items"]:
+            chain_rows = grouped[uuid.UUID(item["execution_id"])]
+            assert item["derived_state"] == derive_execution_state(chain_rows)
+            assert item["chain"] == [
+                row.decision
+                for row in sorted(chain_rows, key=lambda r: (r.created_at, r.id))
+            ]
+
+        for state in ("succeeded", "guard_rejected", "compensation_succeeded"):
+            expected = {
+                str(execution_id)
+                for execution_id, rows in grouped.items()
+                if derive_execution_state(rows) == state
+            }
+            filtered = client.get(EXECUTE, params={"status": state}).json()
+            assert filtered["total"] == len(expected)
+            assert {item["execution_id"] for item in filtered["items"]} == expected
 
     @pytest.mark.parametrize(
         "params",
@@ -693,9 +778,9 @@ class TestReadEndpoints:
         assert source.count("derive_execution_state(") >= 2  # list + detail
 
 
-# --------------------------------------------------------------------------
+#
 # Token security + commit boundary
-# --------------------------------------------------------------------------
+#
 class TestTokenSecurityAndCommit:
     def test_token_never_appears_in_responses_or_audit(self, client, db_session, auth, app):
         approval = seed_approval(db_session)
@@ -735,14 +820,14 @@ class TestTokenSecurityAndCommit:
         assert len(all_rows(db_session)) == 3
 
 
-# --------------------------------------------------------------------------
-# Frozen clause (3.1.6 acceptance; RC2 / H-2 re-implementation): audit stamping
-# --------------------------------------------------------------------------
+#
+# Frozen clause: audit stamping
+#
 class TestAuditStampingDiscipline:
     def test_append_never_accepts_client_created_at(self):
         """_append() has no created_at parameter — no caller — today or
         future — can supply or roll back the audit clock (the DATABASE
-        stamps it at INSERT since RC2 / H-2)."""
+        stamps it at INSERT since / H-2)."""
         from app.services.executions.service import _append
 
         assert "created_at" not in inspect.signature(_append).parameters
@@ -757,7 +842,7 @@ class TestAuditStampingDiscipline:
             assert "created_at" not in source
 
     def test_no_process_global_audit_clock_state_remains(self):
-        """RC2 / H-2 structural guard: the process-global high-water stamp and
+        """/ H-2 structural guard: the process-global high-water stamp and
         its helper are GONE — audit ordering is database-level (created_at
         from the DB + the insert-ordered uuid7 id)."""
         from app.services.executions import service as service_module

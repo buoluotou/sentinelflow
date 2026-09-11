@@ -1,4 +1,4 @@
-"""Risk scoring rules v1.0 (frozen for Phase 1 Step 5.2).
+"""Risk scoring rules v1.0.
 
 Everything here is deterministic and offline: no GeoIP, no external threat
 intelligence. Changing any constant changes scores — bump RULES_VERSION when
@@ -16,7 +16,7 @@ SEVERITY_SCORES: dict[str, int] = {
 }
 
 # 2. Frequency bonus by alert_count: (min_count, bonus), evaluated in order,
-#    first band whose min_count is <= alert_count wins.
+# first band whose min_count is <= alert_count wins.
 FREQUENCY_BANDS: tuple[tuple[int, int], ...] = (
     (101, 40),
     (51, 30),
@@ -26,7 +26,7 @@ FREQUENCY_BANDS: tuple[tuple[int, int], ...] = (
 )
 
 # 3. Public attack source bonus — applied at most ONCE per event, no matter
-#    how many public source IPs the evidence alerts carry.
+# how many public source IPs the evidence alerts carry.
 PUBLIC_SOURCE_BONUS = 20
 
 # 4. Score is always capped into [0, 100]

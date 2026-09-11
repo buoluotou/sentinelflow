@@ -1,4 +1,4 @@
-"""Phase 3.2.4 — Wazuh Adapter regression.
+"""Wazuh Adapter regression.
 
 Locks the complete offline chain:
 
@@ -59,7 +59,7 @@ from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import execute_response
 
-# M4-G §2: these service-chain tests drive the REAL durable path — a RECOGNIZED
+# these service-chain tests drive the REAL durable path — a RECOGNIZED
 # adapter (wazuh) with store=None is now refused before dispatch by the
 # fail-closed gate. They inject the shared no-DB recording store double.
 from tests.test_dispatch_durable_integration import FakeStore
@@ -164,9 +164,9 @@ def _wazuh_settings(**overrides) -> Settings:
     return Settings(**base)
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Architecture (registry / name / supports / compensation)
-# --------------------------------------------------------------------------
+#
 class TestArchitecture:
     def test_registry_builds_wazuh_executor(self):
         executor = create_executor(_wazuh_settings())
@@ -222,9 +222,9 @@ class TestArchitecture:
             )
 
 
-# --------------------------------------------------------------------------
+#
 # 2. HTTP contract + outcome matrix
-# --------------------------------------------------------------------------
+#
 class TestHttpContract:
     def test_url_is_agent_scoped_active_response(self):
         stub = StubTransport(payload={"success": True, "command_id": "c-1"})
@@ -334,9 +334,9 @@ class TestOutcomeMatrix:
         assert outcome.detail["classification"] == "adapter_error"
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Protocol violation (D9 — the adapter raises, the platform decides)
-# --------------------------------------------------------------------------
+#
 class TestProtocolViolation:
     def test_non_json_is_protocol_violation(self):
         with pytest.raises(ExecutorOutcomeViolation, match="not valid JSON"):
@@ -393,9 +393,9 @@ class TestProtocolViolation:
         assert result.rows[-1].detail["classification"] == "protocol_violation"
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Idempotency (execution_id contract, Shuffle parity)
-# --------------------------------------------------------------------------
+#
 class TestIdempotency:
     @pytest.mark.parametrize(
         "body",
@@ -449,9 +449,9 @@ class TestIdempotency:
         assert len(stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Secret boundary — five-check with sentinel-wazuh-secret-test
-# --------------------------------------------------------------------------
+#
 class TestSecretBoundary:
     def test_five_check_request_url_detail_exception_log(self):
         """① request body ② URL ③ execution_log-bound detail ④ exception
@@ -533,9 +533,9 @@ class TestSecretBoundary:
         assert result.final_decision == "failed"
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Security (target mutation / fake agent id / token injection)
-# --------------------------------------------------------------------------
+#
 class TestSecurity:
     @pytest.mark.parametrize(
         "hostile_target",
@@ -572,9 +572,9 @@ class TestSecurity:
         assert FAKE_SECRET not in stub.last["url"]
 
 
-# --------------------------------------------------------------------------
+#
 # 7. End-to-end (API -> Service -> Guard -> WazuhExecutor -> stub -> log)
-# --------------------------------------------------------------------------
+#
 class TestEndToEnd:
     def _run(self, db_session, transport, action="isolate_host", target="agent001"):
         from tests.test_execution_service import seed_approved
@@ -654,7 +654,7 @@ class TestEndToEnd:
             executor=executor,
             compensation_attempt_store=store,
         )
-        # RC2 / C-1: the durable pre-compensation binding was recorded and
+        # / C-1: the durable pre-compensation binding was recorded and
         # REFERENCES the compensated execution.
         assert len(store.recorded) == 1
         assert store.recorded[0].original_execution_id == str(forward.execution_id)
@@ -694,7 +694,7 @@ class TestEndToEnd:
             executor=executor,
             compensation_attempt_store=store,
         )
-        # RC2 / C-1: the durable pre-compensation binding was recorded and
+        # / C-1: the durable pre-compensation binding was recorded and
         # REFERENCES the compensated execution.
         assert len(store.recorded) == 1
         assert store.recorded[0].original_execution_id == str(forward.execution_id)
@@ -737,9 +737,9 @@ class TestEndToEnd:
         assert len(stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 8. Real Wazuh (external marker — deselected by default)
-# --------------------------------------------------------------------------
+#
 @pytest.mark.external
 class TestRealWazuh:
     def test_real_active_response(self):

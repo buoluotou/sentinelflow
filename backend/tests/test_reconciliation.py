@@ -1,7 +1,7 @@
-"""Reconciliation Contract专项 — Phase 3.4.3-A (Contract Types + Validation)
+"""Reconciliation Contract专项 — A (Contract Types + Validation)
 + 3.4.3-B (External State Mapping).
 
-This suite proves the INPUT + MAPPING layers of the frozen Reconciliation
+This suite proves the INPUT + MAPPING layers of the Reconciliation
 Contract (docs/design/phase3.4-reconciliation-contract.md, Design Freeze
 ``a125f1e``):
 
@@ -10,7 +10,7 @@ Contract (docs/design/phase3.4-reconciliation-contract.md, Design Freeze
     3.4.3-B  ``adapter`` + validated ``external_state`` -> ``StateMapping``
              (or an ``UnrecognizedExternalState`` rejection).
 
-It is deliberately DB-free — ``validate_observation`` (A) and
+It is DB-free — ``validate_observation`` (A) and
 ``normalize_external_state`` (B) are PURE functions (the discipline of
 tests/test_outcome_derivation.py), so lightweight inputs prove the whole
 contract without a session.
@@ -48,21 +48,21 @@ Requirement map (user section 十一, 1-20):
   Mapping boundary (§四) .............. TestMappableVocabularyBoundary
   Mock (§六) .......................... TestMockMapping
 
-The soul of 3.4.3-A (design §0 / §13): a Contract Validation Failure means
+The soul of 3.4.3-A: a Contract Validation Failure means
 NO Outcome Fact — missing reference is NEVER ``reconciliation_failed`` and an
 unrecognized state is NEVER ``unknown``. The A validation path STRUCTURALLY
 cannot emit an outcome word: ``NormalizedObservation`` has no ``outcome_status``
 field.
 
-The soul of 3.4.3-B (design §6, user §十六): DO NOT FABRICATE. A state word is
-frozen into an adapter's vocabulary ONLY when existing adapter code (or the
-frozen design) evidences it. G1-C EMPTIED the fabricated Wazuh ``agent_status``
-set (B0 §4 — agent_status is NOT a command-level effect; G1-A proved it
-LIVE-reachable, CONFIRMED UNSAFE). M2 §5 then added EXACTLY ONE word — TheHive's
-synthesized ``case_created`` — but M2-R §2 EMPTIED it again (fail-closed, the G1-C
+The soul of 3.4.3-B: DO NOT FABRICATE. A state word is
+into an adapter's vocabulary ONLY when existing adapter code (or the
+design) evidences it. G1-C EMPTIED the fabricated Wazuh ``agent_status``
+set (B0 — agent_status is NOT a command-level effect; G1-A proved it
+LIVE-reachable, CONFIRMED UNSAFE). M2 then added EXACTLY ONE word — TheHive's
+synthesized ``case_created`` — but M2-R EMPTIED it again (fail-closed, the G1-C
 precedent): this vocabulary is PATH-AGNOSTIC, so a reader-only signal placed in it
 is forgeable from the LIVE webhook PUSH path (a valid callback token + a schema/
-correlation-valid body carrying the bare string), and the frozen 2-param contract
+correlation-valid body carrying the bare string), and the 2-param contract
 (``normalize_external_state`` + the single-delegation ``map_external_state``)
 STRUCTURALLY cannot express source isolation. So NO adapter (Wazuh / Shuffle /
 TheHive / Mock) has an evidenced vocabulary and EVERY reported state — TheHive's
@@ -73,7 +73,7 @@ reader still EMITS ``case_created`` (isolation-tested); the mapping just does no
 ACCEPT it from any source until a trusted-reader source-isolation channel is
 approved (M2-R Amendment). The PLATFORM success-pipeline proofs that once borrowed
 the Wazuh ``success`` word still run on a TEST-ONLY fake adapter (``fake_adapter_vocab``
-/ ``fake_adapter_channel`` fixtures, B0 §15.4) — never on a real adapter word. A
+/ ``fake_adapter_channel`` fixtures, B0 ) — never on a real adapter word. A
 dispatch word is in NO vocabulary: several tests below nail that.
 """
 import ast
@@ -179,7 +179,7 @@ def _imported():
 
 class _NullOffsetTz(tzinfo):
     """A tzinfo whose utcoffset is None — 'aware' in name only, naive in
-    semantics. The contract's second naive-clause must catch it (§10.2)."""
+    semantics. The contract's second naive-clause must catch it."""
 
     def utcoffset(self, dt):
         return None
@@ -191,14 +191,14 @@ class _NullOffsetTz(tzinfo):
         return "NULL"
 
 
-# ---------------------------------------------------------------------------
+#
 # Contract shape (requirement 2)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestContractShape:
     def test_contract_fields_are_the_six_frozen_names(self):
-        # requirement 2 / RC-02: exactly the six frozen fields, in order.
+        # requirement 2 / RC-02: exactly the six fields, in order.
         assert CONTRACT_FIELDS == (
             "execution_id",
             "adapter",
@@ -235,9 +235,9 @@ class TestContractShape:
         )
 
 
-# ---------------------------------------------------------------------------
+#
 # Valid observation (requirements 1, 11)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestValidObservation:
@@ -272,9 +272,9 @@ class TestValidObservation:
         assert normalized.source == source
 
 
-# ---------------------------------------------------------------------------
+#
 # Required-field + invalid-value rejection (requirements 3-9)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestRequiredFieldRejection:
@@ -356,19 +356,19 @@ class TestRequiredFieldRejection:
         ],
     )
     def test_every_rejection_is_a_contract_validation_failure(self, exc_type):
-        # design §13: all rejections share one base -> one refusal semantic.
+        # all rejections share one base -> one refusal semantic.
         assert issubclass(exc_type, ContractValidationFailure)
         assert issubclass(ContractValidationFailure, Exception)
 
 
-# ---------------------------------------------------------------------------
-# observed_at semantics (requirements 10-15, design §10 / RC-09)
-# ---------------------------------------------------------------------------
+#
+# observed_at semantics
+#
 
 
 class TestObservedAtSemantics:
     def test_naive_datetime_rejected(self):
-        # requirement 10: a naive datetime is ambiguous -> refused (§10.2).
+        # requirement 10: a naive datetime is ambiguous -> refused.
         naive = datetime(2026, 9, 3, 12, 0, 0)  # no tzinfo
         with pytest.raises(InvalidObservedAt):
             validate(valid_observation(observed_at=naive))
@@ -397,7 +397,7 @@ class TestObservedAtSemantics:
 
     def test_utc_normalization_preserves_the_instant(self):
         # a negative offset: 07:00-05:00 == 12:00Z == NOW. Normalization
-        # changes representation only, never the moment (§10.3).
+        # changes representation only, never the moment.
         minus_five = timezone(timedelta(hours=-5))
         local = datetime(2026, 9, 3, 7, 0, 0, tzinfo=minus_five)
         normalized = validate(valid_observation(observed_at=local))
@@ -405,7 +405,7 @@ class TestObservedAtSemantics:
         assert normalized.observed_at.timestamp() == NOW.timestamp()
 
     def test_precision_preserved_not_truncated(self):
-        # §10.6: microseconds survive; ties are broken downstream by id DESC,
+        # microseconds survive; ties are broken downstream by id DESC,
         # so the contract manufactures no fake precision.
         micro = NOW.replace(microsecond=123456)
         normalized = validate(valid_observation(observed_at=micro))
@@ -428,7 +428,7 @@ class TestObservedAtSemantics:
 
     def test_future_skew_constant_is_named_and_300s(self):
         # §八: the tolerance is a NAMED, CENTRAL, TESTED constant, never a
-        # scattered magic number; its frozen default (design §10.5) is 300s.
+        # scattered magic number; its default is 300s.
         assert MAX_FUTURE_SKEW == timedelta(seconds=300)
         assert MAX_FUTURE_SKEW.total_seconds() == 300
 
@@ -457,9 +457,9 @@ class TestObservedAtSemantics:
         assert normalized.observed_at == old
 
 
-# ---------------------------------------------------------------------------
+#
 # Normalization strategy (trimming vs raw preservation)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestNormalizationStrategy:
@@ -489,14 +489,14 @@ class TestNormalizationStrategy:
         assert normalized.external_state == payload
 
 
-# ---------------------------------------------------------------------------
+#
 # Purity, immutability, determinism (requirements 16, 17)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestPurityImmutabilityDeterminism:
     def test_input_is_immutable(self):
-        # requirement 16: the frozen input cannot be tampered with.
+        # requirement 16: the input cannot be tampered with.
         obs = valid_observation()
         with pytest.raises(FrozenInstanceError):
             obs.external_state = "tampered"
@@ -512,7 +512,7 @@ class TestPurityImmutabilityDeterminism:
         assert normalized.external_reference == "ref-1"  # output normalized
 
     def test_output_is_immutable_and_cannot_gain_a_status(self):
-        # The frozen output cannot be mutated — and cannot even be given an
+        # The output cannot be mutated — and cannot even be given an
         # outcome_status attribute (a second isolation guarantee).
         normalized = validate(valid_observation())
         with pytest.raises(FrozenInstanceError):
@@ -564,9 +564,9 @@ class TestPurityImmutabilityDeterminism:
         assert sig.parameters["now"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-# ---------------------------------------------------------------------------
-# Identity trust domains (requirements 18, 19, design §8 / RC-07)
-# ---------------------------------------------------------------------------
+#
+# Identity trust domains
+#
 
 
 class TestIdentityTrustDomains:
@@ -607,9 +607,9 @@ class TestIdentityTrustDomains:
             trust_domain_for("polling")
 
 
-# ---------------------------------------------------------------------------
+#
 # Dispatch / Outcome vocabulary isolation (requirement 20, D3.4-04 / RC-06)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDispatchOutcomeIsolation:
@@ -674,7 +674,7 @@ class TestDispatchOutcomeIsolation:
         assert "normalize_external_state" in funcs
 
     def test_module_defines_exactly_the_sanctioned_mapping_function(self):
-        # 3.4.3-A asserted NO mapping function existed; 3.4.3-B deliberately adds
+        # 3.4.3-A asserted NO mapping function existed; 3.4.3-B adds
         # the SANCTIONED one (normalize_external_state). The forbidden aliases
         # still must not exist — the mapping surface is exactly one named, tested,
         # PURE function, never an ad-hoc converter.
@@ -684,9 +684,9 @@ class TestDispatchOutcomeIsolation:
         assert not hasattr(mod, "to_outcome_status")
 
 
-# ---------------------------------------------------------------------------
-# Rejection produces NO fact (design §0 / §7 / §13 — the soul of 3.4.3-A)
-# ---------------------------------------------------------------------------
+#
+# Rejection produces NO fact
+#
 
 
 class TestRejectionProducesNoFact:
@@ -718,17 +718,17 @@ class TestRejectionProducesNoFact:
 
 
 # ===========================================================================
-# Phase 3.4.3-B专项 — External State Mapping (user §十五, 25 requirements)
+# B专项 — External State Mapping (user §十五, 25 requirements)
 # ===========================================================================
 #
-# THE GOVERNING RULE (user §十六, design §6): DO NOT FABRICATE adapter states.
+# THE GOVERNING RULE: DO NOT FABRICATE adapter states.
 # G1-C EMPTIED the last evidenced vocabulary: NO adapter (Wazuh / Shuffle /
 # TheHive / Mock) now has a verifiable external terminal-state vocabulary, so
 # EVERY external_state is REFUSED as UnrecognizedExternalState, never guessed.
 # The tests below assert the GAP HONESTLY rather than inventing states to make a
 # "terminal success" case pass; a concrete vocabulary lands only with real
-# command-effect read evidence + an independent Design Freeze (B0 §18). The
-# PLATFORM success-pipeline proofs run on a TEST-ONLY fake adapter (B0 §15.4).
+# command-effect read evidence + an independent Design Freeze. The
+# PLATFORM success-pipeline proofs run on a TEST-ONLY fake adapter.
 
 
 def map_state(adapter, external_state):
@@ -745,16 +745,16 @@ def refused(adapter, external_state):
     return exc.value
 
 
-# ---------------------------------------------------------------------------
+#
 # C. Wazuh (requirements 12-16) — G1-C: vocabulary EMPTIED (fail-closed)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestWazuhMapping:
-    """G1-C / B0 §15.3: the former Wazuh external-state vocabulary
+    """G1-C / B0 : the former Wazuh external-state vocabulary
     {completed,confirmed,done,success,ok} / running / unknown was FABRICATED from
     a fictional "agent_status IS the effect status" reading of a synchronous
-    dispatch response and falsified by B0 §4 (agent_status is NOT a command-level
+    dispatch response and falsified by B0 (agent_status is NOT a command-level
     effect; "ok" is a task-acceptance false friend). G1-A proved it LIVE-reachable
     via BOTH the webhook (webhook.py:149) and manual (manual_persist.py:204)
     paths — CONFIRMED UNSAFE. G1-C EMPTIED all four sets to fail-closed, so EVERY
@@ -770,7 +770,7 @@ class TestWazuhMapping:
         # state_key, no case-folding. An empty vocabulary refuses EVERY word and
         # can never auto-reopen — a registered Reader or a configured production
         # version does NOT repopulate it (that needs command-effect evidence + an
-        # independent Design Freeze, B0 §18).
+        # independent Design Freeze, B0 ).
         vocab = ADAPTER_STATE_VOCABULARIES["wazuh"]
         assert vocab.terminal_success_states == frozenset()
         assert vocab.terminal_failure_states == frozenset()
@@ -784,7 +784,7 @@ class TestWazuhMapping:
     )
     def test_12_former_success_words_are_now_refused(self, state):
         # requirement 12 REVERSED (G1-C): the former "confirmed_success" words are
-        # NO LONGER evidenced — agent_status is not a command-level effect (B0 §4)
+        # NO LONGER evidenced — agent_status is not a command-level effect
         # and a synchronous dispatch response cannot prove an external effect. Each
         # word is REFUSED, never mapped to confirmed_success (anti-fabrication §十六).
         refused("wazuh", state)
@@ -810,7 +810,7 @@ class TestWazuhMapping:
     def test_15_unknown_is_now_refused(self, state):
         # requirement 15 REVERSED (G1-C): "unknown" is NO LONGER an in-vocabulary
         # ambiguous word. Mapping an unrecognized word to the outcome word unknown
-        # is the FORBIDDEN fabrication (§0 铁律: NEVER downgrade to unknown) — it
+        # is the FORBIDDEN fabrication — it
         # is refused instead.
         refused("wazuh", state)
 
@@ -845,9 +845,9 @@ class TestWazuhMapping:
         refused("wazuh", "  completed  ")
 
 
-# ---------------------------------------------------------------------------
+#
 # A. Shuffle (requirements 1-6) — DELIBERATE GAP (trigger-only, no read path)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestShuffleMapping:
@@ -916,29 +916,29 @@ class TestShuffleMapping:
         refused("shuffle", {"execution_id": "abc"})
 
 
-# ---------------------------------------------------------------------------
+#
 # B. TheHive (requirements 7-11) — DELIBERATE GAP (case created != resolved)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestTheHiveMapping:
     """TheHive creates a case and NEVER auto-closes it — "case created != case
     resolved"; investigation is human-led, so NO native lifecycle STATE word is
     fabricated (requirements 7-10 assert that HONEST GAP: resolved/closed/open/
-    unknown are all REFUSED). M2 §5 added EXACTLY ONE word — ``case_created``, the
+    unknown are all REFUSED). M2 added EXACTLY ONE word — ``case_created``, the
     SentinelFlow-SYNTHESIZED creation-effect signal emitted by ``TheHiveReadAdapter``
-    on a verified ``GET /api/case/{_id}``. M2-R §2 EMPTIED it again (fail-closed):
+    on a verified ``GET /api/case/{_id}``. M2-R EMPTIED it again (fail-closed):
     the vocabulary is PATH-AGNOSTIC, so the word was forgeable from the LIVE webhook
-    path and the frozen 2-param contract cannot express source isolation. EVERY
+    path and the 2-param contract cannot express source isolation. EVERY
     TheHive state — ``case_created`` and the reader's ``case_unverified`` included —
     is now REFUSED, so NO path launders a string into success until a trusted-reader
     source-isolation channel is approved (M2-R Amendment).
     """
 
     def test_thehive_vocabulary_is_entirely_empty(self):
-        # M2-R §2 FAIL-CLOSED (mirror of the G1-C wazuh pin): all four sets empty.
-        # M2 §5's synthesized ``case_created`` is REMOVED because the path-agnostic
-        # vocabulary let a webhook forge it and the frozen 2-param contract cannot
+        # M2-R FAIL-CLOSED (mirror of the G1-C wazuh pin): all four sets empty.
+        # M2 's synthesized ``case_created`` is REMOVED because the path-agnostic
+        # vocabulary let a webhook forge it and the 2-param contract cannot
         # express source isolation. An empty vocabulary refuses EVERY word (including
         # the reader's own ``case_created``) and can never auto-reopen — a registered
         # Reader or a configured production version does NOT re-add it; only an
@@ -952,7 +952,7 @@ class TestTheHiveMapping:
         assert vocab.case_insensitive is False
 
     def test_thehive_case_created_is_refused_fail_closed(self):
-        # M2-R §2 (was M2 §5 POSITIVE, now REVERSED): the synthesized ``case_created``
+        # M2-R : the synthesized ``case_created``
         # word is REFUSED at the mapping layer (fail-closed) because the path-agnostic
         # vocabulary cannot tell a trusted-reader signal from a webhook-forged string.
         # The READER still EMITS it on a verified GET (test_read_adapter_thehive.py);
@@ -961,7 +961,7 @@ class TestTheHiveMapping:
         refused("thehive", "case_created")
 
     def test_thehive_case_unverified_is_refused(self):
-        # M2 §5 NEGATIVE: the reader's unverified signal (a 200 that FAILED the
+        # M2 NEGATIVE: the reader's unverified signal (a 200 that FAILED the
         # identity/correlation conjunction) is NOT in the vocabulary -> REFUSED ->
         # 422 / ZERO facts. A bare HTTP 200 / mere existence is NEVER success.
         refused("thehive", "case_unverified")
@@ -1007,9 +1007,9 @@ class TestTheHiveMapping:
         refused("thehive", {"case_id": "abc"})
 
 
-# ---------------------------------------------------------------------------
+#
 # Mock (user §六) — PERMANENTLY unsupported (no external system, no outcome)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestMockMapping:
@@ -1037,9 +1037,9 @@ class TestMockMapping:
         assert "no external outcome by design" in ADAPTER_STATE_VOCABULARIES["mock"].evidence
 
 
-# ---------------------------------------------------------------------------
+#
 # D. Isolation (requirements 17-20) — dispatch vocab NEVER becomes outcome vocab
-# ---------------------------------------------------------------------------
+#
 
 
 class TestMappingDispatchIsolation:
@@ -1094,15 +1094,15 @@ class TestMappingDispatchIsolation:
             refused(adapter, {"agent_status": "completed"})
 
 
-# ---------------------------------------------------------------------------
+#
 # E. Purity (requirements 21-25) — no DB, no HTTP, no adapter call, no mutation
-# ---------------------------------------------------------------------------
+#
 
 
 class TestMappingPurity:
     def test_21_repeated_calls_are_deterministic(self, fake_adapter_vocab):
         # requirement 21: same (adapter, state) -> EQUAL StateMapping, every time.
-        # G1-C / B0 §15.4: the platform determinism proof runs on the TEST-ONLY
+        # G1-C / B0 : the platform determinism proof runs on the TEST-ONLY
         # fake adapter (no production adapter has an evidenced word to map).
         fake = fake_adapter_vocab
         first = map_state(fake, "completed")
@@ -1156,7 +1156,7 @@ class TestMappingPurity:
 
     def test_25_input_mapping_is_not_mutated(self, fake_adapter_vocab):
         # requirement 25 (§十三): a Mapping external_state is never altered.
-        # G1-C / B0 §15.4: runs on the TEST-ONLY fake adapter (case-insensitive +
+        # G1-C / B0 : runs on the TEST-ONLY fake adapter (case-insensitive +
         # agent_status state_key), proving the platform non-mutation contract.
         fake = fake_adapter_vocab
         payload = {"agent_status": "COMPLETED", "extra": "keep"}
@@ -1169,7 +1169,7 @@ class TestMappingPurity:
     def test_25_result_is_frozen_and_input_str_untouched(self, fake_adapter_vocab):
         # requirement 25: the result StateMapping is immutable (frozen); a str
         # input is inherently unchanged, and no attribute can be reassigned.
-        # G1-C / B0 §15.4: runs on the TEST-ONLY fake adapter.
+        # G1-C / B0 : runs on the TEST-ONLY fake adapter.
         fake = fake_adapter_vocab
         mapping = map_state(fake, "completed")
         with pytest.raises(FrozenInstanceError):
@@ -1178,9 +1178,9 @@ class TestMappingPurity:
             mapping.adapter = "shuffle"
 
 
-# ---------------------------------------------------------------------------
+#
 # Anti-fabrication pins (user §十六 — the governing rule of 3.4.3-B)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestAntiFabricationPins:
@@ -1195,14 +1195,14 @@ class TestAntiFabricationPins:
         assert set(ADAPTER_STATE_VOCABULARIES) == set(ADAPTER_NAMES)
 
     def test_no_adapter_evidences_a_vocabulary(self):
-        # M2-R §2 (was: only TheHive evidenced case_created): G1-C emptied Wazuh;
-        # M2 §5 added TheHive's case_created; M2-R §2 empties it AGAIN (fail-closed)
+        # M2-R (was: only TheHive evidenced case_created): G1-C emptied Wazuh;
+        # M2 added TheHive's case_created; M2-R empties it AGAIN (fail-closed)
         # because the path-agnostic vocabulary made it webhook-forgeable and the
-        # frozen 2-param contract cannot express source isolation. So NO adapter
+        # 2-param contract cannot express source isolation. So NO adapter
         # (wazuh / shuffle / thehive / mock) evidences ANY word platform-wide.
         # Repopulating ANY vocabulary — including a source-isolated TheHive reader
         # channel — requires real read evidence + an approved Amendment + an
-        # independent Design Freeze (B0 §18); this pin fails loudly if a vocabulary
+        # independent Design Freeze; this pin fails loudly if a vocabulary
         # is silently reopened on ANY adapter.
         for adapter, vocab in ADAPTER_STATE_VOCABULARIES.items():
             evidenced = (
@@ -1244,14 +1244,14 @@ class TestAntiFabricationPins:
             assert vocab.evidence  # non-empty string
 
 
-# ---------------------------------------------------------------------------
+#
 # Mapping boundary (user §四) — reconciliation_failed is NEVER a mapping product
-# ---------------------------------------------------------------------------
+#
 
 
 class TestMappableVocabularyBoundary:
     def test_mappable_statuses_exclude_reconciliation_failed(self):
-        # §四: the mapping target vocabulary is the frozen five MINUS
+        # §四: the mapping target vocabulary is the five MINUS
         # reconciliation_failed (the READ-FAILURE verdict, 3.4.5). Single source.
         assert MAPPABLE_OUTCOME_STATUSES == OUTCOME_STATUSES - {"reconciliation_failed"}
         assert "reconciliation_failed" not in MAPPABLE_OUTCOME_STATUSES
@@ -1276,7 +1276,7 @@ class TestMappableVocabularyBoundary:
             StateMapping("wazuh", "reconciliation_failed", "x", "x", "reason")
 
     def test_state_mapping_refuses_a_non_outcome_word(self):
-        # Defensive (mirrors derivation): a typo'd word outside the frozen five is
+        # Defensive (mirrors derivation): a typo'd word outside the five is
         # rejected — the dispatch word "succeeded" is NOT an outcome word.
         with pytest.raises(ValueError):
             StateMapping("wazuh", "succeeded", "x", "x", "reason")
@@ -1287,7 +1287,7 @@ class TestMappableVocabularyBoundary:
 
     def test_state_mapping_fields_are_the_audit_triple(self, fake_adapter_vocab):
         # §十四: the PURE domain result carries the audit triple, no DB write.
-        # G1-C / B0 §15.4: the positive mapping example runs on the TEST-ONLY fake
+        # G1-C / B0 : the positive mapping example runs on the TEST-ONLY fake
         # adapter (no production adapter maps a word); the field-shape assertion
         # is adapter-independent.
         fake = fake_adapter_vocab

@@ -1,21 +1,21 @@
 /** Execution observability types — field-level mirror of the backend
- * Phase 3.3.3 read-model schemas (metrics + observed health).
+ * read-model schemas (metrics + observed health).
  *
- * These are READ models: the backend derives every number from
+ * These are read models: the backend derives every number from
  * execution_log; the client renders them as-is and never recomputes,
  * renames or reshapes a field.
  *
- * Null semantics (frozen 3.3.3.1/3.3.3.2): a `null` rate means the
+ * Null semantics: a `null` rate means the
  * denominator is empty — "not enough data to define this metric".
- * The UI must render it as N/A, NEVER as 0%.
+ * The UI must render it as N/A, never as 0%.
  *
- * Health semantics (frozen 3.3.3.3): `observed_status` is what the
- * execution facts SHOW over the recent window — it is NOT a live probe
- * ("the adapter answers right now"). There is deliberately no boolean
+ * Health semantics: `observed_status` is what the
+ * execution facts show over the recent window — it is not a live probe
+ * ("the adapter answers right now"). There is no boolean
  * `healthy` field anywhere in this module.
  */
 
-/** Frozen observed-status vocabulary (backend health.py, 3.3.3.3.1). */
+/** Fixed observed-status vocabulary (backend health.py). */
 export type ObservedStatus = 'healthy' | 'degraded' | 'failing' | 'unknown'
 
 /** Mirror of backend LatencyStatsRead — adapter-run time of chains
@@ -43,8 +43,8 @@ export interface AdapterMetricsRead {
 }
 
 /** Mirror of backend ExecutionMetricsRead — GET /executions/metrics
- * body. Rates keep the frozen null semantics; guard_rejected is a
- * GOVERNANCE metric and never enters the executor success/failure
+ * body. Rates keep the null semantics; guard_rejected is a
+ * governance metric and never enters the executor success/failure
  * denominator. */
 export interface ExecutionMetricsRead {
   total_chains: number
@@ -68,16 +68,16 @@ export interface ExecutionMetricsRead {
  * recent health window. */
 export interface RecentFailureRead {
   execution_id: string
-  /** Frozen failure-classification word, or null when absent. */
+  /** Failure-classification word, or null when absent. */
   classification: string | null
   failed_at: string
 }
 
-/** Mirror of backend AdapterHealthRead — one adapter's OBSERVED health
+/** Mirror of backend AdapterHealthRead — one adapter's observed health
  * (recent window + all-time facts + last execution). */
 export interface AdapterHealthRead {
   adapter: string
-  /** The ONLY verdict word — never a boolean flag. */
+  /** The only verdict word — never a boolean flag. */
   observed_status: ObservedStatus
   window_size: number
   window_succeeded: number

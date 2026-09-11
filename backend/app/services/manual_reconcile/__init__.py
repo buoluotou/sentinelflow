@@ -1,18 +1,18 @@
-"""Manual Reconcile services (Phase 3.4.5).
+"""Manual Reconcile services.
 
-The READ / Reconcile side of the Execution Outcome Lifecycle — physically
-isolated from the WRITE side (``app.services.executions``). Manual Reconcile is
-an EXPLICIT, operator-triggered Pull that reads external state and reconciles it
-into an append-only Outcome Fact; it is NEVER an Execution (design §3).
+The read / reconcile side of the execution outcome lifecycle — physically
+isolated from the write side (``app.services.executions``). Manual Reconcile is
+an explicit, operator-triggered pull that reads external state and reconciles it
+into an append-only Outcome Fact; it is never an execution.
 
-3.4.5-A1 (this package today) ships ONLY the Adapter Read Contract + Registry:
-pure shapes, an EMPTY production registry, and the read-adapter exception family.
-The Manual Reconcile platform pipeline (auth -> correlation -> external_reference
-extraction -> registry -> read -> mapping -> append -> derivation) lands in
-3.4.5-A2; concrete Shuffle / Wazuh / TheHive readers are Evidence-Gapped and land
-in 3.4.5-B/C/D (design §16/§17).
+This package ships only the adapter read contract and registry: pure shapes, an
+empty production registry, and the read-adapter exception family. The platform
+pipeline (auth -> correlation -> external_reference extraction -> registry -> read
+-> mapping -> append -> derivation) lives in
+``app.services.outcomes.manual_reconcile``; concrete Shuffle / Wazuh / TheHive
+readers have no runtime evidence yet.
 
-NO API, NO DB, NO HTTP, NO mapping in A1 (design §12/§13/§14/§19).
+No API, no DB, no HTTP, no mapping here.
 """
 from app.services.manual_reconcile.exceptions import (
     ReadAdapterError,

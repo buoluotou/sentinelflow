@@ -1,6 +1,6 @@
-"""Phase 2 Step 10.2: AIRequest builder tests.
+"""AIRequest builder tests.
 
-AlertGroup + EventRisk + evidence alerts -> the frozen AIRequest contract.
+AlertGroup + EventRisk + evidence alerts -> the fixed AIRequest contract.
 No provider and no database involved: pure translation rules.
 """
 import json

@@ -16,10 +16,9 @@ from app.core.database import Base
 from app.core.ids import uuid7
 from app.models.types import JSONVariant
 
-# Execution vocabulary (Phase 3.1, frozen — design doc
-# docs/design/phase3-response-execution.md §6): decision is APPEND-ONLY
-# audit fact, never UPDATEd. Every decision belongs to exactly one
-# direction; cross-direction words are rejected by the CHECK below.
+# Execution vocabulary: `decision` is an append-only audit fact and is never
+# updated. Every decision belongs to exactly one direction; cross-direction
+# words are rejected by the CHECK below.
 EXECUTE_DECISIONS = frozenset(
     {"requested", "guard_rejected", "dispatched", "succeeded", "failed"}
 )
@@ -30,7 +29,7 @@ EXECUTION_DECISIONS = EXECUTE_DECISIONS | COMPENSATE_DECISIONS
 EXECUTION_DIRECTIONS = frozenset({"execute", "compensate"})
 
 # Legal decision x direction combinations only — the single source of truth
-# shared by the DB CHECK and the future Service state machine (3.1.3).
+# shared by the DB CHECK and the execution Service state machine.
 EXECUTION_LEGAL_COMBINATIONS = frozenset(
     {(decision, "execute") for decision in EXECUTE_DECISIONS}
     | {(decision, "compensate") for decision in COMPENSATE_DECISIONS}
@@ -38,28 +37,29 @@ EXECUTION_LEGAL_COMBINATIONS = frozenset(
 
 
 class ExecutionLog(Base):
-    """One append-only execution-audit row (Phase 3.1, migration 0009).
+    """One row of the append-only execution audit log (migration 0009).
 
-    Pure append log (design decision D7): execution state is NEVER stored —
-    it is DERIVED as the latest row per execution_id (created_at DESC,
-    id DESC). INSERT only: no UPDATE, no DELETE, ever.
+Execution state is not stored: it is derived as the latest row per
+execution_id, ordered by (created_at DESC, id DESC). Rows are inserted
+only — no UPDATE, no DELETE.
 
-    The client only expresses Intent (execution_id / approval_id /
-    operator): action and target are a SERVER-SIDE snapshot assembled from
-    the approved recommendation — the request schema never accepts them.
+The client expresses an intent (execution_id / approval_id / operator);
+action and target are a server-side snapshot assembled from the approved
+recommendation, and the request schema never accepts them.
 
-    `requested` semantics (D12): the row lands as soon as Auth + Schema
-    pass and a legal Execute Intent is formed — NOT "all guards passed".
-    Guards run AFTER requested and append guard_rejected / dispatched in
-    the same transaction (D13), so business rejections stay auditable.
-    """
+A `requested` row is written as soon as authentication and schema
+validation pass and a legal execute intent exists — it does not mean all
+guards passed. Guards run after it and append guard_rejected /
+dispatched in the same transaction, so business rejections stay
+auditable.
+"""
 
     __tablename__ = "execution_log"
     __table_args__ = (
-        # Constraint 9: storage-level guard — only legal decision x
-        # direction combinations persist. Sequencing rules (terminal
-        # states, transition order) are the Service state machine's job;
-        # the CHECK is the last integrity line (project-wide principle).
+        # Storage-level guard: only legal decision x direction combinations
+        # persist. Sequencing rules (terminal states, transition order) are
+        # the Service state machine's job; this CHECK is the last line of
+        # defence.
         CheckConstraint(
             "(direction = 'execute' AND decision IN ("
             "'requested', 'guard_rejected', 'dispatched', 'succeeded', 'failed'))"
@@ -68,10 +68,10 @@ class ExecutionLog(Base):
             "'compensation_requested', 'compensation_succeeded', 'compensation_failed'))",
             name="ck_execution_log_decision_direction",
         ),
-        # Constraint 1: idempotency key + execution identity (D14). Partial
-        # UNIQUE INDEX (not a table constraint) so both SQLite and
-        # PostgreSQL enforce it; the Service pre-check is the first line,
-        # this index is the last line against concurrent replays.
+        # Idempotency key and execution identity. A partial unique index
+        # rather than a table constraint, so both SQLite and PostgreSQL
+        # enforce it; the Service pre-check is the first line, this index the
+        # last against concurrent replays.
         Index(
             "ux_execution_log_execution_id_requested",
             "execution_id",
@@ -79,19 +79,17 @@ class ExecutionLog(Base):
             postgresql_where=text("decision = 'requested'"),
             sqlite_where=text("decision = 'requested'"),
         ),
-        # Constraint 2 — “占位行唯一约束” (placeholder-row uniqueness,
-        # frozen wording, migration-review 2026-08-28): one approval -> at
-        # most ONE forward execution over the whole lifecycle. Every legal
-        # direction='execute' chain holds EXACTLY ONE requested row, and it
-        # must be the FIRST row of the chain (Service invariant enforced by
-        # the 3.1.3 state machine — the DB only counts requested rows).
-        # That row is the lifecycle slot-holder: later chain rows
+        # One approval maps to at most one forward execution over the whole
+        # lifecycle. Every legal direction='execute' chain holds exactly one
+        # requested row, and it must be the first row of the chain (a Service
+        # invariant enforced by the state machine — the DB only counts
+        # requested rows). That row holds the lifecycle slot: later chain rows
         # (guard_rejected / dispatched / succeeded / failed) share
-        # approval_id but fall out of the partial index, while any
-        # RE-execution must insert a fresh requested row and is blocked
-        # here — even after terminal failed (no retry, only compensation).
-        # Approval forward-execution eligibility is guaranteed JOINTLY by
-        # the Service state machine and this partial unique index.
+        # approval_id but fall outside the partial index, while any
+        # re-execution would need a fresh requested row and is blocked here —
+        # even after a terminal failed (no retry, only compensation).
+        # Forward-execution eligibility is therefore guaranteed jointly by the
+        # Service state machine and this partial unique index.
         Index(
             "ux_execution_log_approval_id_execute",
             "approval_id",
@@ -99,8 +97,8 @@ class ExecutionLog(Base):
             postgresql_where=text("direction = 'execute' AND decision = 'requested'"),
             sqlite_where=text("direction = 'execute' AND decision = 'requested'"),
         ),
-        # Constraint 3: one original execution -> at most one compensation
-        # request (compensation is a fresh execution_id of its own).
+        # One original execution maps to at most one compensation request
+        # (a compensation runs under a fresh execution_id of its own).
         Index(
             "ux_execution_log_compensates_requested",
             "compensates_execution_id",
@@ -110,26 +108,25 @@ class ExecutionLog(Base):
         ),
     )
 
-    # RC2 / H-2: insert-ordered UUIDv7 — the deterministic tie-break of the
-    # frozen (created_at DESC, id DESC) derived-state ordering. Strictly
+    # Insert-ordered UUIDv7 — the deterministic tie-break of the
+    # (created_at DESC, id DESC) derived-state ordering. It is strictly
     # increasing within the writing process (one writer per chain), so a
     # created_at tie resolves to the true insertion order.
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
-    # Caller-supplied idempotency key AND execution identity (design §4):
-    # the first request binds it to approval_id / direction / server-side
-    # action+target snapshot; any replay with different facts is a 409.
+    # Caller-supplied idempotency key and execution identity: the first
+    # request binds it to the approval_id / direction / server-side
+    # action+target snapshot, and a replay carrying different facts is a 409.
     execution_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
 
-    # The approval this execution belongs to. execute direction: supplied
-    # by the request and validated; compensate direction: inherited by the
-    # server from the original execution (D11) — the client never sends it.
-    # NO ACTION on delete (migration-review 2026-08-28): execution_log is
-    # append-only audit; it must never disappear along with a deleted
-    # approval. The project has no approval deletion path today (all
-    # approval endpoints are GET/POST), so NO ACTION changes nothing
-    # operationally — it just stops the audit trail from inheriting a
-    # CASCADE behaviour copied unexamined from business-relation FKs.
+    # The approval this execution belongs to. For the execute direction it is
+    # supplied by the request and validated; for compensation the server
+    # inherits it from the original execution and the client never sends it.
+    # ON DELETE NO ACTION: execution_log is append-only audit and must never
+    # disappear along with a deleted approval. The project has no approval
+    # deletion path today (all approval endpoints are GET/POST), so NO ACTION
+    # changes nothing operationally — it only keeps the audit trail from
+    # inheriting the CASCADE behaviour that fits business-relation FKs.
     approval_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         ForeignKey("ai_response_approvals.id", ondelete="NO ACTION"),
@@ -137,15 +134,16 @@ class ExecutionLog(Base):
         index=True,
     )
 
-    # Frozen audit vocabulary (see module constants); CHECK above limits it
+    # Audit vocabulary (see the module constants); the CHECK above limits it
     # to the legal decision x direction combinations.
     decision: Mapped[str] = mapped_column(String(32), nullable=False)
 
     # Which way the log reads: forward execution or compensating execution.
     direction: Mapped[str] = mapped_column(String(16), nullable=False)
 
-    # SERVER-SIDE snapshot of the approved recommendation's action/target —
-    # never accepted from the request body (fact-smuggling is a 422).
+    # Server-side snapshot of the approved recommendation's action and
+    # target — never accepted from the request body, where a client-supplied
+    # value is rejected with a 422.
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     target: Mapped[str] = mapped_column(String(256), nullable=False)
 
@@ -156,23 +154,22 @@ class ExecutionLog(Base):
         Uuid, nullable=True, index=True
     )
 
-    # Who executed. Free-form operator identifier (shared-secret platform,
-    # no user system — D4), recorded verbatim for the audit trail; separate
-    # from the approval reviewer by design.
+    # Who executed: a free-form operator identifier (the platform is
+    # protected by a shared secret and has no user system), recorded verbatim
+    # for the audit trail and kept distinct from the approval reviewer.
     operator: Mapped[str] = mapped_column(String(128), nullable=False)
 
-    # Guard rejection reasons / dispatch echo / adapter raw responses /
-    # failure classification. NEVER contains the execution token (frozen
-    # security discipline, design §10).
+    # Guard rejection reasons, dispatch echo, adapter raw responses and
+    # failure classification. It never contains the execution token.
     detail: Mapped[dict] = mapped_column(JSONVariant, nullable=False, default=dict)
 
-    # Server clock only (constraint 8 + design precedent of reviewed_at):
-    # the audit trail cannot be backdated from the client. Append-only rows
-    # never update, so there is deliberately no updated_at.
-    # RC2 / H-2: stamped by the DATABASE at INSERT — never by a Python
-    # process. SQLite keeps CURRENT_TIMESTAMP; PostgreSQL production uses
-    # clock_timestamp() (migration 0014). Ties are broken by the insert-ordered
-    # uuid7 id, so chain ordering is deterministic on every dialect.
+    # Server clock only (as on AIResponseApproval.reviewed_at): the audit
+    # trail cannot be backdated from the client. Append-only rows are never
+    # updated, so there is no updated_at column.
+    # Stamped by the database at INSERT, never by a Python process. SQLite
+    # keeps CURRENT_TIMESTAMP; PostgreSQL production uses clock_timestamp()
+    # (migration 0014). Ties are broken by the insert-ordered uuid7 id, so
+    # chain ordering is deterministic on every dialect.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
     )

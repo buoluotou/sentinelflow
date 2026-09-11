@@ -1,13 +1,13 @@
-/** Execution observability API client tests (Phase 3.3.3.4.1).
+/** Execution observability API client tests.
  *
  * Locks the read-only boundary of the frontend observability layer:
- *   A. both functions hit exactly the two frozen GET endpoints
- *   B. every request is a GET with NO Authorization header (no token)
- *   C. bodies pass through verbatim — null rates stay null (the UI's
- *      N/A contract), never coerced to 0
- *   D. backend errors surface as ApiError
- *   E. module-level source locks: no POST / PATCH / PUT / DELETE, no
- *      Authorization, no probe/executor vocabulary in the client
+ * A. both functions hit exactly the two GET endpoints
+ * B. every request is a GET with no Authorization header (no token)
+ * C. bodies pass through verbatim — null rates stay null (the UI's
+ * N/A contract), never coerced to 0
+ * D. backend errors surface as ApiError
+ * E. module-level source locks: no POST / PATCH / PUT / DELETE, no
+ * Authorization, no probe/executor vocabulary in the client
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from './client'
@@ -104,7 +104,7 @@ describe('execution observability api client', () => {
   it('passes the metrics body through verbatim — null rates stay null', async () => {
     routeFetch(() => json(200, metricsBody()))
     const body = await getExecutionMetrics()
-    // The frozen "undefined metric" semantics must survive the client:
+    // The "undefined metric" semantics must survive the client:
     // null is N/A, never coerced to 0.
     expect(body.success_rate).toBeNull()
     expect(body.executor_failure_rate).toBeNull()

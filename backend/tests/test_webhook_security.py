@@ -1,4 +1,4 @@
-"""Phase 3.4.4-F — Security / Replay / Rollback / Execution-Isolation Final Gate.
+"""F — Security / Replay / Rollback / Execution-Isolation Final Gate.
 
 E (3.4.4-E) wired the append edge and proved persistence WORKS. F is NOT a
 re-implementation and NOT a duplicate of E: it is the INDEPENDENT final seal
@@ -83,11 +83,11 @@ from app.services.outcomes.webhook import (
 NOW = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
 WEBHOOK = "/api/v1/webhooks"
 
-#: G1-C / B0 §15.4 — the TEST-ONLY fake adapter is the platform success-pipeline
-#: vehicle (the real Wazuh vocabulary is now EMPTY / fail-closed, so NO production
-#: adapter can carry a success fact). Its webhook channel reuses the declared
-#: WAZUH_CALLBACK_TOKEN (conftest.fake_adapter_channel), so WAZUH_TOKEN still
-#: authenticates it and the operator identity becomes ``adapter:fakesuccess``.
+# G1-C / B0 — the TEST-ONLY fake adapter is the platform success-pipeline
+# vehicle (the real Wazuh vocabulary is now EMPTY / fail-closed, so NO production
+# adapter can carry a success fact). Its webhook channel reuses the declared
+# WAZUH_CALLBACK_TOKEN (conftest.fake_adapter_channel), so WAZUH_TOKEN still
+# authenticates it and the operator identity becomes ``adapter:fakesuccess``.
 FAKE = "fakesuccess"
 
 # Distinct, fixture-only callback secrets (section 25: NEVER a dev-machine token).
@@ -99,7 +99,7 @@ THEHIVE_TOKEN = "thehive-callback-secret-F"
 SECRET_STATE = "SUP3R-SECRET-EXTERNAL-STATE-do-not-echo"
 SECRET_REF = "secret-external-ref-do-not-echo"
 
-# The frozen five-word OUTCOME vocabulary (section 20) and the eight DISPATCH
+# The five-word OUTCOME vocabulary (section 20) and the eight DISPATCH
 # words that must NEVER appear as an outcome_status.
 OUTCOME_FIVE = {
     "unknown", "pending", "confirmed_success",
@@ -128,9 +128,9 @@ FORBIDDEN_CHAIN_CALLS = (
 )
 
 
-# --------------------------------------------------------------------------
+#
 # fixtures + helpers (seed pattern mirrors tests/test_correlation.py)
-# --------------------------------------------------------------------------
+#
 @pytest.fixture()
 def all_tokens(monkeypatch):
     """Configure all three callback channels with distinct fixture secrets."""
@@ -318,9 +318,9 @@ def _chain_calls():
 # section 4. Credential secrecy across EVERY sink
 # ==========================================================================
 class TestCredentialSecrecyFullChain:
-    #: G1-C / B0 §15.4 — the "valid callback" leg of each secrecy proof runs on the
-    #: TEST-ONLY fake adapter (the real Wazuh vocabulary is now refused); the
-    #: invalid/rejected legs stay on the real Wazuh route (production refusal).
+    # G1-C / B0 — the "valid callback" leg of each secrecy proof runs on the
+    # TEST-ONLY fake adapter (the real Wazuh vocabulary is now refused); the
+    # invalid/rejected legs stay on the real Wazuh route (production refusal).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_token_never_reaches_application_log(self, client, db_session, all_tokens, caplog):
@@ -418,8 +418,8 @@ class TestCrossAdapterTokenIsolation:
 # sections 6/7/8. Identity smuggling (adapter / operator / source) is refused
 # ==========================================================================
 class TestIdentitySmugglingRefused:
-    #: G1-C / B0 §15.4 — the "valid fact" identity proofs run on the fake adapter;
-    #: the smuggling-refusal proofs stay on the real Wazuh route (schema 422).
+    # G1-C / B0 — the "valid fact" identity proofs run on the fake adapter;
+    # the smuggling-refusal proofs stay on the real Wazuh route (schema 422).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     @pytest.mark.parametrize(
@@ -500,7 +500,7 @@ class TestExecutionIsolationStructural:
 # section 10. Replay — three facts, all preserved, final = latest observed_at
 # ==========================================================================
 class TestReplay:
-    #: G1-C / B0 §15.4 — replay/append-only proven on the fake adapter.
+    # G1-C / B0 — replay/append-only proven on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_t1_t2_t1replay_leaves_three_facts_and_derives_latest(self, client, db_session, all_tokens):
@@ -537,7 +537,7 @@ class TestReplay:
 # section 11. Replay ordering — arrival order never decides the derived state
 # ==========================================================================
 class TestReplayOrdering:
-    #: G1-C / B0 §15.4 — arrival-order independence proven on the fake adapter.
+    # G1-C / B0 — arrival-order independence proven on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     @pytest.mark.parametrize("reverse", [False, True])
@@ -580,8 +580,8 @@ class TestReplayOrdering:
 # section 12. Same timestamp — higher id wins, never DB natural order
 # ==========================================================================
 class TestSameTimestamp:
-    #: G1-C / B0 §15.4 — same-timestamp tie-break proven on the TEST-ONLY fake
-    #: adapter (the real Wazuh vocabulary is empty/refused, so no success fact).
+    # G1-C / B0 — same-timestamp tie-break proven on the TEST-ONLY fake
+    # adapter (the real Wazuh vocabulary is empty/refused, so no success fact).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_equal_observed_at_tie_breaks_by_id_desc_not_list_order(self, client, db_session, all_tokens):
@@ -604,8 +604,8 @@ class TestSameTimestamp:
 # section 13. Historical immutability across the full callback flow
 # ==========================================================================
 class TestHistoricalImmutability:
-    #: G1-C / B0 §15.4 — historical immutability across a NEW callback is proven on
-    #: the TEST-ONLY fake adapter (a real Wazuh word is refused, never INSERTs).
+    # G1-C / B0 — historical immutability across a NEW callback is proven on
+    # the TEST-ONLY fake adapter (a real Wazuh word is refused, never INSERTs).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_prior_facts_and_execution_log_immutable_across_a_new_callback(self, client, db_session, all_tokens):
@@ -628,8 +628,8 @@ class TestHistoricalImmutability:
 # section 14. Rollback — flush/commit failure, never accepted=true
 # ==========================================================================
 class TestRollbackFinalGate:
-    #: G1-C / B0 §15.4 — rollback-on-DB-failure must reach flush/commit, which a
-    #: real Wazuh word no longer does (refused at Gate 4); proven on the fake adapter.
+    # G1-C / B0 — rollback-on-DB-failure must reach flush/commit, which a
+    # real Wazuh word no longer does (refused at Gate 4); proven on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_flush_failure_http_500_zero_fact_not_accepted(self, client, db_session, all_tokens, monkeypatch):
@@ -666,8 +666,8 @@ class TestRollbackFinalGate:
 # section 15. Concurrency — interleaved legal callbacks are order-independent
 # ==========================================================================
 class TestConcurrency:
-    #: G1-C / B0 §15.4 — interleaved LEGAL callbacks are proven on the TEST-ONLY
-    #: fake adapter (the real Wazuh vocabulary is empty/refused).
+    # G1-C / B0 — interleaved LEGAL callbacks are proven on the TEST-ONLY
+    # fake adapter (the real Wazuh vocabulary is empty/refused).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     @pytest.mark.parametrize("reverse", [False, True])
@@ -706,11 +706,11 @@ class TestConcurrency:
 # section 16. The explicit zero-fact matrix
 # ==========================================================================
 class TestZeroFactMatrix:
-    #: G1-C / B0 §15.4 — the auth/schema/correlation/mapping rows stay on the REAL
-    #: Wazuh route (each refuses BEFORE or AT mapping, so they are genuine production
-    #: refusal proofs). The rollback/valid/duplicate rows need a fact to reach
-    #: flush/commit, which a refused Wazuh word no longer does, so they run on the
-    #: TEST-ONLY fake adapter. The channel fixture is additive (wazuh stays refused).
+    # G1-C / B0 — the auth/schema/correlation/mapping rows stay on the REAL
+    # Wazuh route (each refuses BEFORE or AT mapping, so they are genuine production
+    # refusal proofs). The rollback/valid/duplicate rows need a fact to reach
+    # flush/commit, which a refused Wazuh word no longer does, so they run on the
+    # TEST-ONLY fake adapter. The channel fixture is additive (wazuh stays refused).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def _run(self, client, db_session, monkeypatch, kind):
@@ -752,9 +752,9 @@ class TestZeroFactMatrix:
 # section 17. HTTP security semantics
 # ==========================================================================
 class TestHttpSecurity:
-    #: G1-C / B0 §15.4 — the frozen 200 semantics + the 500 persistence path need a
-    #: fact to persist, so they run on the TEST-ONLY fake adapter; the 401/404/422
-    #: refusals stay on the REAL Wazuh route (genuine production refusal proofs).
+    # G1-C / B0 — the 200 semantics + the 500 persistence path need a
+    # fact to persist, so they run on the TEST-ONLY fake adapter; the 401/404/422
+    # refusals stay on the REAL Wazuh route (genuine production refusal proofs).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_all_status_codes_carry_the_frozen_semantics(self, client, db_session, all_tokens):
@@ -815,8 +815,8 @@ class TestErrorLeakage:
 # section 19. Detail security — defense in depth
 # ==========================================================================
 class TestDetailSecurity:
-    #: G1-C / B0 §15.4 — the detail-allow-list proof persists a real fact, so it runs
-    #: on the TEST-ONLY fake adapter (a refused Wazuh word never reaches detail).
+    # G1-C / B0 — the detail-allow-list proof persists a real fact, so it runs
+    # on the TEST-ONLY fake adapter (a refused Wazuh word never reaches detail).
     pytestmark = pytest.mark.usefixtures("fake_adapter_vocab")
 
     def test_detail_is_credential_free_even_if_redact_detail_is_a_noop(self, db_session, all_tokens, monkeypatch):
@@ -840,9 +840,9 @@ class TestDetailSecurity:
 # section 20. Outcome-vocabulary boundary
 # ==========================================================================
 class TestOutcomeVocabularyBoundary:
-    #: G1-C / B0 §15.4 — the "valid webhook emits only outcome words" proof needs a
-    #: fact-producing adapter, so it runs on the TEST-ONLY fake (whose vocab is exactly
-    #: these seven words); the pure model/CHECK assertions are fixture-independent.
+    # G1-C / B0 — the "valid webhook emits only outcome words" proof needs a
+    # fact-producing adapter, so it runs on the TEST-ONLY fake (whose vocab is exactly
+    # these seven words); the pure model/CHECK assertions are fixture-independent.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_outcome_statuses_are_exactly_the_five(self):
@@ -889,9 +889,9 @@ class TestOutcomeVocabularyBoundary:
 # section 21. O5 — dispatch and outcome are independent layers
 # ==========================================================================
 class TestO5CrossLayer:
-    #: G1-C / B0 §15.4 — the O5 independence proof (dispatch=succeeded beside a real
-    #: confirmed_success) runs on the TEST-ONLY fake adapter; the banana-refusal and
-    #: direct-ORM confirmed_failure proofs below are fixture-independent / stay wazuh.
+    # G1-C / B0 — the O5 independence proof (dispatch=succeeded beside a real
+    # confirmed_success) runs on the TEST-ONLY fake adapter; the banana-refusal and
+    # direct-ORM confirmed_failure proofs below are fixture-independent / stay wazuh.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_dispatch_succeeded_and_external_outcome_are_independent(self, client, db_session, all_tokens):
@@ -1049,11 +1049,11 @@ class TestTestIndependence:
 # section 26. The end-to-end cross-layer security matrix (20 scenarios)
 # ==========================================================================
 class TestCrossLayerSecurityMatrix:
-    #: G1-C / B0 §15.4 — the three valid_* rows and persistence_rollback need a fact
-    #: to persist/rollback, so their route is the TEST-ONLY fake adapter; EVERY
-    #: rejection row (auth/schema/correlation/mapping/shuffle/thehive/unrecognized)
-    #: stays on its REAL route as a genuine production refusal proof. The channel
-    #: fixture is additive (the real Wazuh route stays refused).
+    # G1-C / B0 — the three valid_* rows and persistence_rollback need a fact
+    # to persist/rollback, so their route is the TEST-ONLY fake adapter; EVERY
+    # rejection row (auth/schema/correlation/mapping/shuffle/thehive/unrecognized)
+    # stays on its REAL route as a genuine production refusal proof. The channel
+    # fixture is additive (the real Wazuh route stays refused).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def _build(self, mode, eid):

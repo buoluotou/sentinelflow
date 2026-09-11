@@ -1,17 +1,17 @@
-"""Phase 3.1.1: execution_log data-model freeze tests.
+"""ExecutionLog data-model tests.
 
-Locks the frozen shape of ExecutionLog before Migration/Service/API land
-(design doc docs/design/phase3-response-execution.md):
+Locks the shape of ExecutionLog that the migration, service and API layers
+build on:
 
 - vocabulary: 5 execute decisions + 3 compensate decisions, with the legal
-  decision x direction combinations enforced by a DB CHECK
+decision x direction combinations enforced by a DB CHECK
 - append-only audit fact: no updated_at, created_at is server-stamped
 - idempotency + identity: three partial unique indexes (constraints 1/2/3)
-  hold in SQLite AND PostgreSQL (last line of defense, D14)
+hold in SQLite and PostgreSQL (the database is the last line of defense)
 - action / target are a server-side snapshot, detail is JSON audit payload
 - relationship to AIResponseApproval registered both sides
 
-Model tests ONLY — no Service, no API, no Executor (3.1.1 gate).
+Model tests only: no service, no API, no executor.
 """
 import uuid
 from datetime import datetime, timezone
@@ -141,7 +141,7 @@ class TestExecutionLogModelShape:
             "action", "target", "compensates_execution_id", "operator",
             "detail", "created_at",
         }
-        # Append-only rows never update — no updated_at by design.
+        # Append-only rows are never updated; there is no updated_at column.
         assert "updated_at" not in columns
 
     def test_check_constraint_guards_decision_direction(self):
@@ -185,9 +185,9 @@ class TestExecutionLogModelShape:
         )
 
     def test_approval_fk_protects_audit_on_delete(self):
-        # Append-only audit must never disappear with a deleted approval:
-        # NO ACTION, not CASCADE (migration-review 2026-08-28; the project
-        # has no approval deletion path, so this is the frozen semantics).
+        # Append-only audit rows must not disappear with a deleted approval:
+        # NO ACTION, not CASCADE. The project has no approval deletion path,
+        # so the constraint never fires.
         fk = next(
             constraint
             for constraint in ExecutionLog.__table__.constraints
@@ -273,7 +273,7 @@ class TestDecisionDirectionCheck:
 
 class TestPartialUniqueEnforcement:
     def test_duplicate_requested_same_execution_id_rejected(self, db_session):
-        # Constraint 1 — idempotency key (D14 last line of defense).
+        # Constraint 1 — idempotency key: the database's last line of defense.
         approval = _seed_approved(db_session)
         execution_id = uuid.uuid4()
         _row(db_session, approval, execution_id=execution_id)
@@ -287,7 +287,7 @@ class TestPartialUniqueEnforcement:
         assert db_session.query(ExecutionLog).count() == 1
 
     def test_full_chain_appends_under_one_execution_id(self, db_session):
-        # Chain rows share execution_id AND approval_id; only the single
+        # Chain rows share execution_id and approval_id; only the single
         # requested row sits in the partial unique indexes, so the chain
         # requested -> dispatched -> failed appends cleanly.
         approval = _seed_approved(db_session)
@@ -317,7 +317,7 @@ class TestPartialUniqueEnforcement:
         assert db_session.query(ExecutionLog).count() == 3
 
     def test_compensation_rows_do_not_occupy_forward_slot(self, db_session):
-        # Compensation inherits approval_id (D11) but reads direction =
+        # Compensation inherits approval_id but reads direction =
         # compensate, so the lifecycle index must not fire on it.
         approval = _seed_approved(db_session)
         execution_id = uuid.uuid4()
@@ -388,7 +388,7 @@ class TestSnapshotAndDetail:
 
     def test_detail_defaults_to_empty_object(self, db_session):
         approval = _seed_approved(db_session)
-        # Built by hand so the detail attribute is truly never assigned.
+        # Constructed without detail, so the model default applies.
         db_session.add(ExecutionLog(
             execution_id=uuid.uuid4(),
             approval_id=approval.id,

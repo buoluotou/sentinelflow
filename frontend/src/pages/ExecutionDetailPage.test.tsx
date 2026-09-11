@@ -1,14 +1,14 @@
-/** ExecutionDetailPage unit tests (Phase 3.1.9, jsdom, fetch mocked).
+/* * ExecutionDetailPage unit tests.
  *
  * Locks the read-only detail contract:
- *   A. the append-only timeline renders every decision row in order
- *   B. detail blocks are collapsed by default; the expander toggles them
- *   C. detail payloads render as escaped text — never as live HTML
- *   D. compensation relation: "Compensates" (compensate direction)
- *   E. compensation relation: "Compensated by" (execute direction)
- *   F. a 404 surfaces as an error banner
- *   G. zero action affordances — only the detail expander exists
- *   H. GET-only traffic, zero mutations, zero Authorization headers
+ * A. the append-only timeline renders every decision row in order
+ * B. detail blocks are collapsed by default; the expander toggles them
+ * C. detail payloads render as escaped text — never as live HTML
+ * D. compensation relation: "Compensates" (compensate direction)
+ * E. compensation relation: "Compensated by" (execute direction)
+ * F. a 404 surfaces as an error banner
+ * G. zero action affordances — only the detail expander exists
+ * H. GET-only traffic, zero mutations, zero Authorization headers
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -199,7 +199,7 @@ describe('ExecutionDetailPage', () => {
     expect(await screen.findByText(/Compensated by:/)).toBeInTheDocument()
     const link = await screen.findByRole('link', { name: COMP_ID })
     expect(link).toHaveAttribute('href', `/executions/${COMP_ID}`)
-    // the discovery used the frozen read contract — no new endpoint
+    // the discovery used the read contract — no new endpoint
     expect(fetchMock.mock.calls.some(([url]) => url === COMP_LOOKUP_URL)).toBe(true)
   })
 

@@ -1,13 +1,13 @@
-"""Build the provider-agnostic AIRequest from database state (Step 10.2).
+"""Build the provider-agnostic AIRequest from database state.
 
 The AI layer never sees ORM objects directly: this module is the single
 translation point AlertGroup + EventRisk + evidence alerts -> AIRequest.
 
 Evidence is bounded (MAX_EVIDENCE representative alerts, earliest first) —
 a 100k-alert event must never be fed to a model whole. Richer evidence
-sampling / summarization is deliberately deferred. Both tasks share the
-same evidence projection (_build_evidence) so the cap/sampling semantics
-live in exactly one place.
+sampling / summarization is deferred. Every task shares the same evidence
+projection (_build_evidence) so the cap/sampling semantics live in exactly
+one place.
 """
 import json
 
@@ -18,7 +18,7 @@ from app.services.ai.models import (
     TASK_RISK_SUMMARY,
 )
 
-#: Hard cap on evidence alerts handed to the model.
+# Hard cap on evidence alerts handed to the model.
 MAX_EVIDENCE = 20
 
 
@@ -27,12 +27,12 @@ def build_alert_explanation(
     risk: EventRisk | None,
     alerts: list[Alert],
 ) -> AIRequest:
-    """Assemble the frozen alert-explanation request for one event.
+    """Assemble the alert-explanation request for one event.
 
-    ``risk`` may be None (event not scored yet): the request degrades to
-    score 0 / level "unassessed" with no factors rather than failing — the
-    AI can still explain the event itself.
-    """
+``risk`` may be None (event not scored yet): the request degrades to
+score 0 / level "unassessed" with no factors rather than failing — the
+AI can still explain the event itself.
+"""
     return AIRequest(
         task="alert_explanation",
         event_title=group.title,
@@ -51,13 +51,13 @@ def build_risk_summary_request(
     alerts: list[Alert],
     latest_analysis: AIAnalysis | None = None,
 ) -> AIRequest:
-    """Assemble the risk-summary request for one event (Step 11.2).
+    """Assemble the risk-summary request for one event.
 
-    Same degradation as alert explanation when ``risk`` is None. The Step 10
-    explanation is an optional enrichment — a missing analysis must never
-    block risk-summary generation. The task is fixed here: callers cannot
-    steer the task vocabulary.
-    """
+Same degradation as alert explanation when ``risk`` is None. The alert
+explanation is an optional enrichment — a missing analysis must never
+block risk-summary generation. The task is fixed here: callers cannot
+steer the task vocabulary.
+"""
     return AIRequest(
         task=TASK_RISK_SUMMARY,
         event_title=group.title,
@@ -77,15 +77,15 @@ def build_response_recommendation_request(
     alerts: list[Alert],
     latest_summary: AIRiskSummary | None = None,
 ) -> AIRequest:
-    """Assemble the response-recommendation request for one event (Step 12).
+    """Assemble the response-recommendation request for one event.
 
-    Same degradation as the other tasks when ``risk`` is None. The Step 11
-    risk summary is an optional enrichment — a missing summary must never
-    block recommendation generation (each layer stays independently
-    generatable). The task is fixed here: callers cannot steer the task
-    vocabulary. The request describes the event only; it never carries
-    anything executable, and the protocol only ever returns advice.
-    """
+Same degradation as the other tasks when ``risk`` is None. The prior
+risk summary is an optional enrichment — a missing summary must never
+block recommendation generation (each layer stays independently
+generatable). The task is fixed here: callers cannot steer the task
+vocabulary. The request describes the event only; it never carries
+anything executable, and the protocol only ever returns advice.
+"""
     return AIRequest(
         task=TASK_RESPONSE_RECOMMENDATION,
         event_title=group.title,
@@ -102,9 +102,9 @@ def build_response_recommendation_request(
 def _build_evidence(alerts: list[Alert]) -> list[str]:
     """Bounded evidence sample: earliest MAX_EVIDENCE alerts, JSON projection.
 
-    The caller is responsible for ordering (earliest first) — see the
-    services that feed this. One implementation for every AI task.
-    """
+The caller is responsible for ordering (earliest first) — see the
+services that feed this. One implementation for every AI task.
+"""
     return [
         json.dumps(_evidence_item(alert), ensure_ascii=False, default=str)
         for alert in alerts[:MAX_EVIDENCE]
@@ -112,11 +112,11 @@ def _build_evidence(alerts: list[Alert]) -> list[str]:
 
 
 def _prior_explanation(analysis: AIAnalysis | None) -> dict | None:
-    """Structured projection of the latest Step 10 analysis, or None.
+    """Structured projection of the latest alert analysis, or None.
 
-    Only the protocol fields are forwarded — never ids, timestamps or
-    provider metadata, so the model cannot echo internal state back.
-    """
+Only the protocol fields are forwarded — never ids, timestamps or
+provider metadata, so the model cannot echo internal state back.
+"""
     if analysis is None:
         return None
     return {
@@ -128,12 +128,12 @@ def _prior_explanation(analysis: AIAnalysis | None) -> dict | None:
 
 
 def _prior_summary(summary: AIRiskSummary | None) -> dict | None:
-    """Structured projection of the latest Step 11 risk summary, or None.
+    """Structured projection of the latest risk summary, or None.
 
-    Same discipline as _prior_explanation: only protocol fields are
-    forwarded — never ids, timestamps or provider metadata, so the model
-    cannot echo internal state back.
-    """
+Same discipline as _prior_explanation: only protocol fields are
+forwarded — never ids, timestamps or provider metadata, so the model
+cannot echo internal state back.
+"""
     if summary is None:
         return None
     return {
@@ -155,9 +155,9 @@ def _factors(risk: EventRisk | None) -> list[dict]:
 def _evidence_item(alert: Alert) -> dict:
     """Compact, field-stable projection of one evidence alert.
 
-    Only analyst-meaningful fields are forwarded (no internal ids), and None
-    values are dropped so the prompt stays dense.
-    """
+Only analyst-meaningful fields are forwarded (no internal ids), and None
+values are dropped so the prompt stays dense.
+"""
     item = {
         "event_type": alert.event_type,
         "severity": alert.severity,

@@ -1,4 +1,4 @@
-"""Phase 2 Step 14.1: Incident <-> AI association protocol tests.
+"""Incident <-> AI association protocol tests.
 
 Freezes the incident-centric case view WITHOUT an executor:
 
@@ -106,9 +106,9 @@ def _make_recommendation(group: AlertGroup) -> AIResponseRecommendation:
     )
 
 
-# ---------------------------------------------------------------------------
+#
 # 1. The association chain is complete and read-only
-# ---------------------------------------------------------------------------
+#
 
 
 def test_full_chain_traversal_from_incident(db_session):
@@ -180,9 +180,9 @@ def test_deleting_the_incident_keeps_the_ai_history(db_session):
     assert db_session.get(AIResponseRecommendation, recommendation_id) is not None
 
 
-# ---------------------------------------------------------------------------
-# 2. The risk-score snapshot is frozen against every AI artifact
-# ---------------------------------------------------------------------------
+#
+# 2. The risk-score snapshot is against every AI artifact
+#
 
 
 def test_ai_history_never_touches_the_risk_score_snapshot(db_session):
@@ -223,9 +223,9 @@ def test_approved_decision_is_never_consumed_by_the_incident(db_session):
     assert (incident.risk_score, incident.severity, incident.status) == snapshot
 
 
-# ---------------------------------------------------------------------------
+#
 # 3. Zero schema change — the associations are pure ORM projections
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incidents_table_keeps_the_frozen_step7_columns(db_session):

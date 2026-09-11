@@ -1,10 +1,9 @@
-# Production Edge — TLS, Reverse Proxy & Trusted Headers (RC2 §19)
+# Production Edge: TLS, Reverse Proxy and Trusted Headers
 
-**Status: DESIGN (not deployed in this round).** The Demo stack is unchanged:
-it binds every published port to `127.0.0.1` and terminates nothing. This
-document is the required production-edge design + working example configs.
-No part of this file was validated against a real public deployment; it is a
-design deliverable, and the final report keeps it `PARTIAL / NOT CERTIFIED`.
+**Status: design only.** Nothing here is deployed. The Demo stack publishes
+every port on `127.0.0.1` and terminates nothing. The configuration below has
+not been run against a public deployment — treat it as a starting point to test
+in your own environment.
 
 ---
 
@@ -53,10 +52,9 @@ browser ──HTTPS──▶ edge (nginx / Caddy / cloud LB)
 
 ## 4. Trusted headers — where identity does and does NOT come from
 
-Frozen RC2 boundary: **the approval/execution/reconcile identity comes ONLY
-from the authenticated Bearer token** (`OPERATORS_JSON`), resolved
-server-side. Request-body `operator` / `reviewer` fields are ignored by
-design. Therefore:
+Identity boundary: **the approval, execution and reconcile identity comes only
+from the authenticated Bearer token** (`OPERATORS_JSON`), resolved server-side.
+Request-body `operator` and `reviewer` fields are ignored. Therefore:
 
 - A forged `X-Forwarded-*` header can never elevate identity — there is no
   code path that trusts it for auth.
@@ -75,11 +73,11 @@ design. Therefore:
 - Rate-limit the write paths hardest (`POST /api/v1/ai-response-approvals/...`,
   `POST /api/v1/executions`, reconcile endpoints) — they are the only paths
   that can eventually trigger a real external action.
-- Issue one Bearer token per human, keep it out of URLs/logs, rotate it on
-  personnel change (`OPERATORS_JSON` is static config in RC2; rotation = edit
-  and restart).
-- Full RBAC split (approval ≠ execution ≠ reconcile ≠ admin) is enforced in
-  the application; the edge is just the delivery path.
+- Issue one Bearer token per human, keep it out of URLs and logs, and rotate it
+  on personnel change (`OPERATORS_JSON` is static configuration; rotation means
+  editing it and restarting).
+- The role split between approval, execution and reconcile is enforced in the
+  application; the edge is only the delivery path.
 
 ## 6. Rate limiting
 
@@ -105,9 +103,8 @@ abuse ceiling on the write paths.
 
 ## 8. CORS
 
-- **Default: none, on purpose.** One origin (SPA + same-origin `/api`)
-  means no CORS middleware is needed, and the application deliberately adds
-  no permissive CORS.
+- **Default: none.** One origin (SPA plus same-origin `/api`) means no CORS
+  middleware is needed, and the application adds no permissive CORS.
 - If you *must* split origins (e.g. `app.example.com` + `api.example.com`),
   add an explicit allow-list at the backend or edge — never `*`, and never
   `allow_credentials` with a wildcard. Treat it as a reviewed change with
@@ -234,7 +231,7 @@ stock Caddy.)
 7. Backups scheduled (see [BACKUP-RESTORE.md](BACKUP-RESTORE.md)).
 8. Logs aggregated with correlation ids; credentials never logged.
 
-## 13. Explicit non-goals (unchanged by this document)
+## 13. Non-goals
 
 - No WAF, no SSO/OIDC integration, no mTLS, no HA topology — those are
   deployment-owner choices; this document only fixes the trust boundaries

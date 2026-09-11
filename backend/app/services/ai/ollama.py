@@ -1,9 +1,8 @@
-"""Ollama provider — local model via the /api/chat endpoint (Phase 2 Step 9).
+"""Ollama provider — local model via the /api/chat endpoint.
 
-Interface only at this step: the provider speaks Ollama's HTTP protocol and
-parses its answer through the frozen structured-output protocol, but no
-Ollama instance is exercised until Step 10. The transport is injectable so
-tests replace the network wholesale.
+The provider speaks Ollama's HTTP protocol and parses its answer through the
+structured-output protocol. The transport is injectable so tests replace the
+network wholesale instead of needing a running Ollama instance.
 """
 import json
 

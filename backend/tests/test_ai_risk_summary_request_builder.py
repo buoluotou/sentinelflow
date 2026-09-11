@@ -1,4 +1,4 @@
-"""Step 11.2: risk-summary AIRequest builder tests.
+"""risk-summary AIRequest builder tests.
 
 AlertGroup + EventRisk + evidence (+ optional latest Step 10 analysis)
 -> the risk_summary AIRequest. Pure translation rules: no provider, no
@@ -65,7 +65,7 @@ def _analysis(summary: str = "Reverse shell activity.", confidence: float = 0.95
     )
 
 
-# ------------------------------------------------------- Case 1: no analysis
+# Case 1: no analysis
 
 
 def test_no_prior_explanation_when_never_analysed():
@@ -78,7 +78,7 @@ def test_no_prior_explanation_when_never_analysed():
     assert len(request.evidence) == 1
 
 
-# ------------------------------------------------ Case 2: analysis injected
+# Case 2: analysis injected
 
 
 def test_latest_analysis_injected_as_structured_projection():
@@ -97,12 +97,12 @@ def test_latest_analysis_injected_as_structured_projection():
     assert "alert_group_id" not in dumped
 
 
-# --------------------------------------- Case 3: multiple analyses, one wins
+# Case 3: multiple analyses, one wins
 
 
 def test_only_the_single_latest_analysis_is_carried():
     """The builder consumes exactly the (service-selected) latest record;
-    older history rows must not appear in the request."""
+older history rows must not appear in the request."""
     older = _analysis(summary="Older hypothesis.", confidence=0.40)
     latest = _analysis(summary="Refined conclusion.", confidence=0.91)
 
@@ -115,7 +115,7 @@ def test_only_the_single_latest_analysis_is_carried():
     assert "Older hypothesis." not in dumped
 
 
-# ------------------------------------------------------ Case 4: evidence cap
+# Case 4: evidence cap
 
 
 def test_evidence_capped_at_max_like_step10():
@@ -129,7 +129,7 @@ def test_evidence_capped_at_max_like_step10():
     assert json.loads(request.evidence[-1])["source_ip"] == "10.0.0.19"
 
 
-# ------------------------------------------------- Case 5: None-field cleanup
+# Case 5: None-field cleanup
 
 
 def test_none_fields_dropped_with_step10_projection_rules():
@@ -142,7 +142,7 @@ def test_none_fields_dropped_with_step10_projection_rules():
     assert item["event_type"] == "suspicious_process"
 
 
-# ------------------------------------------------- Case 6: factors preserved
+# Case 6: factors preserved
 
 
 def test_risk_factors_fully_preserved():
@@ -178,7 +178,7 @@ def test_missing_risk_degrades_like_step10():
     assert request.risk_factors == []
 
 
-# ------------------------------------------------------ Case 7: task is fixed
+# Case 7: task is fixed
 
 
 def test_task_is_fixed_to_risk_summary():
@@ -190,7 +190,7 @@ def test_task_is_fixed_to_risk_summary():
     assert "task" not in params
 
 
-# --------------------------------------- Case 8: Step 10 builder untouched
+# Case 8: Step 10 builder untouched
 
 
 def test_alert_explanation_builder_behaviour_frozen():

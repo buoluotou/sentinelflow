@@ -1,4 +1,4 @@
-"""Phase 3.1.10: Cross-layer regression — the first system-level proof
+"""Cross-layer regression — the first system-level proof
 that the whole response-execution chain composes consistently:
 
     Approval -> Execute Intent -> HTTP API -> Service -> Guard
@@ -23,7 +23,7 @@ Coverage map (8 journeys + security attacks):
 5. duplicate / replay     same id+approval, id+other approval, re-execute
                           after ANY terminal state — first facts untouched
 6. compensation chain     inherited facts, compensates link, audit A<->B
-7. Phase 2 invariance     EventRisk / Incident / recommendation / approval
+7. invariance     EventRisk / Incident / recommendation / approval
                           fields byte-identical before vs after execution
 8. HTTP/DB consistency    401/422/404 write 0 rows; 409 writes no new
                           chain; 201 always means a persisted fact
@@ -31,7 +31,7 @@ Coverage map (8 journeys + security attacks):
 The three invariants this phase exists to lock:
 - no duplicate execution
 - no tampering with execution facts
-- no pollution of Phase 2 data
+- no pollution of data
 """
 import uuid
 from datetime import datetime, timezone
@@ -81,11 +81,11 @@ def app():
     return fastapi_app
 
 
-# --------------------------------------------------------------------------
-# Seeding (event skeleton with Phase 2 facts, approval via ORM)
-# --------------------------------------------------------------------------
+#
+# Seeding
+#
 def seed_world(db_session, *, status="approved"):
-    """One complete Phase 1+2 world: AlertGroup -> EventRisk, Incident,
+    """One complete +2 world: AlertGroup -> EventRisk, Incident,
     recommendation snapshot, approval. Returns (approval, event_risk,
     incident, recommendation) for invariance assertions."""
     now = datetime.now(timezone.utc)
@@ -133,7 +133,7 @@ def seed_world(db_session, *, status="approved"):
 
 
 def phase2_snapshot(db_session, approval, risk, incident, recommendation):
-    """Byte-level snapshot of every Phase 2 fact the execution layer must
+    """Byte-level snapshot of every fact the execution layer must
     never touch."""
     db_session.expire_all()
     approval = db_session.get(AIResponseApproval, approval.id)
@@ -158,9 +158,9 @@ def phase2_snapshot(db_session, approval, risk, incident, recommendation):
     }
 
 
-# --------------------------------------------------------------------------
+#
 # Request + row helpers
-# --------------------------------------------------------------------------
+#
 def execute_body(approval, execution_id=None, **overrides):
     body = {
         "execution_id": str(execution_id or uuid.uuid4()),
@@ -199,7 +199,7 @@ def detail(client, execution_id):
 def assert_chain_rows(db_session, execution_id, decisions):
     """DB rows == exactly the expected chain, in order, with non-decreasing
     database-stamped audit times and strictly increasing insert-ordered ids
-    (RC2 / H-2: the DATABASE stamps created_at; the uuid7 id is the
+    (/ H-2: the DATABASE stamps created_at; the uuid7 id is the
     deterministic tie-break, so a same-timestamp tie can never reorder a
     chain)."""
     rows = rows_for(db_session, execution_id)
@@ -231,9 +231,9 @@ def assert_api_matches_db(client, db_session, execution_id, derived_state, chain
         assert uuid.UUID(api_row["id"]) == db_row.id
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Success chain
-# --------------------------------------------------------------------------
+#
 class TestSuccessChain:
     def test_full_chain_db_and_api_agree(self, client, db_session, auth):
         approval, *_ = seed_world(db_session)
@@ -259,7 +259,7 @@ class TestSuccessChain:
             assert row.target == SNAPSHOT_TARGET
             assert row.direction == "execute"
         # the real mock adapter ran (DryRun echo + raw response present)
-        # M4-A: the dispatched row now ALSO carries the immutable pre-dispatch
+        # A: the dispatched row now ALSO carries the immutable pre-dispatch
         # binding. The mock is NOT a DispatchBindingContributor, so its binding
         # holds the platform facts alone — NO adapter-specific target identity
         # (endpoint / instance / tenant stay an honest None, never fabricated).
@@ -291,9 +291,9 @@ class TestSuccessChain:
             assert TOKEN not in str(row.detail)
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Guard rejection chain
-# --------------------------------------------------------------------------
+#
 class CanaryExecutor(MockExecutor):
     """Proves the adapter is NEVER reached when a guard rejects."""
 
@@ -343,9 +343,9 @@ class TestGuardRejectionChain:
         )
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Adapter failure classifications (real MockExecutor.fail_with)
-# --------------------------------------------------------------------------
+#
 class TestAdapterFailure:
     @pytest.mark.parametrize("classification",
                              ["adapter_unavailable", "timeout", "adapter_error"])
@@ -375,9 +375,9 @@ class TestAdapterFailure:
         )
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Protocol violation — rogue adapter outcomes judged by the platform
-# --------------------------------------------------------------------------
+#
 class MaliciousAdapter(MockExecutor):
     """A rogue adapter returning a fixed invalid outcome. protocol_violation
     is NOT injectable through MockExecutor.fail_with (D9) — the only way to
@@ -433,9 +433,9 @@ class TestProtocolViolation:
         assert rows[2].detail["raw_response"] is None
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Duplicate / replay — the first facts always stand
-# --------------------------------------------------------------------------
+#
 class TestDuplicateReplay:
     def test_same_execution_same_approval_replay_refused(
         self, client, db_session, auth
@@ -501,9 +501,9 @@ class TestDuplicateReplay:
         assert len(all_rows(db_session)) == row_count
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Compensation chain — inherited facts + bidirectional audit relation
-# --------------------------------------------------------------------------
+#
 class TestCompensationChain:
     @pytest.mark.parametrize("forward_setup", ["succeeded", "failed"])
     def test_full_compensation_chain(
@@ -572,7 +572,7 @@ class TestCompensationChain:
             headers=auth,
         ).status_code == 201
 
-        # undoing an undo is not part of the frozen state machine
+        # undoing an undo is not part of the state machine
         response = client.post(
             COMPENSATE,
             json={"execution_id": str(uuid.uuid4()),
@@ -628,9 +628,9 @@ class TestCompensationChain:
         assert len(all_rows(db_session)) == 3
 
 
-# --------------------------------------------------------------------------
-# 7. Phase 2 invariance — execution produces execution_log ONLY
-# --------------------------------------------------------------------------
+#
+# 7. invariance — execution produces execution_log ONLY
+#
 class TestPhase2Invariance:
     @pytest.mark.parametrize("journey", ["succeeded", "failed", "compensated"])
     def test_phase2_facts_byte_identical(self, client, db_session, auth, app, journey):
@@ -659,9 +659,9 @@ class TestPhase2Invariance:
         assert len(all_rows(db_session)) == (5 if journey == "compensated" else 3)
 
 
-# --------------------------------------------------------------------------
+#
 # 8. HTTP / DB consistency — HTTP error != execution fact; 201 = fact
-# --------------------------------------------------------------------------
+#
 class TestHttpDbConsistency:
     def test_401_writes_zero_rows(self, client, db_session):
         approval, *_ = seed_world(db_session)
@@ -723,9 +723,9 @@ class TestHttpDbConsistency:
         assert detail(client, execution_id).json()["derived_state"] == verdict
 
 
-# --------------------------------------------------------------------------
+#
 # Security attack special — fact smuggling never enters an execution fact
-# --------------------------------------------------------------------------
+#
 class TestFactSmugglingAttacks:
     @pytest.mark.parametrize("field,value", [
         ("action", "isolate_host"),
@@ -763,17 +763,17 @@ class TestFactSmugglingAttacks:
         assert all_rows(db_session) == []
 
 
-# --------------------------------------------------------------------------
-# M4-E: the pre-dispatch binding survives EVERY outcome (M4-A hard requirement)
-# --------------------------------------------------------------------------
+#
+# E: the pre-dispatch binding survives EVERY outcome
+#
 class TestBindingSurvivesEveryOutcome:
-    """M4-A persists the immutable target binding in the ``dispatched`` row BEFORE
+    """A persists the immutable target binding in the ``dispatched`` row BEFORE
     the external request, so it survives success / timeout / connection failure /
     HTTP error / response loss alike, and the terminal row only REFERENCES it.
 
     TestSuccessChain locks the SUCCESS journey; this class locks the FAILURE
     journeys — the ones that leave NO ``succeeded`` row, exactly where a
-    terminal-only binding (the pre-M4 shape) would be LOST — plus the
+    terminal-only binding would be LOST — plus the
     guard-rejection journey, which never dispatches and so must carry NO binding.
     Every fact is produced by the REAL service + DB; the only seam is the executor
     dependency (a failing mock / a rogue adapter), identical to journeys 3-4."""

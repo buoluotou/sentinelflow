@@ -1,10 +1,10 @@
-"""Response execution services (Phase 3.1).
+"""Response execution services.
 
 The controlled-execution layer on top of approved recommendations:
 Approval -> Execute Intent -> Guard -> execution_log -> Executor.
-3.1.3 delivered the state semantics, 3.1.4 the Guard / Policy verdicts,
-3.1.5 the executor contract + Mock/DryRun adapter + registry, 3.1.6 the
-Execute / Compensation Service that wires them into complete chains.
+Holds the state-machine semantics, the Guard / Policy verdicts, the executor
+contract with the Mock/DryRun adapter and its registry, and the Execute /
+Compensation Service that wires them into complete chains.
 No API here yet.
 """
 

@@ -1,4 +1,4 @@
-"""M4-F §1/§2 — service + endpoint integration for the durable pre-dispatch
+"""/— service + endpoint integration for the durable pre-dispatch
 attempt store (TDD Cycle 2).
 
 Cycle 1 (``test_dispatch_attempt_durability.py``) proved the STORE commits
@@ -6,25 +6,25 @@ durably on an INDEPENDENT connection (file-backed SQLite). This cycle proves the
 SERVICE wiring around it:
 
 - ``store.record()`` runs BEFORE ``executor.execute()`` — the pre-dispatch
-  guarantee: the committed intent + target binding exists before the wire call
+guarantee: the committed intent + target binding exists before the wire call
 - a pre-dispatch commit failure means ZERO external calls — the adapter is NEVER
-  invoked on an intent that did not durably persist
+invoked on an intent that did not durably persist
 - a duplicate ``execution_id`` at the durable commit maps to the SAME typed 409
-  (D14) the pre-check raises, caught BEFORE the adapter runs
-- M4-G §1: a duplicate ``approval_id`` at the durable commit (two execution_ids
-  racing ONE approval) maps to ``ApprovalAlreadyExecuted`` — the SAME typed 409
-  the G3 pre-check raises — caught BEFORE the adapter runs, closing the race the
-  pre-check alone cannot (both requests read an empty prior_approval_rows)
+(D14) the pre-check raises, caught BEFORE the adapter runs
+- a duplicate ``approval_id`` at the durable commit (two execution_ids
+racing ONE approval) maps to ``ApprovalAlreadyExecuted`` — the SAME typed 409
+the G3 pre-check raises — caught BEFORE the adapter runs, closing the race the
+pre-check alone cannot (both requests read an empty prior_approval_rows)
 - the terminal row REFERENCES the recorded ``attempt_id`` (never re-writes it)
-- ``store=None`` is byte-identical to the pre-M4-F path (no regression)
-- M4-G §2: a RECOGNIZED real external adapter (thehive/shuffle/wazuh) with
-  ``store=None`` is REFUSED before dispatch (``DurableStoreRequired``, a typed
-  503) — it may never degrade to the flush-only path; the offline mock is exempt
-- M4-G §2: an AMBIGUOUS durable-commit outcome is never auto-retried with a new
-  execution_id / approval reservation — ZERO external calls, the store is asked
-  exactly once, the uncertainty propagates for read-only recovery (§3)
+- ``store=None`` is byte-identical to the pre-path (no regression)
+- a RECOGNIZED real external adapter (thehive/shuffle/wazuh) with
+``store=None`` is REFUSED before dispatch (``DurableStoreRequired``, a typed
+503) — it may never degrade to the flush-only path; the offline mock is exempt
+- an AMBIGUOUS durable-commit outcome is never auto-retried with a new
+execution_id / approval reservation — ZERO external calls, the store is asked
+exactly once, the uncertainty propagates for read-only recovery
 - exactly ONE external call per dispatch — no automatic retry / re-dispatch
-  (constraint 5)
+(constraint 5)
 
 SQLite honesty (constraint 2): these control-flow proofs use a FAKE store on the
 in-memory ``db_session`` — a REAL independent-connection store cannot interleave
@@ -57,9 +57,9 @@ class _Events(list):
 
 class FakeStore:
     """Stand-in durable store: logs the binding + call order, optionally raising a
-    configured error to simulate a pre-dispatch commit failure. Touches NO
-    database, so it runs on the in-memory harness without the SQLite
-    single-writer artifact."""
+configured error to simulate a pre-dispatch commit failure. Touches NO
+database, so it runs on the in-memory harness without the SQLite
+single-writer artifact."""
 
     def __init__(self, events=None, raise_exc=None):
         self.recorded = []
@@ -86,7 +86,7 @@ class CountingExecutor(ResponseExecutor):
 
     @property
     def name(self):
-        # M4-G §2: the fail-closed gate keys on ``executor.name``, so a test can
+        # the fail-closed gate keys on ``executor.name``, so a test can
         # present a RECOGNIZED adapter identity (thehive/shuffle/wazuh) while the
         # offline MockExecutor still does the (stubbed) work — control flow only,
         # never a real external call.
@@ -156,14 +156,14 @@ class TestDurableDispatchWiring:
         assert "execute" not in events
 
     def test_pre_dispatch_duplicate_approval_refuses_the_external_request(self, db_session):
-        # M4-G §1: TWO different execution_ids racing ONE approval_id. Both pass
+        # TWO different execution_ids racing ONE approval_id. Both pass
         # the G3 lifecycle pre-check (each reads an empty prior_approval_rows) and
         # both would fire the adapter; the durable approval-slot reservation is the
         # line that stops the SECOND, at its own independent commit, translating the
         # unique-index IntegrityError into the SAME typed 409 the pre-check raises
         # (ApprovalAlreadyExecuted) BEFORE the wire call. execution_log's partial
         # approval index bites only at caller-commit, AFTER the external request —
-        # too late — which is exactly the M4-F review finding this closes.
+        # too late — which is exactly the review finding this closes.
         approval = seed_approved(db_session)
         events = _Events()
         dup = IntegrityError(
@@ -221,7 +221,7 @@ class TestDurableDispatchWiring:
 
     def test_store_none_is_the_unchanged_pre_m4f_path(self, db_session):
         # Regression guard: the default (no store) path is byte-identical to
-        # pre-M4-F, so the 2810 existing tests are untouched by the wiring.
+        # pre-, so the 2810 existing tests are untouched by the wiring.
         approval = seed_approved(db_session)
         result = execute_response(
             db_session,
@@ -252,10 +252,10 @@ class TestDurableDispatchWiring:
     def test_recognized_adapter_without_a_durable_store_is_refused_before_dispatch(
         self, db_session
     ):
-        # M4-G §2 FAIL-CLOSED GATE: a RECOGNIZED real external adapter
+        # FAIL-CLOSED GATE: a RECOGNIZED real external adapter
         # (thehive/shuffle/wazuh) presented with store=None — a DI gap, a config
         # error, or a test default — MUST be refused BEFORE the external request.
-        # It may never silently degrade to the flush-only pre-M4-F path, because
+        # It may never silently degrade to the flush-only pre-path, because
         # then the dispatch intent would not be durably committed before the wire
         # call. The refusal is a typed DurableStoreRequired (a 503 at the API) and
         # the adapter is NEVER invoked.
@@ -276,7 +276,7 @@ class TestDurableDispatchWiring:
         assert "record" not in events  # refused before even reaching the store
 
     def test_recognized_adapter_with_a_durable_store_proceeds(self, db_session):
-        # M4-G §2 positive control: the SAME recognized adapter identity WITH an
+        # positive control: the SAME recognized adapter identity WITH an
         # injected store takes the real durable path — the gate does not over-block.
         # record() still precedes execute() (the pre-dispatch guarantee holds).
         approval = seed_approved(db_session)
@@ -296,12 +296,12 @@ class TestDurableDispatchWiring:
         assert events.index("record") < events.index("execute")
 
     def test_ambiguous_store_commit_never_retries_the_external_action(self, db_session):
-        # M4-G §2 COMMIT-UNCERTAINTY: the durable commit outcome is AMBIGUOUS (the
+        # COMMIT-UNCERTAINTY: the durable commit outcome is AMBIGUOUS (the
         # DB may have committed but the confirmation was lost — a connection drop
         # mid-commit). The Service MUST NOT auto-retry the external action with a
         # new execution_id or a new approval reservation: it propagates the
         # uncertainty, makes ZERO external calls, and asks the store exactly ONCE.
-        # Read-only recovery (§3) later surfaces whatever actually committed —
+        # Read-only recovery later surfaces whatever actually committed —
         # there is no automatic second external action here.
         approval = seed_approved(db_session)
         events = _Events()

@@ -1,11 +1,11 @@
-"""AIProvider contract (Phase 2 Step 9; task-unified in Step 11).
+"""AIProvider contract.
 
-One method — generate(request) -> frozen protocol object — shared by every
-provider and every task, so swapping Ollama for a cloud model (or adding a
-task) never touches Incident or Risk Engine code. explain() remains as the
-Step 10-compatible alias for task=alert_explanation. Prompts are built HERE
-once and shared by all real providers: one frozen prompt contract per task,
-one frozen output protocol per task.
+One method — generate(request) -> protocol object — shared by every provider
+and every task, so swapping Ollama for a cloud model (or adding a task) never
+touches Incident or Risk Engine code. explain() is the compatibility alias
+for task=alert_explanation. Prompts are built in this module once and shared
+by all real providers: one prompt contract per task, one output protocol per
+task.
 """
 import json
 from abc import ABC, abstractmethod
@@ -22,9 +22,9 @@ from app.services.ai.models import (
     RiskSummary,
 )
 
-#: Frozen system prompt (alert_explanation): identity + the structured-output
-#: contract. Real providers must answer with JSON only; parsing stays strict
-#: regardless.
+# System prompt for alert_explanation: identity + the structured-output
+# contract. Real providers must answer with JSON only; parsing stays strict
+# regardless.
 SYSTEM_PROMPT = (
     "You are a security operations analyst assistant. Analyse the provided "
     "security event and answer ONLY with a JSON object — no markdown, no "
@@ -33,10 +33,10 @@ SYSTEM_PROMPT = (
     'strings, "confidence": number between 0 and 1}.'
 )
 
-#: Frozen system prompt (risk_summary, Step 11): SOC-level synthesis. The
-#: driver vocabulary is enumerated inline so the model can only pick frozen
-#: names; parsing enforces it anyway. analyst_priority is advisory only —
-#: the model must NOT invent a new risk score.
+# System prompt for risk_summary: SOC-level synthesis. The driver vocabulary
+# is enumerated inline so the model can only pick known names; parsing
+# enforces it anyway. analyst_priority is advisory only — the model must not
+# invent a new risk score.
 SYSTEM_PROMPT_RISK_SUMMARY = (
     "You are a security operations analyst assistant. Compress the provided "
     "security event, its risk factors and evidence into a concise risk "
@@ -53,12 +53,11 @@ SYSTEM_PROMPT_RISK_SUMMARY = (
     "instead of re-deriving everything."
 )
 
-#: Frozen system prompt (response_recommendation, Step 12): advisory-only
-#: response guidance. The action vocabulary is enumerated inline; parsing
-#: enforces it. Hard boundary baked into the prompt: the assistant only
-#: RECOMMENDS — a human approves (Step 13) before anything is ever
-#: executed, so the model must never phrase recommendations as commands or
-#: claim any action was taken.
+# System prompt for response_recommendation: advisory-only response guidance.
+# The action vocabulary is enumerated inline; parsing enforces it. The prompt
+# states the boundary explicitly: the assistant only recommends — a human
+# approves before anything is executed, so the model must never phrase
+# recommendations as commands or claim any action was taken.
 SYSTEM_PROMPT_RESPONSE_RECOMMENDATION = (
     "You are a security operations analyst assistant. Based on the provided "
     "security event, its risk assessment and evidence, propose response "
@@ -81,8 +80,8 @@ SYSTEM_PROMPT_RESPONSE_RECOMMENDATION = (
     "build on it instead of re-deriving everything."
 )
 
-#: Task -> frozen system prompt. Adding a task means adding one entry here
-#: plus one protocol model/parser — never a provider-specific code path.
+# Task -> system prompt. Adding a task means adding one entry here plus one
+# protocol model/parser — never a provider-specific code path.
 SYSTEM_PROMPTS: dict[str, str] = {
     TASK_ALERT_EXPLANATION: SYSTEM_PROMPT,
     TASK_RISK_SUMMARY: SYSTEM_PROMPT_RISK_SUMMARY,
@@ -91,7 +90,7 @@ SYSTEM_PROMPTS: dict[str, str] = {
 
 
 def build_system_prompt(task: str) -> str:
-    """Frozen system prompt of a task; unknown tasks fail loudly."""
+    """System prompt of a task; an unknown task raises ValueError."""
     try:
         return SYSTEM_PROMPTS[task]
     except KeyError as exc:
@@ -101,10 +100,10 @@ def build_system_prompt(task: str) -> str:
 def build_user_prompt(request: AIRequest) -> str:
     """Serialise the analysis job as JSON context for the model.
 
-    exclude_none keeps the alert_explanation prompt byte-identical to the
-    Step 10 freeze while letting optional fields (prior_explanation) appear
-    only when present.
-    """
+exclude_none keeps the alert_explanation prompt byte-identical to its
+original single-task shape while letting optional fields
+(prior_explanation) appear only when present.
+"""
     return json.dumps(request.model_dump(exclude_none=True), ensure_ascii=False, indent=2)
 
 
@@ -120,13 +119,13 @@ class AIProvider(ABC):
     def generate(self, request: AIRequest) -> AIAnalysis | RiskSummary | ResponseRecommendation:
         """Run one task; raises AIProviderError subclasses on failure.
 
-        The output type follows request.task (alert_explanation -> AIAnalysis,
-        risk_summary -> RiskSummary, response_recommendation ->
-        ResponseRecommendation). Never returns a fabricated result for a
-        broken provider output."""
+The output type follows request.task (alert_explanation -> AIAnalysis,
+risk_summary -> RiskSummary, response_recommendation ->
+ResponseRecommendation). A malformed provider output raises instead of
+yielding a fabricated result."""
 
     def explain(self, request: AIRequest) -> AIAnalysis:
-        """Step 10-compatible alias: generate() for alert_explanation only."""
+        """Compatibility alias: generate() for alert_explanation only."""
         if request.task != TASK_ALERT_EXPLANATION:
             raise ValueError(
                 f"explain() only accepts task={TASK_ALERT_EXPLANATION!r}, got {request.task!r}"

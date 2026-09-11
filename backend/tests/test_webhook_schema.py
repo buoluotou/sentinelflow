@@ -1,55 +1,56 @@
-"""Phase 3.4.4-B — Strict Webhook Schema tests (Webhook Gate 2 — Schema).
+"""Strict webhook schema tests (webhook Gate 2 — Schema).
 
-Locks Gate 2 of the four frozen webhook inbound gates:
+Locks Gate 2 of the four webhook inbound gates:
 
-    External System -> HTTP Webhook
-        -> Gate 1 Authentication    (3.4.4-A, sealed f35852b)
-        -> Gate 2 Schema            (THIS FILE, 3.4.4-B)
-        -> Gate 3 Correlation       (3.4.4-C)
-        -> Gate 4 Semantic Mapping  (3.4.4-D)
-        -> Outcome Fact Append      (3.4.4-E)
+External System -> HTTP Webhook
+-> Gate 1 Authentication
+-> Gate 2 Schema            (this file)
+-> Gate 3 Correlation
+-> Gate 4 Semantic Mapping
+-> Outcome Fact Append
 
-The data flow this file proves (spec §1):
+The data flow this file proves:
 
-    HTTP JSON -> WebhookCallbackRequest (strict Pydantic, extra="forbid")
-              -> to_external_observation(request, adapter=<authenticated>)
-              -> ExternalObservation
-              -> validate_observation()   (3.4.3-A contract, unchanged)
+HTTP JSON -> WebhookCallbackRequest (strict Pydantic, extra="forbid")
+-> to_external_observation(request, adapter=<authenticated>)
+-> ExternalObservation
+-> validate_observation()   (3.4.3-A contract, unchanged)
 
-Coverage map (acceptance gate — spec §15 items 1-23, plus §16 / §18 / §12 / §19):
-- Valid payload + external_state preservation (§15.1 / 7 / 8 / 18 / §8).
-- Required-field presence (§15.2 / 4 / 6 / 9) -> ValidationError -> 422.
-- Field types (§15.3 / 5 / 10) -> malformed UUID / wrong-typed reference /
-  non-datetime observed_at are all rejected.
-- extra="forbid" (§15.11-15 / §5 / §6 / §7): any extra field, and specifically
-  a client-supplied source / operator / adapter, is a schema rejection; the
-  payload can never select "manual_reconcile".
-- Schema trust boundary (§16): a client body cannot move the authenticated
-  adapter, cannot move source off "webhook", cannot inject an operator.
-- Contract conversion (§11 / §15.16 / 17 / 19): source is always "webhook",
-  adapter always comes from the server-side authenticated identity, and the
-  contract validator receives a real ExternalObservation.
-- observed_at boundary (§10): the schema types it (naive passes) but does NOT
-  normalize / reject it — the 3.4.3-A contract owns tz-awareness, so no second
-  timestamp rule is duplicated here.
-- external_reference / external_state boundary (§9): the schema checks presence
-  + type only (empty / whitespace / blank pass) — semantic rejection belongs to
-  the contract, never to a second business rule in the schema.
-- No side effects (§15.20-23 / §19): schema validation touches no DB, performs
-  no mapping, persists no fact, never accesses execution_log.
-- No mapping in B (§14): even external_state="success" never becomes an outcome
-  word here — normalize_external_state is Gate 4 (3.4.4-D).
-- AST import surface (§18): webhook.py imports ONLY the sanctioned schema
-  dependencies + the 3.4.3 reconciliation domain; defines exactly one function
-  and one model; never pulls in SQLAlchemy / ExecutionLog / executor / adapter
-  clients / httpx / requests / persistence / execution service.
-- HTTP error semantics (§12): a schema failure surfaces as a real HTTP 422
-  (proved with a THROWAWAY probe app — the production router stays the sealed
-  3.4.4-A stub, untouched per spec §3).
+Coverage map:
+- Valid payload + external_state preservation, string and mapping alike,
+verbatim (no lower / trim / upper).
+- Required-field presence -> ValidationError -> 422.
+- Field types -> malformed UUID / wrong-typed reference /
+non-datetime observed_at are all rejected.
+- extra="forbid": any extra field, and specifically a client-supplied
+source / operator / adapter, is a schema rejection; the
+payload can never select "manual_reconcile".
+- Schema trust boundary: a client body cannot move the authenticated
+adapter, cannot move source off "webhook", cannot inject an operator.
+- Contract conversion: source is always "webhook",
+adapter always comes from the server-side authenticated identity, and the
+contract validator receives a real ExternalObservation.
+- observed_at boundary: the schema types it (naive passes) but does not
+normalize / reject it — the 3.4.3-A contract owns tz-awareness, so no second
+timestamp rule is duplicated here.
+- external_reference / external_state boundary: the schema checks presence
++ type only (empty / whitespace / blank pass) — semantic rejection belongs to
+the contract, never to a second business rule in the schema.
+- No side effects: schema validation touches no DB, performs
+no mapping, persists no fact, never accesses execution_log.
+- No mapping at this layer: even external_state="success" never becomes an outcome
+word here — normalize_external_state is Gate 4.
+- AST import surface: webhook.py imports only the sanctioned schema
+dependencies + the 3.4.3 reconciliation domain; defines exactly one function
+and one model; never pulls in SQLAlchemy / ExecutionLog / executor / adapter
+clients / httpx / requests / persistence / execution service.
+- HTTP error semantics: a schema failure surfaces as a real HTTP 422
+(proved with a throwaway probe app — the production router keeps the Gate-1
+authentication stub, untouched here).
 
-SCHEMA ONLY. No correlation, no mapping, no persistence (spec §2 / §3); those
-arrive in 3.4.4-C..E. The Shuffle/TheHive Gate-4 fail-closed behaviour is
-untouched here and must not be relaxed to "make a demo pass".
+This file covers the schema layer only: no correlation, no mapping, no
+persistence, all of which belong to the later gates. The Shuffle/TheHive
+Gate-4 fail-closed behaviour is untouched here and is not weakened by these tests.
 """
 import ast
 import inspect
@@ -92,7 +93,7 @@ FOUR_FIELDS = {"execution_id", "external_reference", "external_state", "observed
 
 def valid_payload(**overrides):
     """A minimal, well-formed webhook body (JSON-shaped: strings for the UUID
-    and the timestamp, exactly as an external system would POST it)."""
+and the timestamp, exactly as an external system would POST it)."""
     payload = {
         "execution_id": str(EXECUTION_ID),
         "external_reference": "wazuh-alert-0001",
@@ -131,10 +132,10 @@ def convert(request, *, adapter=AUTHENTICATED_ADAPTER):
     return to_external_observation(request, adapter=adapter)
 
 
-# --------------------------------------------------------------------------
-# §15.1 / 7 / 8 / 18 — valid payload, external_state typed both ways, and
-# preserved RAW (no lower / trim / upper — spec §8).
-# --------------------------------------------------------------------------
+#
+# Valid payload, external_state typed both ways, and preserved byte-for-byte
+# (no lower / trim / upper).
+#
 class TestValidPayloadAndPreservation:
     def test_01_valid_minimal_payload(self):
         req = parse()
@@ -154,7 +155,7 @@ class TestValidPayloadAndPreservation:
         assert req.external_state == {"agent_status": "completed"}
 
     def test_18_external_state_string_remains_unchanged(self):
-        # §8: no lower / trim / upper. A mixed-case, padded string survives
+        # no lower / trim / upper. A mixed-case, padded string survives
         # byte-for-byte through BOTH the schema and the conversion.
         raw = "  MiXeD CaSe Success  "
         req = parse(external_state=raw)
@@ -162,14 +163,14 @@ class TestValidPayloadAndPreservation:
         assert convert(req).external_state == raw
 
     def test_18_external_state_mapping_remains_unchanged(self):
-        # §8: mapping keys AND values keep their exact case; nothing is folded.
+        # mapping keys AND values keep their exact case; nothing is folded.
         raw = {"Agent_Status": "RuNnInG", "detail": "Not Lowered"}
         req = parse(external_state=raw)
         assert req.external_state == raw
         assert convert(req).external_state == raw
 
     def test_model_fields_are_exactly_the_four_client_facts(self):
-        # §4 / §5 / §6 / §7: the model exposes ONLY the four observation
+        # / / / : the model exposes ONLY the four observation
         # facts. source / adapter / operator are NOT fields — they can never
         # be client-supplied (proved again by the extra="forbid" tests).
         assert set(WebhookCallbackRequest.model_fields) == FOUR_FIELDS
@@ -177,9 +178,9 @@ class TestValidPayloadAndPreservation:
             assert server_only not in WebhookCallbackRequest.model_fields
 
 
-# --------------------------------------------------------------------------
-# §15.2 / 4 / 6 / 9 — required-field presence.
-# --------------------------------------------------------------------------
+#
+# Required-field presence.
+#
 class TestRequiredFields:
     def test_02_missing_execution_id(self):
         exc = error_for(without("execution_id"))
@@ -207,11 +208,11 @@ class TestRequiredFields:
         assert error_types(exc) == {"missing"}
 
 
-# --------------------------------------------------------------------------
-# §15.3 / 5 / 10 — field types. (int is NOT coerced to str; int IS coerced to
+#
+# Field types. (int is not coerced to str; int is coerced to
 # a datetime by Pydantic, so the invalid-observed_at cases use values that are
-# genuinely unparseable rather than an int.)
-# --------------------------------------------------------------------------
+# truly unparseable rather than an int.)
+#
 class TestFieldTypes:
     def test_03_malformed_uuid(self):
         exc = error_for(valid_payload(execution_id="not-a-uuid"))
@@ -242,17 +243,17 @@ class TestFieldTypes:
         assert "datetime_from_date_parsing" in error_types(exc)
 
     def test_external_state_wrong_type_rejected(self):
-        # §4: external_state is str | Mapping ONLY. A bare int / list / None is
+        # external_state is str | Mapping ONLY. A bare int / list / None is
         # neither, so the union rejects it (both arms report their type error).
         for bad in (123, ["x"], None):
             exc = error_for(valid_payload(external_state=bad))
             assert "external_state" in error_fields(exc)
 
 
-# --------------------------------------------------------------------------
-# §15.11-15 — extra="forbid" rejects any unknown field, and specifically the
+#
+# extra="forbid" rejects any unknown field, and specifically the
 # trust-carrying fields source / operator / adapter.
-# --------------------------------------------------------------------------
+#
 class TestExtraForbid:
     def test_11_extra_field_rejected(self):
         exc = error_for(valid_payload(unexpected="x"))
@@ -275,7 +276,7 @@ class TestExtraForbid:
         assert "adapter" in error_fields(exc)
 
     def test_15_payload_cannot_select_manual_reconcile(self):
-        # §5: the client can never choose the ingress channel. Sending
+        # the client can never choose the ingress channel. Sending
         # source="manual_reconcile" is a schema rejection, not a channel switch.
         exc = error_for(valid_payload(source="manual_reconcile"))
         assert "extra_forbidden" in error_types(exc)
@@ -289,10 +290,10 @@ class TestExtraForbid:
         assert {"source", "operator", "adapter"} <= error_fields(exc)
 
 
-# --------------------------------------------------------------------------
-# §16 — Schema trust boundary: a client body cannot move the authenticated
+#
+# Schema trust boundary: a client body cannot move the authenticated
 # adapter, cannot move source off "webhook", cannot inject an operator.
-# --------------------------------------------------------------------------
+#
 class TestSchemaTrustBoundary:
     def test_client_adapter_cannot_change_authenticated_adapter(self):
         # A body that tries to declare adapter="thehive" is rejected outright;
@@ -311,11 +312,11 @@ class TestSchemaTrustBoundary:
         error_for(valid_payload(operator="admin"))
         obs = convert(parse())
         # ExternalObservation has NO operator field at all — the recorder is
-        # derived server-side later (spec §7), never carried from the body.
+        # derived server-side later, never carried from the body.
         assert not hasattr(obs, "operator")
 
     def test_adapter_argument_is_keyword_only_and_required(self):
-        # §6 / §11: the trusted adapter MUST be passed explicitly by the
+        # / : the trusted adapter MUST be passed explicitly by the
         # server (keyword-only, no default), so it can never be defaulted from
         # or confused with any client-controlled value.
         params = inspect.signature(to_external_observation).parameters
@@ -332,9 +333,9 @@ class TestSchemaTrustBoundary:
         }
 
 
-# --------------------------------------------------------------------------
-# §11 / §15.16 / 17 / 19 — the Schema -> Contract conversion boundary.
-# --------------------------------------------------------------------------
+#
+# The Schema -> Contract conversion boundary.
+#
 class TestContractConversion:
     def test_conversion_returns_external_observation(self):
         obs = convert(parse())
@@ -346,7 +347,7 @@ class TestContractConversion:
 
     def test_webhook_source_is_a_frozen_outcome_source(self):
         # Single-source cross-check: the literal the schema hardcodes is a real
-        # frozen ingress channel, so it can never drift from OUTCOME_SOURCES.
+        # ingress channel, so it can never drift from OUTCOME_SOURCES.
         assert WEBHOOK_SOURCE == "webhook"
         assert WEBHOOK_SOURCE in OUTCOME_SOURCES
 
@@ -378,11 +379,11 @@ class TestContractConversion:
         first = convert(req)
         second = convert(req)
         assert first == second
-        # The request itself is untouched (frozen conversion, no mutation).
+        # The request itself is untouched (conversion, no mutation).
         assert req.execution_id == EXECUTION_ID
 
     def test_conversion_does_not_run_the_contract(self):
-        # §9 / §10: the conversion is PURE — an input the contract would reject
+        # / : the conversion is PURE — an input the contract would reject
         # (empty external_reference) still converts cleanly; only the explicit
         # validate_observation step refuses it. Proves the schema layer does not
         # secretly embed contract logic.
@@ -392,13 +393,13 @@ class TestContractConversion:
             validate_observation(obs, now=NOW)
 
 
-# --------------------------------------------------------------------------
-# §10 — observed_at boundary: schema types it, contract normalizes / rejects.
-# --------------------------------------------------------------------------
+#
+# observed_at boundary: schema types it, contract normalizes / rejects.
+#
 class TestObservedAtBoundary:
     def test_schema_accepts_naive_datetime_type_only(self):
         # A naive timestamp is a valid `datetime`, so the schema accepts it and
-        # does NOT attach a tz — that decision belongs to the contract (§10.2).
+        # does NOT attach a tz — that decision belongs to the contract.
         req = parse(observed_at="2026-09-03T12:00:00")
         assert req.observed_at.tzinfo is None
 
@@ -429,10 +430,10 @@ class TestObservedAtBoundary:
             validate_observation(convert(req), now=NOW)
 
 
-# --------------------------------------------------------------------------
-# §9 / §8 — external_reference / external_state boundary: schema checks
+#
+# external_reference / external_state boundary: schema checks
 # presence + type only; the contract owns semantic rejection.
-# --------------------------------------------------------------------------
+#
 class TestSemanticBoundaryBelongsToContract:
     def test_schema_accepts_empty_external_reference(self):
         req = parse(external_reference="")
@@ -470,9 +471,9 @@ class TestSemanticBoundaryBelongsToContract:
             validate_observation(convert(parse(), adapter="not-an-adapter"), now=NOW)
 
 
-# --------------------------------------------------------------------------
-# §14 / §15.21 — no mapping in B: "success" never becomes an outcome word here.
-# --------------------------------------------------------------------------
+#
+# No mapping at the schema layer: "success" never becomes an outcome word here.
+#
 class TestNoMappingInB:
     def test_normalized_observation_has_no_outcome_status(self):
         # Even external_state="success" yields a NormalizedObservation with NO
@@ -488,18 +489,18 @@ class TestNoMappingInB:
         assert "confirmed_failure" not in source
 
     def test_conversion_output_is_not_an_orm_fact(self):
-        # The conversion produces a frozen domain dataclass, never an ORM row.
+        # The conversion produces a domain dataclass, never an ORM row.
         obs = convert(parse())
         assert isinstance(obs, ExternalObservation)
         assert not hasattr(obs, "__table__")
         assert not hasattr(obs, "__tablename__")
 
 
-# --------------------------------------------------------------------------
-# §15.20 / 22 / 23 / §19 — no DB, no persistence, no execution_log access.
-# These run with NO db fixture in scope: if any secretly needed a session they
+#
+# No DB, no persistence, no execution_log access.
+# These run with no db fixture in scope: if any secretly needed a session they
 # would error, which is itself the proof of purity.
-# --------------------------------------------------------------------------
+#
 class TestNoSideEffects:
     def test_20_schema_validation_needs_no_database(self):
         # Parsing + conversion + contract all succeed with no session anywhere.
@@ -533,13 +534,13 @@ class TestNoSideEffects:
             assert forbidden not in source, f"forbidden construct: {forbidden}"
 
 
-# --------------------------------------------------------------------------
-# §18 — AST / import surface of the SCHEMA MODULE.
-# --------------------------------------------------------------------------
+#
+# AST / import surface of the schema module.
+#
 def _imported_webhook_schema():
     """AST view of webhook.py's OWN imports + defined functions/classes — the
-    robust structural proof, immune to docstring mentions (mirrors the 3.4.4-A
-    authentication import-surface test)."""
+robust structural proof, immune to docstring mentions (mirrors the 3.4.4-A
+authentication import-surface test)."""
     tree = ast.parse(inspect.getsource(webhook_schema))
     modules, names, funcs, classes = set(), set(), set(), set()
     for node in ast.walk(tree):
@@ -560,7 +561,7 @@ def _imported_webhook_schema():
 
 class TestImportSurface:
     def test_modules_are_exactly_the_schema_dependencies(self):
-        # §18: ONLY Pydantic + stdlib (uuid / datetime / collections.abc) + the
+        # ONLY Pydantic + stdlib (uuid / datetime / collections.abc) + the
         # 3.4.3 reconciliation domain. An exact allowlist is the strongest
         # proof — anything else (SQLAlchemy / httpx / executor / models /
         # adapter clients) fails here loudly.
@@ -589,13 +590,13 @@ class TestImportSurface:
         assert "OUTCOME_SOURCES" not in names
 
     def test_functions_are_exactly_the_conversion_boundary(self):
-        # §11 / §3: exactly one function — the Schema -> Contract conversion.
+        # / : exactly one function — the Schema -> Contract conversion.
         # No validator, no correlation, no mapper, no persistence function.
         _, _, funcs, _ = _imported_webhook_schema()
         assert funcs == {"to_external_observation"}
 
     def test_classes_are_exactly_the_request_model(self):
-        # §4: one model, no custom exception / validator class (all rejection
+        # one model, no custom exception / validator class (all rejection
         # is delegated to Pydantic's ValidationError and the 3.4.3-A contract).
         _, _, _, classes = _imported_webhook_schema()
         assert classes == {"WebhookCallbackRequest"}
@@ -607,16 +608,16 @@ class TestImportSurface:
         }
 
 
-# --------------------------------------------------------------------------
-# §12 — HTTP error semantics: a schema failure is a real 422, a valid payload
-# parses. Proved with a THROWAWAY probe app so the production router (the
-# sealed 3.4.4-A stub) stays untouched (spec §3).
-# --------------------------------------------------------------------------
+#
+# HTTP error semantics: a schema failure is a real 422, a valid payload
+# parses. Proved with a throwaway probe app so the production router (the
+# Gate-1 authentication stub) stays untouched.
+#
 def _probe_app():
     """A minimal, test-only FastAPI app whose sole endpoint takes the schema as
-    its body model. It performs NO auth / correlation / mapping / persistence —
-    it exists purely to demonstrate FastAPI's ValidationError -> 422 mapping
-    against WebhookCallbackRequest with a real HTTP status."""
+its body model. It performs NO auth / correlation / mapping / persistence —
+it exists purely to demonstrate FastAPI's ValidationError -> 422 mapping
+against WebhookCallbackRequest with a real HTTP status."""
     app = FastAPI()
 
     @app.post("/probe")
@@ -658,7 +659,7 @@ class TestHttpErrorSemantics:
         assert resp.status_code == 422
 
     def test_no_reconciliation_failed_or_200_on_bad_schema(self, probe_client):
-        # §12: a schema failure is never a 200 and never mentions
+        # a schema failure is never a 200 and never mentions
         # reconciliation_failed — it is a plain 422 at the boundary.
         resp = probe_client.post("/probe", json=valid_payload(observed_at="not-a-date"))
         assert resp.status_code == 422

@@ -21,8 +21,8 @@ def upgrade() -> None:
     op.create_table(
         "alert_groups",
         sa.Column("id", sa.Uuid(), nullable=False),
-        # SHA256 hex digest; NOT unique on purpose — the same fingerprint may
-        # open a new group once the aggregation window expires.
+        # SHA256 hex digest; not unique, because the same fingerprint may open
+        # a new group once the aggregation window expires.
         sa.Column("fingerprint", sa.String(length=64), nullable=False),
         sa.Column("title", sa.String(length=512), nullable=False),
         sa.Column("category", sa.String(length=128), nullable=False),
@@ -49,7 +49,7 @@ def upgrade() -> None:
     op.create_index(op.f("ix_alert_groups_status"), "alert_groups", ["status"])
     op.create_index(op.f("ix_alert_groups_last_seen"), "alert_groups", ["last_seen"])
 
-    # Nullable link: legacy alerts keep alert_group_id = NULL until Step 4.4.
+    # Nullable link: legacy alerts keep alert_group_id = NULL.
     # batch_alter_table keeps this portable across PostgreSQL and SQLite.
     with op.batch_alter_table("alerts") as batch_op:
         batch_op.add_column(sa.Column("alert_group_id", sa.Uuid(), nullable=True))

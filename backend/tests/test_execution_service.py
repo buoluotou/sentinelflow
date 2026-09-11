@@ -1,4 +1,4 @@
-"""Phase 3.1.6: Execute / Compensation Service tests — the first layer
+"""Execute / Compensation Service tests — the first layer
 that produces REAL execution facts.
 
 Locks the complete chain offline at pure Service level:
@@ -56,9 +56,9 @@ from app.services.executions.service import (
 )
 
 
-# --------------------------------------------------------------------------
+#
 # Seeding helpers
-# --------------------------------------------------------------------------
+#
 def seed_approved(db_session, *, status="approved", recommendations=None):
     """alert_group -> recommendation -> approval chain; returns approval."""
     now = datetime.now(timezone.utc)
@@ -177,9 +177,9 @@ class BadOutcomeExecutor(ResponseExecutor):
         return {"status": "dispatched"}
 
 
-# --------------------------------------------------------------------------
+#
 # Forward execution — happy path
-# --------------------------------------------------------------------------
+#
 class TestExecuteSuccessChain:
     def test_full_chain_requested_dispatched_succeeded(self, db_session):
         approval = seed_approved(db_session)
@@ -239,9 +239,9 @@ class TestExecuteSuccessChain:
             result.final_decision = "tampered"
 
 
-# --------------------------------------------------------------------------
+#
 # Guard rejection — requested -> guard_rejected (D13, same transaction)
-# --------------------------------------------------------------------------
+#
 class TestGuardRejectionChains:
     def test_rejected_approval_status(self, db_session):
         approval = seed_approved(db_session, status="rejected")
@@ -313,9 +313,9 @@ class TestGuardRejectionChains:
         assert all(row.target == "203.0.113.10" for row in result.rows)
 
 
-# --------------------------------------------------------------------------
+#
 # Adapter failure — dispatched -> failed (never guard_rejected)
-# --------------------------------------------------------------------------
+#
 class TestAdapterFailure:
     @pytest.mark.parametrize(
         "classification", ["adapter_unavailable", "timeout", "adapter_error"]
@@ -350,9 +350,9 @@ class TestAdapterFailure:
         assert failed.detail["raw_response"] is None
 
 
-# --------------------------------------------------------------------------
+#
 # 404 / 409 boundaries — the four untrusted inputs
-# --------------------------------------------------------------------------
+#
 class TestNotFoundBoundary:
     def test_missing_approval_leaves_zero_rows(self, db_session):
         with pytest.raises(ApprovalNotFound):
@@ -438,7 +438,7 @@ class TestLifecycleConflicts:
 
     def test_identical_replay_is_still_409(self, db_session):
         """execution_id is identity, not an upsert key. The approval slot
-        fires first (frozen G3 order), so the typed conflict is
+        fires first (G3 order), so the typed conflict is
         ApprovalAlreadyExecuted — either way a 409, never an overwrite."""
         approval = seed_approved(db_session)
         execution_id = uuid.uuid4()
@@ -591,7 +591,7 @@ class TestTargetSmugglingImpossible:
         there is no parameter through which a client could hand in
         action or target. 3.3.2.4 adds exactly ONE parameter, ``policy``:
         the server-side ExecutionPolicy (built from .env -> Settings,
-        never a client fact). M4-F §1 adds exactly ONE more,
+        never a client fact). adds exactly ONE more,
         ``dispatch_attempt_store``: the server-side durable pre-dispatch store
         the API layer injects via ``Depends(get_dispatch_attempt_store)`` — an
         infra seam, NEVER a client fact, carrying NO action/target (those stay
@@ -635,9 +635,9 @@ class TestTargetSmugglingImpossible:
         assert all(row.target == "203.0.113.10" for row in rows)
 
 
-# --------------------------------------------------------------------------
+#
 # Compensation
-# --------------------------------------------------------------------------
+#
 class TestCompensation:
     def test_compensate_succeeded_original(self, db_session):
         approval = seed_approved(db_session)
@@ -886,9 +886,9 @@ class TestDuplicateCompensation:
         db_session.rollback()
 
 
-# --------------------------------------------------------------------------
+#
 # Immutability + transaction discipline
-# --------------------------------------------------------------------------
+#
 class TestWorldImmutability:
     def test_execution_and_compensation_touch_nothing_else(self, db_session):
         approval = seed_approved(db_session)

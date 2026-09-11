@@ -1,4 +1,4 @@
-"""Structured-output protocol: model text -> frozen protocol (Step 9/11).
+"""Structured-output protocol: model text -> protocol object.
 
 Providers are instructed to answer with JSON only, but real models wrap it
 in fences or prose; extract_json tolerates that while the parse_* functions
@@ -38,7 +38,7 @@ def extract_json(raw: str) -> str:
 
 
 def parse_analysis(raw: str) -> AIAnalysis:
-    """Parse and validate a provider's raw text into the frozen protocol."""
+    """Parse and validate a provider's raw text into AIAnalysis."""
     try:
         payload = json.loads(extract_json(raw))
     except (json.JSONDecodeError, ValueError) as exc:
@@ -50,12 +50,12 @@ def parse_analysis(raw: str) -> AIAnalysis:
 
 
 def parse_risk_summary(raw: str) -> RiskSummary:
-    """Parse and validate a risk-summary output (Step 11).
+    """Parse and validate a risk-summary output.
 
-    Same strictness as parse_analysis: fenced/prose wrapping is tolerated,
-    everything semantic is enforced — schema, analyst_priority enum and the
-    frozen risk-driver vocabulary (drivers are factor names, not free text).
-    """
+Same strictness as parse_analysis: fenced/prose wrapping is tolerated,
+everything semantic is enforced — schema, analyst_priority enum and the
+risk-driver vocabulary (drivers are factor names, not free text).
+"""
     try:
         payload = json.loads(extract_json(raw))
     except (json.JSONDecodeError, ValueError) as exc:
@@ -75,13 +75,13 @@ def parse_risk_summary(raw: str) -> RiskSummary:
 
 
 def parse_response_recommendation(raw: str) -> ResponseRecommendation:
-    """Parse and validate a response-recommendation output (Step 12).
+    """Parse and validate a response-recommendation output.
 
-    Same strictness as the other parsers: fenced/prose wrapping tolerated,
-    everything semantic enforced — schema, per-item rationale, and the
-    frozen response-action vocabulary. An EMPTY recommendations list is
-    valid (the advisory "no action warranted" answer).
-    """
+Same strictness as the other parsers: fenced/prose wrapping tolerated,
+everything semantic enforced — schema, per-item rationale, and the
+response-action vocabulary. An empty recommendations list is valid (the
+advisory "no action warranted" answer).
+"""
     try:
         payload = json.loads(extract_json(raw))
     except (json.JSONDecodeError, ValueError) as exc:
@@ -101,7 +101,7 @@ def parse_response_recommendation(raw: str) -> ResponseRecommendation:
 
 
 def parse_task_output(task: str, raw: str) -> AIAnalysis | RiskSummary | ResponseRecommendation:
-    """Dispatch raw provider output to the frozen parser of its task."""
+    """Dispatch raw provider output to the parser of its task."""
     if task == TASK_ALERT_EXPLANATION:
         return parse_analysis(raw)
     if task == TASK_RISK_SUMMARY:

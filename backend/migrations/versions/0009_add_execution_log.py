@@ -4,37 +4,34 @@ Revision ID: 0009
 Revises: 0008
 Create Date: 2026-08-28
 
-Phase 3.1.2: append-only execution audit log (design decision D7,
-docs/design/phase3-response-execution.md §4). State is never stored —
-it is DERIVED as the latest row per execution_id (created_at DESC,
-id DESC). INSERT only: no UPDATE, no DELETE, ever.
+Append-only execution audit log. State is never stored; it is derived as
+the latest row per execution_id (created_at DESC, id DESC). INSERT only:
+no UPDATE, no DELETE.
 
 Constraints mirrored 1:1 from app/models/execution_log.py:
 - CHECK ck_execution_log_decision_direction: legal decision x direction
-  combinations only (constraint 9).
+combinations only.
 - Partial unique index ux_execution_log_execution_id_requested: the
-  idempotency key + execution identity (constraint 1, D14).
+idempotency key and execution identity.
 - Partial unique index ux_execution_log_approval_id_execute: at most one
-  forward execution per approval — the single `requested` row of each
-  chain (D12) is the lifecycle slot-holder; re-execution must insert a
-  fresh requested row and is blocked here (constraint 2, frozen wording).
+forward execution per approval — the single `requested` row of each
+chain holds the lifecycle slot, so re-execution must insert a fresh
+requested row and is blocked here.
 - Partial unique index ux_execution_log_compensates_requested: at most
-  one compensation per original execution (constraint 3).
+one compensation per original execution.
 
-FK deletion behaviour (migration review 2026-08-28): approval_id uses
-NO ACTION instead of CASCADE. execution_log is append-only audit and
-must never be deleted along with an approval. Verified project reality:
-no approval deletion path exists (all approval endpoints are GET/POST,
-zero db.delete calls anywhere), so NO ACTION changes nothing
-operationally — it only stops the audit trail from inheriting a CASCADE
-behaviour copied unexamined from business-relation FKs. If an approval
-deletion feature is ever added, it must be refused while executions
-reference the approval.
+approval_id uses NO ACTION rather than CASCADE: execution_log is an
+append-only audit trail and must never be deleted along with an approval.
+No approval deletion path exists today (every approval endpoint is GET or
+POST), so NO ACTION changes nothing operationally; it prevents the audit
+trail from inheriting the CASCADE behaviour that business-relation foreign
+keys use. If an approval deletion feature is ever added, it must be
+refused while executions reference the approval.
 
 The three partial unique indexes are emitted as raw SQL in both dialects:
-alembic's create_index carries no SQLite partial-index support, so raw
-CREATE UNIQUE INDEX ... WHERE ... is the only path that keeps SQLite
-tests and PostgreSQL production byte-for-byte equivalent.
+alembic's create_index has no SQLite partial-index support, so raw
+CREATE UNIQUE INDEX ... WHERE ... is the only way to keep SQLite tests and
+PostgreSQL production enforcing the same predicate.
 """
 from typing import Sequence, Union
 

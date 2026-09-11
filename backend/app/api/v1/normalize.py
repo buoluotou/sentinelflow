@@ -26,7 +26,7 @@ class NormalizeRequest(BaseModel):
 
 class NormalizeResponse(NormalizedAlert):
     """Normalized alert plus the ids of the Alert and AlertGroup persisted
-    downstream by the deduplication engine."""
+downstream by the deduplication engine."""
 
     alert_id: uuid.UUID | None = None
     group_id: uuid.UUID | None = None
@@ -40,8 +40,8 @@ def normalize_alert(
 ) -> NormalizeResponse:
     """Normalize a raw source event, deduplicate and ingest the result.
 
-    Pipeline: Raw Alert -> Normalization -> Deduplication -> DB.
-    """
+Pipeline: Raw Alert -> Normalization -> Deduplication -> DB.
+"""
     try:
         normalized = engine.normalize(payload.source, payload.raw_data)
     except UnknownSourceError as exc:

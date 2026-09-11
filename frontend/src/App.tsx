@@ -1,4 +1,4 @@
-/** Console router (Phase 1 Step 8): layout shell + business pages. */
+/* * Console router: layout shell + business pages. */
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { ConsoleLayout } from './layouts/ConsoleLayout'
 import { DashboardPage } from './pages/DashboardPage'

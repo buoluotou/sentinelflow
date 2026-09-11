@@ -1,4 +1,4 @@
-"""Phase 2 Step 10.3: AIAnalysisService tests.
+"""AIAnalysisService tests.
 
 Event -> EventRisk + evidence -> AIRequest -> Mock provider -> persisted
 ai_analyses row. CI-stable: only the deterministic MockProvider is used,
@@ -62,7 +62,7 @@ def _seed(db_session, alert_count: int = 3, with_risk: bool = True) -> AlertGrou
     return group
 
 
-# ------------------------------------------------------------------ happy path
+# happy path
 
 
 def test_explain_event_persists_analysis_from_mock(db_session):
@@ -114,7 +114,7 @@ def test_evidence_is_bounded_for_large_events(db_session):
     assert f"{MAX_EVIDENCE} evidence items" in record.summary
 
 
-# ------------------------------------------------------------------ history
+# history
 
 
 def test_repeated_analysis_appends_history(db_session):
@@ -145,7 +145,7 @@ def test_latest_analysis_none_when_never_analysed(db_session):
     assert service.latest_analysis(db_session, group.id) is None
 
 
-# ------------------------------------------------------------------ errors
+# errors
 
 
 def test_unknown_event_raises_not_found(db_session):

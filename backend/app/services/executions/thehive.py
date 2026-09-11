@@ -1,59 +1,59 @@
-"""TheHive adapter — case creation provider (Phase 3.2.5, frozen spec §6).
+"""TheHive adapter — case creation provider.
 
 TheHive is SentinelFlow's Case Management / Investigation system. It is
-NOT a response engine: this adapter's single job is turning an approved
+not a response engine: this adapter's single job is turning an approved
 ``escalate_to_incident`` decision into a TheHive case, after which human
-investigators take over. Frozen control flow:
+investigators take over. Control flow is strictly:
 
-    SentinelFlow decision -> TheHive case creation -> human investigation
+SentinelFlow decision -> TheHive case creation -> human investigation
 
 never ``SentinelFlow -> TheHive -> automatic investigation / automatic
-closure``. This keeps the 3.1 platform chain untouched: the adapter only
-translates an approved ExecutionDispatch into one outbound Case API call
-and parses the answer into an ExecutionOutcome.
+closure``. The adapter only translates an approved ExecutionDispatch into
+one outbound Case API call and parses the answer into an
+ExecutionOutcome.
 
-Frozen facts (distinct from 3.2.3/3.2.4 by design — not copied):
+Contract facts:
 
-- Vocabulary: supports() answers True ONLY for escalate_to_incident.
-  Endpoint response (isolate / disable / block), workflow triggering,
-  risk-score modification, incident closure and monitor_only are all
-  rejected — the guard remains the upstream gate.
-- Compensation: supports_compensation() is False for EVERY action. Case
-  lifecycle belongs to the investigation; SentinelFlow never auto-closes
-  a case (no create_case -> close_case reversal exists).
-- HTTP contract: POST {base_url}/api/case with a body carrying ONLY
-  fields the v0 InputCase DTO declares (dto/v0/Case.scala:8): title,
-  description, severity (Int — 3 == High on the certified 1-4 scale) and
-  tags. SentinelFlow's execution / approval correlation + provenance ride
-  in ``tags`` (a declared Set[String], persisted by CaseSrv.create and
-  echoed back in OutputCase.tags), NOT as undeclared top-level keys —
-  FieldsParser silently drops undeclared fields, so the M1 body's
-  ``sentinelflow_execution_id`` / ``source`` / ``approval_id`` never
-  reached the case (M2 §4 fix). The execution tag is the correlation +
-  independent read-back verification handle (G5), never an idempotency key
-  (409 has no certified duplicate contract).
-- Result mapping (TheHive 4.1.24-1 v0 certified contract — G3/G5 doc
-  §3/§4): 201 + OutputCase{_id, id, caseId, ...} -> succeeded. ``_id`` ==
-  ``id`` == EntityId.toString is the STRING resource reference (the handle
-  GET /api/case/{id} re-fetches); ``caseId`` == number is the Int human
-  case number, kept for audit ONLY and NEVER used as the reference. The
-  response has NO ``case_id`` key: detail carries SentinelFlow's frozen
-  reconcile key ``case_id`` = the ``_id`` string (+ ``case_number`` audit).
-  202 or a 2xx body without a valid string _id/id NEVER succeeds (a case
-  creation without a resource reference is a lie); 409 -> failed
-  fail-closed (case creation has NO certified idempotency/duplicate
-  contract — CaseSrv.create auto-assigns the next number); 401/403/404/
-  500 -> adapter_error; 502/503/504 -> adapter_unavailable; timeout ->
-  timeout; connection/OS errors -> adapter_unavailable.
+- Vocabulary: supports() answers True only for escalate_to_incident.
+Endpoint response (isolate / disable / block), workflow triggering,
+risk-score modification, incident closure and monitor_only are all
+rejected — the capability guard is the upstream gate.
+- Compensation: supports_compensation() is False for every action. Case
+lifecycle belongs to the investigation; SentinelFlow never auto-closes
+a case (no create_case -> close_case reversal exists).
+- HTTP contract: POST {base_url}/api/case with a body carrying only
+fields the v0 InputCase DTO declares (dto/v0/Case.scala:8): title,
+description, severity (Int — 3 == High on the 1-4 scale) and tags.
+SentinelFlow's execution / approval correlation + provenance ride in
+``tags`` (a declared Set[String], persisted by CaseSrv.create and
+echoed back in OutputCase.tags), not as undeclared top-level keys —
+FieldsParser silently drops undeclared fields, so a body carrying
+``sentinelflow_execution_id`` / ``source`` / ``approval_id`` at the top
+level never reaches the case. The execution tag is the correlation +
+independent read-back verification handle, never an idempotency key
+(409 has no certified duplicate contract).
+- Result mapping (TheHive 4.1.24-1 v0 contract): 201 + OutputCase{_id,
+id, caseId, ...} -> succeeded. ``_id`` == ``id`` == EntityId.toString is
+the string resource reference (the handle GET /api/case/{id}
+re-fetches); ``caseId`` == number is the Int human case number, kept for
+audit only and never used as the reference. The response has no
+``case_id`` key: detail carries SentinelFlow's reconcile key
+``case_id`` = the ``_id`` string (+ ``case_number`` audit). 202 or a 2xx
+body without a valid string _id/id never succeeds: without a resource
+reference there is nothing to reconcile against. 409 -> failed
+fail-closed (case creation has no certified idempotency/duplicate
+contract — CaseSrv.create auto-assigns the next number); 401/403/404/
+500 -> adapter_error; 502/503/504 -> adapter_unavailable; timeout ->
+timeout; connection/OS errors -> adapter_unavailable.
 - Ambiguous answers ({} / {"success": true} / only a numeric caseId / an
-  empty or non-string _id/id / non-dict bodies) raise
-  ExecutorOutcomeViolation: the adapter never self-judges — platform parse
-  produces protocol_violation (D9).
-- Zero retry, zero polling, zero async callbacks (user directive): one
-  request, one response, one decision, one execution_log row.
+empty or non-string _id/id / non-dict bodies) raise
+ExecutorOutcomeViolation: the adapter never self-judges — platform parse
+produces protocol_violation.
+- No retry, no polling, no async callbacks: one request, one response,
+one decision, one execution_log row.
 
-Secret boundary: credentials arrive ONLY via AdapterCredentials
-(.env -> Settings -> AdapterCredentials) and ride ONLY in the
+Secret boundary: credentials arrive only via AdapterCredentials
+(.env -> Settings -> AdapterCredentials) and ride only in the
 Authorization header. Every exception message is sanitized against
 current_secret_values() — a secret must never surface in a detail, a
 log line or a raised message.
@@ -81,31 +81,30 @@ from app.services.executions.secrets import (
     validate_base_url,
 )
 
-#: The ONE action TheHive executes (3.2.5 E1 capability expansion):
-#: escalating a SentinelFlow incident into a TheHive case.
+# The only action TheHive executes: escalating a SentinelFlow incident
+# into a TheHive case.
 THEHIVE_ACTIONS = frozenset({"escalate_to_incident"})
 
-#: TheHive 4.1.24-1 v0 case creation has NO certified idempotency /
-#: duplicate-recovery contract (CaseSrv.create auto-assigns the next case
-#: number and never detects duplicates — G3/G5 doc §5), so a 409 carries no
-#: authoritative re-fetchable case reference and is NEVER auto-success:
-#: every 409 fails closed (M1 §4). No marker vocabulary is consulted.
+# TheHive 4.1.24-1 v0 case creation has no idempotency / duplicate-recovery
+# contract (CaseSrv.create auto-assigns the next case number and never
+# detects duplicates), so a 409 carries no authoritative re-fetchable case
+# reference and is never auto-success: every 409 fails closed. No marker
+# vocabulary is consulted.
 
-#: TheHive v0 case severity is an Int on the certified 1-4 scale
-#: (frontend Constants.js Severity.keys: Low=1, Medium=2, High=3,
-#: Critical=4; CaseUpdateCtrl default = 2/Medium). The frozen escalation
-#: intent is "high" -> 3. InputCase.severity is Option[Int]
-#: (v0/Case.scala:11), so a STRING "high" is a 400 AttributeCheckingError
-#: (M2 §4 fix).
+# TheHive v0 case severity is an Int on the 1-4 scale
+# (frontend Constants.js Severity.keys: Low=1, Medium=2, High=3,
+# Critical=4; CaseUpdateCtrl default = 2/Medium). The escalation intent
+# "high" maps to 3. InputCase.severity is Option[Int] (v0/Case.scala:11),
+# so sending the string "high" is a 400 AttributeCheckingError.
 THEHIVE_SEVERITY_HIGH = 3
 
-#: Provenance + correlation tag vocabulary for SentinelFlow-created cases.
-#: These ride in InputCase.tags (a DECLARED Set[String], v0/Case.scala:14,
-#: persisted by CaseSrv.create:99 and echoed back in OutputCase.tags), NOT
-#: as undeclared top-level body keys that FieldsParser silently drops. The
-#: write adapter owns this contract; the G5 read adapter imports the SAME
-#: helpers so the correlation written at create time is the exact string
-#: re-verified at read time (single source of truth, never drifted).
+# Provenance + correlation tag vocabulary for SentinelFlow-created cases.
+# These ride in InputCase.tags (a declared Set[String], v0/Case.scala:14,
+# persisted by CaseSrv.create:99 and echoed back in OutputCase.tags), not
+# as undeclared top-level body keys that FieldsParser silently drops. The
+# write adapter owns this contract; the reconcile read adapter imports the
+# same helpers so the correlation written at create time is the exact
+# string re-verified at read time (single source of truth, never drifted).
 SENTINELFLOW_TAG = "sentinelflow"
 SENTINELFLOW_EXECUTION_TAG_PREFIX = "sentinelflow:execution:"
 SENTINELFLOW_APPROVAL_TAG_PREFIX = "sentinelflow:approval:"
@@ -113,8 +112,8 @@ SENTINELFLOW_APPROVAL_TAG_PREFIX = "sentinelflow:approval:"
 
 def sentinelflow_execution_tag(execution_id: object) -> str:
     """Canonical correlation tag binding a created TheHive case to the
-    SentinelFlow execution that created it. Single source of truth shared
-    by the write (execute) and read (G5 reconcile) sides."""
+SentinelFlow execution that created it. Single source of truth shared
+by the write (execute) and read (reconcile) sides."""
     return f"{SENTINELFLOW_EXECUTION_TAG_PREFIX}{execution_id}"
 
 
@@ -124,27 +123,27 @@ def sentinelflow_approval_tag(approval_id: object) -> str:
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """M4-F §3 (reviewer finding ②): REFUSE to follow ANY HTTP redirect on the
-    case-CREATION POST — the write side now matches the read side (M2-R §4).
+    """Refuse to follow any HTTP redirect on the case-creation POST, so the
+write side matches the read side.
 
-    ``urllib.request.urlopen`` follows 3xx automatically and — critically —
-    FORWARDS the ``Authorization`` header to the redirect target, INCLUDING a
-    CROSS-HOST one. For a credential-bearing ``POST /api/case`` that is both a
-    leak (CWE-522: a compromised or misconfigured proxy could 302 the write to an
-    attacker host and harvest the Bearer key) AND a target-binding violation: the
-    durable pre-dispatch binding records ``{base_url}/api/case`` as the endpoint,
-    so silently following a 3xx would make the REAL target diverge from the bound
-    one. A case creation must resolve DIRECTLY on the declared endpoint, so any
-    redirect is treated as a transport anomaly: returning ``None`` makes urllib
-    raise ``HTTPError`` for the 3xx, which ``execute()`` already maps to a
-    fail-closed ``adapter_error`` — NEVER a cross-host credential leak, NEVER a
-    write to an unbound target, NEVER a fabricated success.
+``urllib.request.urlopen`` follows 3xx automatically and forwards the
+``Authorization`` header to the redirect target, including a cross-host
+one. For a credential-bearing ``POST /api/case`` that is both a leak
+(CWE-522: a compromised or misconfigured proxy could 302 the write to an
+attacker host and harvest the Bearer key) and a target-binding violation:
+the durable pre-dispatch binding records ``{base_url}/api/case`` as the
+endpoint, so silently following a 3xx would make the real target diverge
+from the bound one. A case creation must resolve directly on the declared
+endpoint, so any redirect is treated as a transport anomaly: returning
+``None`` makes urllib raise ``HTTPError`` for the 3xx, which ``execute()``
+maps to a fail-closed ``adapter_error`` — not a cross-host credential
+leak, not a write to an unbound target, not a fabricated success.
 
-    This ONLY declines redirects. TLS certificate verification and base-URL
-    validation are UNCHANGED (§3 forbids solving connectivity by disabling TLS or
-    relaxing URL checks); ``build_opener`` still installs the default verifying
-    ``HTTPSHandler``.
-    """
+This only declines redirects. TLS certificate verification and base-URL
+validation are unchanged (connectivity is never restored by disabling TLS
+or relaxing URL checks); ``build_opener`` still installs the default
+verifying ``HTTPSHandler``.
+"""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
         return None
@@ -152,27 +151,27 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def _build_opener() -> urllib.request.OpenerDirector:
     """The production write opener: default handlers (verifying TLS) with the
-    redirect handler REPLACED by ``_NoRedirectHandler``. ``.open(request,
-    timeout=...)`` matches the ``urlopen`` call shape ``execute()`` uses."""
+redirect handler replaced by ``_NoRedirectHandler``. ``.open(request,
+timeout=...)`` matches the ``urlopen`` call shape ``execute()`` uses."""
     return urllib.request.build_opener(_NoRedirectHandler)
 
 
 class TheHiveExecutor(ResponseExecutor):
     """Case creation over the TheHive Case API (synchronous, no retry).
 
-    Constructor arguments:
-      credentials -- AdapterCredentials for THEHIVE_BASE_URL /
-          THEHIVE_API_KEY (Bearer), already validated by the registry.
-      timeout -- seconds for the single outbound call.
-      transport -- the deployment seam for tests: a callable
-          ``transport(request, timeout=...) -> response`` where response
-          has ``status``/``read()`` — matching ``urllib.request.urlopen``
-          shape. Production uses a NO-REDIRECT urllib opener (M4-F §3: a 3xx
-          is refused, so the ``Authorization`` header is NEVER forwarded to a
-          cross-host redirect target and the real request target stays the
-          bound endpoint); there is NO retry layer, NO polling and NO callback
-          surface around it.
-    """
+Constructor arguments:
+credentials -- AdapterCredentials for THEHIVE_BASE_URL /
+THEHIVE_API_KEY (Bearer), already validated by the registry.
+timeout -- seconds for the single outbound call.
+transport -- the deployment seam for tests: a callable
+``transport(request, timeout=...) -> response`` where response
+has ``status``/``read()`` — matching ``urllib.request.urlopen``
+shape. Production uses a no-redirect urllib opener: a 3xx is
+refused, so the ``Authorization`` header is never forwarded to a
+cross-host redirect target and the real request target stays the
+bound endpoint. There is no retry layer, no polling and no callback
+surface around it.
+"""
 
     def __init__(
         self,
@@ -195,13 +194,13 @@ class TheHiveExecutor(ResponseExecutor):
             )
         self._credentials = credentials
         self._timeout = float(timeout)
-        # M4-F §3 (finding ②): the production default is a NO-REDIRECT opener,
-        # never bare ``urlopen`` — a case-creation POST must resolve directly on
-        # the bound endpoint, and a 3xx must NOT carry the Bearer key to another
-        # host nor silently divert the write from the recorded target binding.
+        # The production default is a no-redirect opener, never bare
+        # ``urlopen``: a case-creation POST must resolve directly on the bound
+        # endpoint, and a 3xx must not carry the Bearer key to another host nor
+        # silently divert the write from the recorded target binding.
         self._transport = transport or _build_opener().open
 
-    # -- contract ----------------------------------------------------------
+    # contract ----------------------------------------------------------
 
     @property
     def name(self) -> str:
@@ -211,38 +210,36 @@ class TheHiveExecutor(ResponseExecutor):
         return action in THEHIVE_ACTIONS
 
     def supports_compensation(self, action: str) -> bool:
-        # Frozen policy: TheHive never auto-closes cases — the case
-        # lifecycle belongs to human investigation, so no action has a
-        # machine reversal here.
+        # TheHive never auto-closes cases: the case lifecycle belongs to human
+        # investigation, so no action has a machine reversal here.
         return False
 
-    # -- M4-A forward dispatch binding contributor -------------------------
+    # forward dispatch binding contributor ------------------------------
 
     def dispatch_binding_facts(self, dispatch: ExecutionDispatch) -> dict:
         """Contribute the adapter-specific target identity to the pre-dispatch
-        binding (M4-A, Amendment §12.2 A1-revised) — HONESTLY, never as a verified
-        identity (constraint #2 / #3, M4-B):
+binding as a declaration rather than a verified identity:
 
-          endpoint -- the validated, secret-free base URL the ``POST /api/case``
-              targets: a CONFIG DECLARATION of WHERE the request was sent, NOT a
-              certified instance identity (a base URL is never passed off as one).
-          version_evidence_ref / version_assertion_kind -- the operator's CONFIGURED
-              ``THEHIVE_EXPECTED_VERSION`` marked ``config-declaration``: a version
-              CONFIG is NOT a liveness proof (constraint #3), so nothing here claims
-              the remote server actually runs it.
-          target_instance / target_tenant -- ``None`` (UNKNOWN). TheHive 4.1.24-1 has
-              NO authoritative dispatch-time instance / tenant source (the write
-              config carries a base URL, not a certified instance identity, and the
-              ``OutputCase`` has no organisation), so these stay ``None`` and gate 5
-              STILL fails closed — M4-A makes the binding FORWARD-READY, it does not
-              manufacture an identity that does not exist.
+endpoint -- the validated, secret-free base URL the ``POST /api/case``
+targets: a config declaration of where the request was sent, not a
+certified instance identity (a base URL is never passed off as one).
+version_evidence_ref / version_assertion_kind -- the operator's configured
+``THEHIVE_EXPECTED_VERSION`` marked ``config-declaration``: a version
+config is not a liveness proof, so nothing here claims the remote
+server actually runs it.
+target_instance / target_tenant -- ``None`` (unknown). TheHive 4.1.24-1 has
+no authoritative dispatch-time instance / tenant source (the write
+config carries a base URL, not a certified instance identity, and the
+``OutputCase`` has no organisation), so these stay ``None`` and the
+binding check still fails closed: the binding stays forward-ready
+rather than manufacturing an identity that does not exist.
 
-        NO secret: the base URL is validated secret-free (``validate_base_url``) and
-        every field still passes the ``redact_detail`` gate at the single ``_append``
-        write point. ``dispatch`` is accepted for protocol generality (a multi-action
-        adapter's endpoint may depend on it); TheHive's single ``escalate_to_incident``
-        action always targets ``{base_url}/api/case``, so the endpoint is the base URL.
-        """
+No secret: the base URL is validated secret-free (``validate_base_url``) and
+every field still passes the ``redact_detail`` gate at the single ``_append``
+write point. ``dispatch`` is accepted for protocol generality (a multi-action
+adapter's endpoint may depend on it); TheHive's single ``escalate_to_incident``
+action always targets ``{base_url}/api/case``, so the endpoint is the base URL.
+"""
         expected_version = str(
             getattr(settings, "THEHIVE_EXPECTED_VERSION", "") or ""
         ).strip()
@@ -254,20 +251,20 @@ class TheHiveExecutor(ResponseExecutor):
             "target_tenant": None,
         }
 
-    # -- execute -----------------------------------------------------------
+    # execute -----------------------------------------------------------
 
     def execute(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
         """Create a TheHive case for the approved escalation.
 
-        Case mapping (frozen): execution target -> title; a fixed
-        provenance description; severity -> the Int 3 (High) escalation
-        default (InputCase.severity is Option[Int]); execution_id +
-        approval_id + the "sentinelflow" provenance marker -> tags (the
-        ONLY authenticated, persisted, read-back channel — the dispatch
-        DTO carries no richer incident facts, so the adapter never
-        invents them). The execution tag is the G5 correlation /
-        independent verification handle, never an idempotency key.
-        """
+Case mapping: execution target -> title; a fixed provenance
+description; severity -> the Int 3 (High) escalation default
+(InputCase.severity is Option[Int]); execution_id + approval_id +
+the "sentinelflow" provenance marker -> tags (the only
+authenticated, persisted, read-back channel — the dispatch DTO
+carries no richer incident facts, so the adapter never invents
+them). The execution tag is the correlation / independent
+verification handle, never an idempotency key.
+"""
         if not self.supports(dispatch.action):
             raise ValueError(
                 f"thehive adapter does not support action '{dispatch.action}'"
@@ -329,9 +326,9 @@ class TheHiveExecutor(ResponseExecutor):
         try:
             payload_bytes = response.read()
         except TimeoutError:
-            # M4-F §3: a timeout DURING the body read is the same uncertainty as
-            # a connect timeout — the request was SENT, the case MAY exist, the
-            # answer is lost. Fail closed as timeout, NEVER a success, ZERO retry.
+            # A timeout during the body read is the same uncertainty as a connect
+            # timeout: the request was sent, the case may exist, the answer is
+            # lost. Fail closed as timeout, never a success, no retry.
             return ExecutionOutcome(
                 status="failed",
                 detail={
@@ -344,12 +341,12 @@ class TheHiveExecutor(ResponseExecutor):
                 raw_response=None,
             )
         except (OSError, http.client.HTTPException) as exc:
-            # M4-F §3: the request was SENT (the case MAY exist) but the response
-            # body was interrupted mid-stream (IncompleteRead / ConnectionReset /
-            # OS error) — an UNCERTAINTY, never a success and never a claim the
-            # effect failed. Fail closed as adapter_unavailable; the committed
-            # pre-dispatch attempt survives for MANUAL reconciliation (§1), with
-            # ZERO auto-retry. The error text is sanitized against live secrets.
+            # The request was sent (the case may exist) but the response body was
+            # interrupted mid-stream (IncompleteRead / ConnectionReset / OS
+            # error): the outcome is unknown, so this is never a success and never
+            # a claim the effect failed. Fail closed as adapter_unavailable; the
+            # committed pre-dispatch attempt survives for manual reconciliation,
+            # with no auto-retry. The error text is sanitized against live secrets.
             return ExecutionOutcome(
                 status="failed",
                 detail={
@@ -362,9 +359,9 @@ class TheHiveExecutor(ResponseExecutor):
             )
         payload_text = payload_bytes.decode("utf-8", errors="replace")
         if status == 202:
-            # "Accepted but not executed" is not a success in the frozen
-            # 3.2 semantics — no waiting state exists in the outcome
-            # vocabulary, so the answer is a failed adapter_error.
+            # "Accepted but not executed" is not a success: no waiting state
+            # exists in the outcome vocabulary, so the answer is a failed
+            # adapter_error.
             return ExecutionOutcome(
                 status="failed",
                 detail={
@@ -399,33 +396,32 @@ class TheHiveExecutor(ResponseExecutor):
                 f"status {status}"
             )
         # TheHive 4.1.24-1 v0 emits an OutputCase (dto/v0/Case.scala):
-        # "_id" and "id" are BOTH the string EntityId (Conversion.scala
+        # "_id" and "id" are both the string EntityId (Conversion.scala
         # caseOutput: id = _id.toString, _id = _id.toString) and the
         # reconcilable resource reference — the handle GET /api/case/{id}
         # re-fetches (CaseCtrlTest: EntityIdOrName(outputCase._id)). The
-        # response NEVER carries "case_id". "caseId" is the Int human case
-        # NUMBER, a distinct semantic that is NEVER the string resource id
-        # (M1 §4).
+        # response never carries "case_id". "caseId" is the Int human case
+        # number, a distinct semantic that is never the string resource id.
         resource_id = payload.get("_id")
         if not isinstance(resource_id, str) or not resource_id:
             # The renderer guarantees _id == id, so fall back to "id" only
-            # as a defensive read of the SAME string resource reference.
+            # as a defensive read of the same string resource reference.
             resource_id = payload.get("id")
         if not isinstance(resource_id, str) or not resource_id:
-            # A case creation without a string resource reference is a
-            # protocol lie — a lone numeric caseId is NOT a substitute. The
-            # adapter never self-completes it; the platform parser owns the
-            # protocol_violation verdict (D9).
+            # A case creation without a string resource reference gives
+            # nothing to reconcile — a lone numeric caseId is not a
+            # substitute. The adapter never self-completes it; the platform
+            # parser owns the protocol_violation verdict.
             raise ExecutorOutcomeViolation(
                 "thehive case creation succeeded without a string resource "
                 "reference (_id/id absent, empty or non-string; the numeric "
                 "caseId is never a substitute)"
             )
-        # SentinelFlow's frozen reconcile key (_EXTERNAL_REFERENCE_KEYS
-        # ["thehive"]) carries the STRING resource reference so the Manual
-        # Reconcile read path re-fetches the exact case; caseId (number)
-        # rides along for human audit ONLY, and only when TheHive supplied a
-        # genuine int (never a bool, never invented).
+        # SentinelFlow's reconcile key (_EXTERNAL_REFERENCE_KEYS["thehive"])
+        # carries the string resource reference so the manual reconcile read
+        # path re-fetches the exact case; caseId (number) rides along for human
+        # audit only, and only when TheHive supplied a real int (never a bool,
+        # never invented).
         detail: dict[str, object] = {
             "provider": "thehive",
             "case_id": resource_id,
@@ -439,7 +435,7 @@ class TheHiveExecutor(ResponseExecutor):
             raw_response=payload,
         )
 
-    # -- compensate --------------------------------------------------------
+    # compensate --------------------------------------------------------
 
     def compensate(self, dispatch: ExecutionDispatch) -> ExecutionOutcome:
         if not self.supports_compensation(dispatch.action):
@@ -452,22 +448,22 @@ class TheHiveExecutor(ResponseExecutor):
             "thehive adapter has no compensable actions"
         )  # unreachable: capability guard refuses upstream
 
-    # -- internals ----------------------------------------------------------
+    # internals ----------------------------------------------------------
 
     def _on_http_error(self, exc: urllib.error.HTTPError) -> ExecutionOutcome:
-        """Map HTTP errors. NO error body is parsed or carried into the
-        detail — the 409 body is no longer inspected because every 409
-        fails closed (see below)."""
+        """Map HTTP errors. No error body is parsed or carried into the
+detail — the 409 body is not inspected because every 409 fails
+closed (see below)."""
         status = exc.code
         if status == 409:
-            # TheHive 4.1.24-1 v0 case creation has NO certified idempotency
-            # / duplicate-recovery contract (CaseSrv.create auto-assigns the
-            # next case number, never detects duplicates — G3/G5 doc §5), so
-            # a 409 carries no authoritative re-fetchable case reference.
-            # Per M1 §4 a 409 is NEVER auto-success: without a certified way
-            # to recover, correlate and verify an EXISTING case reference it
-            # fails closed. The body is NOT parsed (no marker vocabulary) and
-            # is NEVER carried into the detail.
+            # TheHive 4.1.24-1 v0 case creation has no idempotency /
+            # duplicate-recovery contract (CaseSrv.create auto-assigns the
+            # next case number, never detects duplicates), so a 409 carries no
+            # authoritative re-fetchable case reference. A 409 is never
+            # auto-success: without a contract to recover, correlate and verify
+            # an existing case reference it fails closed. The body is not
+            # parsed (no marker vocabulary) and is never carried into the
+            # detail.
             return ExecutionOutcome(
                 status="failed",
                 detail={
@@ -500,5 +496,5 @@ class TheHiveExecutor(ResponseExecutor):
 
     def _sanitize(self, text: str) -> str:
         """Strip any secret value from a message before it can surface in
-        a detail or a raised exception (3.2.2 boundary)."""
+a detail or a raised exception."""
         return redact_text(text, current_secret_values())

@@ -1,5 +1,11 @@
 # CI — Configuration & Local Validation (RC2 §14)
 
+> **Historical snapshot (RC2 round, before the push).** The status below is what
+> was true when this document was written. The workflow has since run GREEN on
+> GitHub Actions (`9542f36`, all 7 jobs), and `main` carries branch protection
+> with these job names as required status checks. The test counts quoted here are
+> also from that round — `README.md` carries the current figure.
+
 **Status: CI CONFIGURED / LOCALLY VALIDATED.** No push happened this round, so
 there is deliberately **no** "GitHub CI PASS" claim. This document maps every
 CI job to the local evidence that exercised the same steps.

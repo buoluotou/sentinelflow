@@ -28,7 +28,7 @@ export function updateIncidentStatus(id: string, status: IncidentStatus): Promis
 }
 
 /**
- * The complete read-only AI history of one incident (Step 14.3 endpoint).
+ * The complete read-only AI history of one incident.
  * GET only — this client never generates AI data, never approves/rejects
  * and never executes anything; unknown incidents reject with ApiError(404).
  */

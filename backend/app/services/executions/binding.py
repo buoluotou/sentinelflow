@@ -1,59 +1,55 @@
-"""Forward Dispatch Binding (M4-A, Amendment §12.2 A1-REVISED).
+"""Forward dispatch binding: the immutable target facts of one dispatch attempt.
 
-THE PROBLEM THIS SOLVES. Before M4 the immutable target facts of a dispatch lived
-ONLY in the terminal ``succeeded`` row (the external ``createdAt`` inside
-``raw_response``) plus the chain's ``action`` / ``target`` columns. Amendment
-§12.2's A1 option sketched writing a ``dispatch_binding`` into the terminal
-``succeeded`` row. M4-A REVISES A1: the binding is persisted BEFORE the external
-request — inside the ``dispatched`` row, which the Execution Service appends +
-flushes BEFORE ``executor.execute()`` runs (``service.py``). The terminal row then
-REFERENCES the SAME binding (``dispatch_attempt_id``); it never re-writes it.
+WHY PRE-DISPATCH. Historically the immutable target facts of a dispatch lived only
+in the terminal ``succeeded`` row (the external ``createdAt`` inside
+``raw_response``) plus the chain's ``action`` / ``target`` columns. Such a binding
+is lost exactly when it is most needed: a timeout, a connection failure, an HTTP
+error or a lost response leaves no ``succeeded`` row, so the target facts of the
+attempt would vanish. The binding is therefore persisted BEFORE the external
+request — inside the ``dispatched`` row, which the Execution Service appends and
+flushes BEFORE ``executor.execute()`` runs (``service.py``). That row always lands
+before the adapter runs, so the binding survives every outcome (success / timeout /
+connection failure / HTTP error / response loss). The terminal row then references
+the same binding (``dispatch_attempt_id``); it never re-writes it.
 
-WHY PRE-DISPATCH. A binding written only at a ``succeeded`` terminal is lost
-exactly when it is most needed: a timeout, a connection failure, an HTTP error or a
-lost response leaves NO ``succeeded`` row, so the target facts of the attempt would
-vanish. The ``dispatched`` row ALWAYS lands before the adapter runs, so the binding
-survives EVERY outcome (success / timeout / connection failure / HTTP error /
-response loss) — the task's hard requirement.
+WHAT IT RECORDS. The immutable target identity of one attempt: execution /
+approval identity, adapter, the server-side action / target snapshot, the dispatch
+start time (server clock), a unique attempt identifier, the dispatch-time
+approval-status snapshot, and — from an optional adapter contributor — the
+config-declared endpoint / version-evidence reference and the target instance /
+tenant. It never records a secret: every field passes the ``redact_detail`` gate at
+the single ``_append`` write point, no field is a credential, and the contributor
+keys are merged through an explicit whitelist (the endpoint is the validated
+secret-free base URL; the version is a config declaration, never a liveness
+proof).
 
-WHAT IT RECORDS — AND WHAT IT NEVER RECORDS. The binding is the immutable target
-identity of THIS attempt: execution / approval identity, adapter, the server-side
-action / target snapshot, the dispatch START time (server clock), a unique attempt
-identifier, the dispatch-time approval-status snapshot, and — from an OPTIONAL
-adapter contributor — the config-declared endpoint / version-evidence reference and
-the target instance / tenant. It NEVER records a secret: every field passes the
-``redact_detail`` gate at the single ``_append`` write point, no field IS a
-credential, and the contributor keys are merged through an explicit whitelist (the
-endpoint is the validated secret-free base URL; the version is a config declaration,
-never a liveness proof).
-
-HONEST FAIL-CLOSED IDENTITY (constraint #2 / #3, M4-B). For TheHive 4.1.24-1 there
-is NO authoritative dispatch-time instance / tenant source (the write config carries
-a base URL, not a certified instance identity; the ``OutputCase`` has no
-organisation), so the TheHive contributor records ``target_instance`` /
-``target_tenant`` as ``None`` (UNKNOWN) and the endpoint / version as CONFIG
-DECLARATIONS (``version_assertion_kind="config-declaration"``). A base URL or a
-config string is NEVER passed off as a verified identity. Gate 5 therefore STILL
-fails closed for every real execution — M4-A makes the binding FORWARD-READY (a
-future authenticated instance / tenant source populates these fields), it does NOT
-manufacture a binding that does not exist.
+UNKNOWN IDENTITY FAILS CLOSED. For TheHive 4.1.24-1 there is no authoritative
+dispatch-time instance / tenant source (the write config carries a base URL, not a
+certified instance identity; the ``OutputCase`` has no organisation), so the TheHive
+contributor records ``target_instance`` / ``target_tenant`` as ``None`` (unknown) and
+the endpoint / version as config declarations
+(``version_assertion_kind="config-declaration"``). A base URL or a config string is
+never passed off as a verified identity, so gate 5 still fails closed for every real
+execution. The binding is forward-ready — a future authenticated instance / tenant
+source populates these fields — but it does not manufacture a binding that does not
+exist.
 
 NO SCHEMA MIGRATION. ``ExecutionLog.detail`` is a JSON column, so the binding rides
 inside the ``dispatched`` row's ``detail`` (``detail["dispatch_binding"]``) and the
 terminal reference inside the terminal row's ``detail``
-(``detail["dispatch_attempt_id"]``). NO new column, NO Alembic migration, NO
-back-fill of old records. Old history simply has NO binding -> ``parse_dispatch_binding``
-returns ``None`` -> the proof derivation fails closed exactly as before.
+(``detail["dispatch_attempt_id"]``). No new column, no Alembic migration, no
+back-fill of old records: old history simply has no binding, so
+``parse_dispatch_binding`` returns ``None`` and the proof derivation fails closed
+exactly as before.
 
-FROZEN-CONTRACT SAFE. The ``ResponseExecutor`` ABC (``base.py``) is UNCHANGED — the
-contributor capability is a SEPARATE ``runtime_checkable`` Protocol
-(``DispatchBindingContributor``) an adapter MAY satisfy; ``dispatched`` stays a
-platform log state, never an adapter product (D8). The ``created_at`` audit-stamp
-frozen clause is UNTOUCHED: ``dispatch_started_at`` is a server-clock FACT recorded
-in ``detail`` (the same precedent as the policy-evaluation time ``service.py``
-already computes with ``datetime.now(timezone.utc)``), NOT the ``created_at`` column —
-which is stamped by the DATABASE at INSERT since RC2 / H-2 (see ``service.py``'s
-frozen-clause note).
+ADAPTER CONTRACT UNCHANGED. The ``ResponseExecutor`` ABC (``base.py``) is unchanged:
+the contributor capability is a separate ``runtime_checkable`` Protocol
+(``DispatchBindingContributor``) an adapter may satisfy, and ``dispatched`` stays a
+platform log state, never an adapter product. The ``created_at`` audit-stamp rule is
+untouched — ``dispatch_started_at`` is a server-clock fact recorded in ``detail``
+(the same precedent as the policy-evaluation time ``service.py`` computes with
+``datetime.now(timezone.utc)``), not the ``created_at`` column, which the database
+stamps at INSERT (see ``service.py``).
 """
 from __future__ import annotations
 
@@ -64,48 +60,48 @@ from typing import Any, Protocol, runtime_checkable
 
 from app.services.executions.models import ExecutionDispatch
 
-#: The ``dispatched`` row's detail key the binding is persisted under.
+# The ``dispatched`` row's detail key the binding is persisted under.
 BINDING_DETAIL_KEY = "dispatch_binding"
 
-#: The terminal row's detail key carrying the binding's ``attempt_id`` — the
-#: explicit "the terminal REFERENCES the same binding" link (task M4-A). A terminal
-#: never re-writes the binding; it points back at the ONE pre-dispatch attempt.
+# The terminal row's detail key carrying the binding's ``attempt_id`` — the
+# explicit "the terminal references the same binding" link. A terminal never
+# re-writes the binding; it points back at the one pre-dispatch attempt.
 TERMINAL_REFERENCE_KEY = "dispatch_attempt_id"
 
-#: Shape version, so a forward parser refuses an UNKNOWN binding shape fail-closed
-#: rather than mis-reading a future field layout.
+# Shape version, so a forward parser refuses an unknown binding shape fail-closed
+# rather than mis-reading a future field layout.
 BINDING_SCHEMA = "sentinelflow.dispatch_binding.v1"
 
-#: The honest marker for a version that is a CONFIG DECLARATION, never a
-#: certified-live liveness proof (constraint #3).
+# Marker for a version that is a config declaration, never a certified-live
+# liveness proof.
 VERSION_ASSERTION_CONFIG = "config-declaration"
 
 
 @runtime_checkable
 class DispatchBindingContributor(Protocol):
-    """An OPTIONAL adapter capability: contribute the adapter-specific target
-    identity facts to the pre-dispatch binding.
+    """An optional adapter capability: contribute the adapter-specific target
+identity facts to the pre-dispatch binding.
 
-    This is a SEPARATE ``runtime_checkable`` Protocol, NOT a method on the frozen
-    ``ResponseExecutor`` ABC (``base.py``) — ``dispatched`` is a platform log state,
-    never part of the adapter contract (D8), so the ABC stays UNCHANGED. An adapter
-    that makes a real external request (TheHive) MAY satisfy it; the offline mock
-    does not, and its binding simply carries the platform facts alone.
+This is a separate ``runtime_checkable`` Protocol, not a method on the
+``ResponseExecutor`` ABC (``base.py``) — ``dispatched`` is a platform log state,
+never part of the adapter contract, so the ABC stays unchanged. An adapter
+that makes a real external request (TheHive) may satisfy it; the offline mock
+does not, and its binding carries the platform facts alone.
 
-    ``isinstance`` against this ``runtime_checkable`` Protocol checks ONLY the
-    PRESENCE of ``dispatch_binding_facts`` (same caveat the codebase already documents
-    for ``TrustedCreationReader``) — the trust is the controlled call chain, not the
-    type name. The returned dict is merged through an explicit whitelist: only the
-    adapter-specific identity keys are read, never a platform fact, never an
-    arbitrary key. A contributor returns CONFIG-DECLARED evidence HONESTLY — for
-    TheHive 4.1.24-1 ``target_instance`` / ``target_tenant`` are ``None`` (no
-    authoritative dispatch-time identity source) and the version is marked
-    ``config-declaration`` (never a liveness proof).
-    """
+``isinstance`` against this ``runtime_checkable`` Protocol checks only the
+presence of ``dispatch_binding_facts`` (the same caveat the codebase already
+documents for ``TrustedCreationReader``) — the trust is the controlled call
+chain, not the type name. The returned dict is merged through an explicit
+whitelist: only the adapter-specific identity keys are read, never a platform
+fact, never an arbitrary key. A contributor reports config-declared evidence
+as such — for TheHive 4.1.24-1 ``target_instance`` / ``target_tenant`` are
+``None`` (no authoritative dispatch-time identity source) and the version is
+marked ``config-declaration`` (never a liveness proof).
+"""
 
     def dispatch_binding_facts(self, dispatch: ExecutionDispatch) -> dict[str, Any]:
         """The adapter-specific target identity facts for THIS dispatch (never a
-        secret; the endpoint is the validated secret-free base URL)."""
+secret; the endpoint is the validated secret-free base URL)."""
         ...
 
 
@@ -113,12 +109,13 @@ class DispatchBindingContributor(Protocol):
 class DispatchBinding:
     """The immutable pre-dispatch target binding (typed shape).
 
-    Written into the ``dispatched`` row's ``detail`` BEFORE the external request;
-    read back by the proof derivation (``outcomes/verified_proof``) to populate the
-    immutable correlation context. Frozen + slots: immutable, no attribute surprise.
-    Every field is a server-side fact or an honest ``None`` (UNKNOWN) — NEVER a
-    secret, NEVER back-filled from the current config.
-    """
+Written into the ``dispatched`` row's ``detail`` BEFORE the external request;
+read back by the proof derivation (``outcomes/verified_proof``) to populate the
+immutable correlation context. The dataclass is and slotted, so fields
+cannot be reassigned and no attribute appears by accident. Every field is a
+server-side fact or ``None`` (unknown) — never a secret, never back-filled from
+the current config.
+"""
 
     schema: str
     execution_id: str
@@ -126,18 +123,18 @@ class DispatchBinding:
     adapter: str
     action: str
     target: str
-    #: Fresh uuid4 minted by ``build_dispatch_binding`` — the unique identifier of
-    #: THIS dispatch attempt; the terminal row references it (``TERMINAL_REFERENCE_KEY``).
+    # Fresh uuid4 minted by ``build_dispatch_binding`` — the unique identifier of
+    # this dispatch attempt; the terminal row references it (``TERMINAL_REFERENCE_KEY``).
     attempt_id: str
-    #: ISO-8601 server-clock dispatch START, recorded in ``detail`` — NOT the
-    #: ``created_at`` audit column (see the module docstring's frozen-clause note).
+    # ISO-8601 server-clock dispatch start, recorded in ``detail`` — not the
+    # ``created_at`` audit column (see the module docstring note).
     dispatch_started_at: str
-    #: The linked approval's status AT DISPATCH TIME (immutable snapshot for gate 6) —
-    #: NEVER the live status re-read at reconcile time. ``None`` when unknown.
+    # The linked approval's status at dispatch time (immutable snapshot for gate 6) —
+    # never the live status re-read at reconcile time. ``None`` when unknown.
     approval_status_at_dispatch: str | None
-    #: Adapter-contributed CONFIG-DECLARED target identity. ``None`` for a
-    #: non-contributor (mock) and for TheHive 4.1.24-1's absent authoritative
-    #: instance / tenant source — an honest UNKNOWN, never a base-URL substitute.
+    # Adapter-contributed, config-declared target identity. ``None`` for a
+    # non-contributor (mock) and for TheHive 4.1.24-1's absent authoritative
+    # instance / tenant source — unknown, never a base-URL substitute.
     endpoint: str | None
     version_evidence_ref: str | None
     version_assertion_kind: str | None
@@ -146,7 +143,7 @@ class DispatchBinding:
 
     def to_detail(self) -> dict[str, Any]:
         """Project to the JSON-storable detail dict (``dispatch_started_at`` is
-        already an ISO string, so the result is pure JSON scalars)."""
+already an ISO string, so the result is pure JSON scalars)."""
         return {
             "schema": self.schema,
             "execution_id": self.execution_id,
@@ -165,9 +162,9 @@ class DispatchBinding:
         }
 
     def started_at(self) -> datetime | None:
-        """The dispatch START as an aware UTC datetime, or ``None`` when the stored
-        ISO string is malformed (fail-closed — the derivation never substitutes a
-        server time for the historical dispatch start, constraint #2)."""
+        """The dispatch start as an aware UTC datetime, or ``None`` when the stored
+ISO string is malformed (fail-closed — the derivation never substitutes a
+server time for the historical dispatch start)."""
         try:
             value = datetime.fromisoformat(self.dispatch_started_at)
         except (ValueError, TypeError):
@@ -177,7 +174,7 @@ class DispatchBinding:
 
 def _optional_str(value: Any) -> str | None:
     """A non-empty ``str`` or ``None`` (an absent / blank / non-string adapter fact
-    is an honest UNKNOWN, never coerced)."""
+is unknown, never coerced)."""
     return value if isinstance(value, str) and value else None
 
 
@@ -192,20 +189,20 @@ def build_dispatch_binding(
     dispatch_started_at: datetime,
     contributor_facts: dict[str, Any] | None = None,
 ) -> DispatchBinding:
-    """Assemble the immutable pre-dispatch binding from SERVER-SIDE facts only.
+    """Assemble the immutable pre-dispatch binding from server-side facts only.
 
-    ``attempt_id`` is minted HERE (a fresh uuid4 — the unique identifier of THIS
-    dispatch attempt); the terminal row references it via ``TERMINAL_REFERENCE_KEY``.
-    ``dispatch_started_at`` is the caller's server-clock instant (the policy-time
-    precedent in ``service.py``), stored as an ISO string. ``approval_status`` is the
-    linked approval's status AT DISPATCH TIME (the immutable gate-6 snapshot).
+``attempt_id`` is minted here (a fresh uuid4 — the unique identifier of this
+dispatch attempt); the terminal row references it via ``TERMINAL_REFERENCE_KEY``.
+``dispatch_started_at`` is the caller's server-clock instant (the policy-time
+precedent in ``service.py``), stored as an ISO string. ``approval_status`` is the
+linked approval's status at dispatch time (the immutable gate-6 snapshot).
 
-    Contributor facts are merged through an EXPLICIT WHITELIST — only the five
-    adapter-specific identity keys are read (``endpoint`` / ``version_evidence_ref``
-    / ``version_assertion_kind`` / ``target_instance`` / ``target_tenant``), so a
-    contributor can NEVER override a platform fact (execution_id / attempt_id /
-    dispatch_started_at / ...) or smuggle an arbitrary key into the binding.
-    """
+Contributor facts are merged through an explicit whitelist — only the five
+adapter-specific identity keys are read (``endpoint`` / ``version_evidence_ref``
+/ ``version_assertion_kind`` / ``target_instance`` / ``target_tenant``), so a
+contributor can never override a platform fact (execution_id / attempt_id /
+dispatch_started_at / ...) or smuggle an arbitrary key into the binding.
+"""
     facts = contributor_facts or {}
     return DispatchBinding(
         schema=BINDING_SCHEMA,
@@ -226,14 +223,11 @@ def build_dispatch_binding(
 
 
 def parse_dispatch_binding(detail: Any) -> DispatchBinding | None:
-    """Read the binding back from a ``dispatched`` row's ``detail`` — FAIL-CLOSED.
+    """Read the binding back from a ``dispatched`` row's ``detail`` — fail-closed.
 
-    Returns ``None`` when the detail is absent / not a dict / carries no binding /
-    has an unknown ``schema`` / is missing any platform-identity fact. NEVER raises,
-    NEVER fabricates a field: old history (no binding) and a corrupt binding BOTH
-    yield ``None``, so the proof derivation fails closed exactly as it did before
-    M4-A (constraint #2 — a missing immutable fact is never back-filled).
-    """
+Returns ``None`` when the detail is absent / not a dict / carries no binding /
+has an unknown ``schema`` / is missing any platform-identity fact. It never
+raises and """
     if not isinstance(detail, dict):
         return None
     raw = detail.get(BINDING_DETAIL_KEY)
@@ -248,8 +242,9 @@ def parse_dispatch_binding(detail: Any) -> DispatchBinding | None:
     target = raw.get("target")
     attempt_id = raw.get("attempt_id")
     dispatch_started_at = raw.get("dispatch_started_at")
-    # The platform-identity facts MUST all be present non-empty strings; a binding
-    # missing ANY of them is corrupt -> None (fail-closed, never partially trusted).
+    # The platform-identity facts must all be present as non-empty strings; a
+    # binding missing any of them is corrupt -> None (fail-closed, never
+    # partially trusted).
     required = (
         execution_id,
         approval_id,

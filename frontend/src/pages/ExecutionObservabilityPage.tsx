@@ -1,20 +1,20 @@
-/** Execution Observability (Phase 3.3.3.4.2): a purely read-only view of
- * the two frozen observability read models:
+/* * Execution Observability: a purely read-only view of
+ * the two observability read models:
  *
- *     GET /executions/metrics  -> Execution Metrics
- *     GET /executions/health   -> Adapter Health (OBSERVED, not probed)
+ * GET /executions/metrics -> Execution Metrics
+ * GET /executions/health -> Adapter Health (OBSERVED, not probed)
  *
- * Hard boundaries (frozen 3.3.3.4):
+ * Hard boundaries (3.3.3.4):
  * - Page load issues exactly two GETs (Promise.all) — there is no write
- *   path from this page, no execution-credential input anywhere, and
- *   ZERO action affordances (no Execute / Retry / Compensate / Approve
- *   / Reject / Run Response, not even a refresh button).
+ * path from this page, no execution-credential input anywhere, and
+ * ZERO action affordances (no Execute / Retry / Compensate / Approve
+ * / Reject / Run Response, not even a refresh button).
  * - The UI renders SERVER FACTS as-is: rates are shown exactly as the
- *   backend computed them (0.8 renders as 80%), never recomputed from
- *   sibling numbers; null renders as N/A, NEVER as 0%.
+ * backend computed them (0.8 renders as 80%), never recomputed from
+ * sibling numbers; null renders as N/A, NEVER as 0%.
  * - `observed_status` is labelled "Observed Status" and captioned as a
- *   read-model verdict over recent execution facts — it is NOT a live
- *   probe ("the adapter answers right now").
+ * read-model verdict over recent execution facts — it is NOT a live
+ * probe ("the adapter answers right now").
  */
 import { useEffect, useState } from 'react'
 import { getExecutionHealth, getExecutionMetrics } from '../api/executionObservability'
@@ -28,13 +28,13 @@ import { ErrorBanner, Loading, Panel, formatTime } from '../components/common'
 
 /** Server rate -> display text. The rate is the SERVER's fact; this is
  * display formatting only (x100 + rounding), never a re-derivation.
- * null keeps the frozen "undefined metric" semantics: N/A, not 0%. */
+ * null keeps the "undefined metric" semantics: N/A, not 0%. */
 function formatRate(rate: number | null): string {
   if (rate === null) return 'N/A'
   return `${Math.round(rate * 10000) / 100}%`
 }
 
-/** Verdict chip for the four frozen observed statuses. The label ALWAYS
+/* * Verdict chip for the four observed statuses. The label ALWAYS
  * carries the word "Observed" so the verdict is never misread as a
  * live liveness probe. */
 export function ObservedStatusBadge({ status }: { status: ObservedStatus }) {

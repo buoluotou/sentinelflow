@@ -1,7 +1,6 @@
-/** AI risk-summary types — field-level mirror of backend AIRiskSummaryRead
- * (Step 11.6).
+/** AI risk-summary types — field-level mirror of backend AIRiskSummaryRead.
  *
- * Deliberately NO risk-score field: EventRisk.score stays the single official
+ * There is no risk-score field: EventRisk.score stays the single official
  * score; the AI summary only explains, compresses and prioritises.
  */
 

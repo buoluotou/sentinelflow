@@ -1,4 +1,4 @@
-"""Pydantic schemas of the Incident Management API (Phase 1 Step 7.3)."""
+"""Pydantic schemas of the Incident Management API."""
 import uuid
 from datetime import datetime
 
@@ -7,15 +7,16 @@ from pydantic import BaseModel, ConfigDict
 
 class IncidentCreate(BaseModel):
     """POST /incidents — only the event is given; the case record
-    (title/severity/description/risk_score) is auto-filled by the service."""
+(title/severity/description/risk_score) is auto-filled by the service."""
 
     alert_group_id: uuid.UUID
 
 
 class IncidentStatusUpdate(BaseModel):
-    """PATCH /incidents/{id}/status — deliberately an explicit action route,
-    not a generic PATCH: ``status`` here is a requested MOVE, validated by
-    the service-layer state machine (unknown vocabulary -> 409, not 422)."""
+    """PATCH /incidents/{id}/status — an explicit action route rather than a
+generic field update: ``status`` is a requested transition, checked
+against the service-layer state machine, so an unknown vocabulary value
+answers 409 instead of a 422 body-validation error."""
 
     status: str
 

@@ -1,28 +1,28 @@
-"""Step 13.4: cross-layer regression for the approval state machine.
+"""cross-layer regression for the approval state machine.
 
 13.1 (model) / 13.2 (service) / 13.3 (API) have their own suites; this
 file pins the whole pipeline as one contract, all at the API boundary:
 
-    Recommendation (no approval row) -> PENDING (derived)
-    PENDING + approve  -> APPROVED   (one-shot INSERT)
-    PENDING + reject   -> REJECTED   (one-shot INSERT)
+Recommendation (no approval row) -> PENDING (derived)
+PENDING + approve  -> APPROVED   (one-shot INSERT)
+PENDING + reject   -> REJECTED   (one-shot INSERT)
 
 There is no pending -> UPDATE -> approved path: "pending" never exists in
 the database, decisions are INSERT-only, and a decided recommendation is
 final. Six blocks:
 
 1. full queue lifecycles (approve chain + reject chain), including the
-   12.3 -> 13 hand-off: a recommendation generated through the real
-   Step 12 API lands in the Step 13 queue
+12.3 -> 13 hand-off: a recommendation generated through the real
+Step 12 API lands in the Step 13 queue
 2. no re-judging: every second decision is 409 and the original row is
-   field-for-field immutable (status / reviewer / reviewed_at / comment)
+field-for-field immutable (status / reviewer / reviewed_at / comment)
 3. concurrency through the API: two racing decisions, exactly one wins
 4. queue boundaries: decided items vanish, order stays created_at ASC
 5. empty queue is a normal [] — never 404
 6. the safety boundary across layers: a decision never executes anything —
-   approving an escalate_to_incident advice creates no Incident, leaves
-   EventRisk and the advice body untouched (the Step 13 modules import no
-   orchestrator client; the behavioral assertions below pin the outcome)
+approving an escalate_to_incident advice creates no Incident, leaves
+EventRisk and the advice body untouched (the Step 13 modules import no
+orchestrator client; the behavioral assertions below pin the outcome)
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -107,13 +107,13 @@ def _decision_urls(record) -> dict[str, str]:
     return {"approve": f"{base}/approve", "reject": f"{base}/reject"}
 
 
-# ------------------------------------- Block 1: full queue lifecycles
+# Block 1: full queue lifecycles
 
 
 def test_approve_lifecycle_queue_decision_detail(client, db_session):
     """Recommendation created through the REAL Step 12 API lands in the
-    Step 13 queue; approve closes the auditable loop end to end:
-    generate -> queue -> approve -> queue empty -> detail."""
+Step 13 queue; approve closes the auditable loop end to end:
+generate -> queue -> approve -> queue empty -> detail."""
     group = _seed_event(db_session, score=85)
     generated = client.post(f"/api/v1/events/{group.id}/response-recommendation")
     assert generated.status_code == 201
@@ -162,7 +162,7 @@ def test_reject_lifecycle_queue_decision_detail(client, db_session):
     assert detail.json()["review_comment"] == "false positive"
 
 
-# --------------------------------------------- Block 2: no re-judging
+# Block 2: no re-judging
 
 
 @pytest.mark.parametrize(
@@ -173,7 +173,7 @@ def test_second_decision_is_409_and_original_is_field_immutable(
     client, db_session, first, second
 ):
     """A decision is a one-shot final act: the retry is 409 and EVERY field
-    of the original row survives untouched (no workflow-style edits)."""
+of the original row survives untouched (no workflow-style edits)."""
     record = _seed_recommendation(db_session)
     urls = _decision_urls(record)
 
@@ -205,15 +205,15 @@ def test_second_decision_is_409_and_original_is_field_immutable(
     assert after.review_comment == snapshot["review_comment"]
 
 
-# -------------------------------------------------- Block 3: concurrency
+# Block 3: concurrency
 
 
 @pytest.mark.parametrize("winner,loser", [("approve", "reject"), ("reject", "approve")])
 def test_racing_decisions_exactly_one_wins(client, db_session, winner, loser):
     """Two analysts act on the same queue item: one 201, the other 409,
-    exactly one approval row, winner's verdict stands. (The true flush-time
-    UNIQUE race branch is pinned at service level in 13.2; here the API
-    contract of the resolved race is locked.)"""
+exactly one approval row, winner's verdict stands. (The true flush-time
+UNIQUE race branch is pinned at service level in 13.2; here the API
+contract of the resolved race is locked.)"""
     record = _seed_recommendation(db_session)
     urls = _decision_urls(record)
 
@@ -230,12 +230,12 @@ def test_racing_decisions_exactly_one_wins(client, db_session, winner, loser):
     assert client.get(QUEUE).json() == []
 
 
-# ------------------------------------------- Block 4: queue boundaries
+# Block 4: queue boundaries
 
 
 def test_queue_shows_only_pending_in_frozen_order(client, db_session):
     """A(pending) B(approved) C(rejected) D(pending) -> queue is [A, D],
-    ordered created_at ASC straight from the service (no API re-sort)."""
+ordered created_at ASC straight from the service (no API re-sort)."""
     a = _seed_recommendation(db_session, minutes_ago=30)
     b = _seed_recommendation(db_session, minutes_ago=20)
     c = _seed_recommendation(db_session, minutes_ago=10)
@@ -252,7 +252,7 @@ def test_queue_shows_only_pending_in_frozen_order(client, db_session):
     assert [entry["id"] for entry in queue.json()] == [str(a.id), str(d.id)]
 
 
-# -------------------------------------------------- Block 5: empty queue
+# Block 5: empty queue
 
 
 def test_fully_drained_queue_is_200_empty_list_not_404(client, db_session):
@@ -270,13 +270,13 @@ def test_fully_drained_queue_is_200_empty_list_not_404(client, db_session):
     assert response.json() == []
 
 
-# ------------------------------------- Block 6: safety boundary cross-layer
+# Block 6: safety boundary cross-layer
 
 
 def test_approving_an_escalation_never_executes_anything(client, db_session):
     """The sharpest edge: a recommendation carrying escalate_to_incident +
-    block_source_ip gets APPROVED — and still nothing executes. No Incident
-    appears, EventRisk is untouched, the advice body is never rewritten."""
+block_source_ip gets APPROVED — and still nothing executes. No Incident
+appears, EventRisk is untouched, the advice body is never rewritten."""
     record = _seed_recommendation(
         db_session, actions=("block_source_ip", "escalate_to_incident")
     )

@@ -1,4 +1,4 @@
-"""Phase 1 Step 5.4: Risk API tests.
+"""Risk API tests.
 
 The Events API exposes the persisted risk assessment (pure read — scoring
 happens only on the write path):

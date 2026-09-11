@@ -1,8 +1,9 @@
-"""Pydantic schemas of the approval-queue API (Phase 2 Step 13.3).
+"""Pydantic schemas of the approval-queue API.
 
-Approve != Execute surfaces here as well: the decision request carries
-ONLY who decided and why — no reviewed_at (the server stamps the audit
-clock), no user/role/RBAC fields and nothing executable.
+Approval and execution are separate steps, and that boundary surfaces here as
+well: the decision request carries only who decided and why — no reviewed_at
+(the server stamps the audit clock), no user/role/RBAC fields and nothing
+executable.
 """
 import uuid
 from datetime import datetime
@@ -15,10 +16,12 @@ from app.schemas.response_recommendation import RecommendationItemRead
 class ApprovalDecisionRequest(BaseModel):
     """Body of POST .../approve and .../reject.
 
-    extra="forbid" is the schema-level guard: clients cannot smuggle
-    reviewed_at (server-stamped in the service) or any future field past
-    the frozen first-version contract.
-    """
+extra="forbid" is the schema-level guard: clients cannot smuggle
+reviewed_at (server-stamped in the service) or any field the recorded
+decision does not define. ``reviewer`` is the display-only attribution of
+who decided; in production the recorded reviewer is the authenticated
+principal the router resolves from the bearer token, never this field.
+"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -28,8 +31,8 @@ class ApprovalDecisionRequest(BaseModel):
 
 class AIResponseApprovalRead(BaseModel):
     """One recorded human decision. Approvals are INSERT-only: status is a
-    terminal decision (approved / rejected) — "pending" never appears here
-    because it is a derived queue state, not a stored value."""
+terminal decision (approved / rejected) — "pending" never appears here
+because it is a derived queue state, not a stored value."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,11 +47,11 @@ class AIResponseApprovalRead(BaseModel):
 
 
 class PendingApprovalRead(BaseModel):
-    """One Approval Queue entry: a recommendation with NO approval row yet.
+    """One Approval Queue entry: a recommendation with no approval row yet.
 
-    Embeds the full recommendation (read-only advice) plus the owning
-    event id and title so the queue renders without extra round trips.
-    """
+Embeds the full recommendation (read-only advice) plus the owning
+event id and title so the queue renders without extra round trips.
+"""
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -169,7 +169,7 @@ def run(base: str, token: str | None, wait: int) -> str:
     ok("GET /api/v1/dashboard/summary -> 200 (counters present)")
 
     # 4. Submit an alert through the SAME contract the simulator uses. This
-    #    synchronously drives normalization -> dedup -> risk -> auto-incident.
+    # synchronously drives normalization -> dedup -> risk -> auto-incident.
     alert = {
         "source": "demo-smoke",
         "event_type": "malicious_ioc",
@@ -237,14 +237,14 @@ def run(base: str, token: str | None, wait: int) -> str:
     ok(f"POST /api/v1/response-recommendations/{{id}}/approve -> 201 (approval_id={approval_id})")
 
     # 13. Execution — the durable-dispatch step. It commits the pre-dispatch
-    #     attempt on an INDEPENDENT connection BEFORE any external call (frozen
-    #     M4 durability: "flush != durable commit"; the attempt must survive a
-    #     caller rollback / crash). That needs an MVCC database: PostgreSQL runs
-    #     the caller's open write transaction and the independent commit side by
-    #     side. SQLite serializes writes at the DATABASE level, so while the
-    #     caller's transaction is open the independent commit cannot proceed and
-    #     the store FAILS CLOSED — it rolls back, never reaches the adapter and
-    #     fabricates nothing. Both behaviours are asserted explicitly per driver.
+    # attempt on an INDEPENDENT connection BEFORE any external call (frozen
+    # durability: "flush != durable commit"; the attempt must survive a
+    # caller rollback / crash). That needs an MVCC database: PostgreSQL runs
+    # the caller's open write transaction and the independent commit side by
+    # side. SQLite serializes writes at the DATABASE level, so while the
+    # caller's transaction is open the independent commit cannot proceed and
+    # the store FAILS CLOSED — it rolls back, never reaches the adapter and
+    # fabricates nothing. Both behaviours are asserted explicitly per driver.
     _expect(bool(token), "no EXECUTION_TOKEN available for the execute step "
                          "(pass --token, set $EXECUTION_TOKEN, or put it in .env)")
     execution_id = str(uuid.uuid4())
@@ -287,7 +287,7 @@ def run(base: str, token: str | None, wait: int) -> str:
             "  complete end-to-end 'demo smoke test: PASS'."
         )
 
-    # --- Full Demo Mode (PostgreSQL / MVCC): the complete chain executes. ---
+    # Full Demo Mode (PostgreSQL / MVCC): the complete chain executes. ---
     _expect(status == 201, f"POST /executions expected 201, got {status} ({execution})")
     state = execution.get("derived_state")
     _expect(state == "succeeded", f"mock execution derived_state != succeeded: {state} ({execution})")
@@ -310,8 +310,8 @@ def run(base: str, token: str | None, wait: int) -> str:
     ok("GET /api/v1/executions/health -> 200 (observed adapter health)")
 
     # 16. Manual reconcile fails CLOSED in Demo Mode: the production read-adapter
-    #     registry is intentionally empty, so this is a clean 404 (never a 500,
-    #     never a fabricated outcome). This asserts the frozen trust boundary.
+    # registry is intentionally empty, so this is a clean 404 (never a 500,
+    # never a fabricated outcome). This asserts the trust boundary.
     status, recon = _request("POST", _url(base, f"/api/v1/executions/{execution_id}/reconcile"),
                              body={}, token=token)
     _expect(status in (404, 200),

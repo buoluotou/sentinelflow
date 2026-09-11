@@ -40,12 +40,12 @@ _NON_PUBLIC_NETWORKS = (
 def is_public_ip(value: str | None) -> bool:
     """True only for addresses treated as public attack sources.
 
-    Explicit exclusion list per the Step 5.2 spec: private ranges, loopback,
-    link-local, multicast, reserved, unspecified — plus CGNAT and TEST-NET
-    documentation ranges which are not routable either. We deliberately do
-    NOT rely on ``is_global`` alone: some Python versions (e.g. 3.12.x)
-    classify multicast addresses as global and CGNAT as non-private.
-    """
+Explicit exclusion list per the spec: private ranges, loopback,
+link-local, multicast, reserved, unspecified — plus CGNAT and TEST-NET
+documentation ranges which are not routable either. We do
+NOT rely on ``is_global`` alone: some Python versions (e.g. 3.12.x)
+classify multicast addresses as global and CGNAT as non-private.
+"""
     ip = parse_ip(value)
     if ip is None:
         return False
@@ -84,8 +84,8 @@ def frequency_factor(group: AlertGroup) -> RiskFactor:
 def public_source_factor(alerts: list[Alert]) -> RiskFactor:
     """Bonus when at least one evidence alert originates from a public IP.
 
-    Applied at most once per event, regardless of how many public sources.
-    """
+Applied at most once per event, regardless of how many public sources.
+"""
     public_ips = sorted(
         {a.source_ip for a in alerts if is_public_ip(a.source_ip)}
     )

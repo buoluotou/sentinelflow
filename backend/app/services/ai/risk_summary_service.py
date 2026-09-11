@@ -1,17 +1,17 @@
-"""AI risk-summary orchestration (Phase 2 Step 11.3).
+"""AI risk-summary orchestration.
 
-    Event -> EventRisk + evidence + optional Step 10 explanation
-          -> build_risk_summary_request -> provider.generate()
-          -> RiskSummary (validated) -> persisted ai_risk_summaries row
+Event -> EventRisk + evidence + optional prior explanation
+-> build_risk_summary_request -> provider.generate()
+-> RiskSummary (validated) -> persisted ai_risk_summaries row
 
-Mirrors the Step 10 service contract: flushes, never commits (the API
-layer owns the transaction boundary), and AI output is advisory only —
-nothing here touches EventRisk.score/level or Incident status/disposition.
-No execution actions are ever produced.
+Same service contract as the alert-explanation service: flushes, never
+commits (the API layer owns the transaction boundary), and AI output is
+advisory only — nothing here touches EventRisk.score/level or Incident
+status/disposition. No execution actions are ever produced.
 
-Error taxonomy is identical to Step 10: AIEventNotFound (404), typed
-provider errors (503) and AIResponseParseError (502). A broken answer is
-never faked into a persisted row.
+Error taxonomy is the same as alert explanation: AIEventNotFound (404),
+typed provider errors (503) and AIResponseParseError (502). A broken answer
+is never recorded as a persisted row.
 """
 import uuid
 
@@ -31,9 +31,9 @@ from app.services.ai.service import AIEventNotFound, latest_analysis_for
 def latest_summary_for(db: Session, event_id: uuid.UUID) -> AIRiskSummary | None:
     """Most recent risk summary of an event; None when never generated.
 
-    Module-level so other services (response recommendation) reuse the
-    exact same latest-record semantics without constructing a provider.
-    """
+Module-level so other services (response recommendation) reuse the
+exact same latest-record semantics without constructing a provider.
+"""
     return db.execute(
         select(AIRiskSummary)
         .where(AIRiskSummary.alert_group_id == event_id)
@@ -57,10 +57,10 @@ class AIRiskSummaryService:
     def generate_risk_summary(self, db: Session, event_id: uuid.UUID) -> AIRiskSummary:
         """Generate one SOC-level risk summary and append it to the history.
 
-        The Step 10 explanation is optional enrichment — an event that was
-        never explained still gets a summary. Repeated calls append records
-        (ai_risk_summaries is a history, not a snapshot).
-        """
+The alert explanation is optional enrichment — an event that was
+never explained still gets a summary. Repeated calls append records
+(ai_risk_summaries is a history, not a snapshot).
+"""
         group = db.execute(
             select(AlertGroup)
             .options(

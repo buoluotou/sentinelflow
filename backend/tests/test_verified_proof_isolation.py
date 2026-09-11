@@ -1,30 +1,28 @@
-"""M3 source-isolation proofs — webhook isolation + three-entry forgery rejection (§6).
+"""M3 source-isolation proofs — webhook isolation + three-entry forgery rejection.
 
-WHAT THIS PROVES (Amendment §11.2 constraint #1: "an internal type is NOT a magic
-credential ... 'do not import' is NOT the only defense — the call-chain reachability
-is"). The trusted creation-proof channel is SOURCE-ISOLATED from the live PUSH
+WHAT THIS PROVES. The trusted creation-proof channel is SOURCE-ISOLATED from the live PUSH
 (webhook) ingress, and NO client entry point can inject a proof:
 
-  1. IMPORT ISOLATION (AST) — the webhook SERVICE (``outcomes/webhook.py``) and the
-     webhook ROUTER (``api/v1/webhooks.py``) have NO import edge to the proof kernel
-     (``read_adapters.verified``) or the proof orchestration (``outcomes.verified_proof``),
-     and import NONE of the proof symbols. NO ``api/v1`` router wires
-     ``reconcile_verified_execution`` (the trusted channel is NOT wired — Amendment §5).
-  2. VERIFIER REACHABILITY (AST call-graph) — ``verify_creation_effect`` is CALLED from
-     EXACTLY ONE module: ``outcomes/verified_proof``. This is the single controlled call
-     chain: no webhook, no router, no other service reaches the verifier.
-  3. PROOF-KERNEL PURITY (AST) — ``read_adapters.verified`` imports ONLY stdlib + the
-     pure A1 read-request shape: NO sqlalchemy, NO HTTP, NO ``app.models``, NO
-     ``app.services.outcomes``, NO ``app.services.executions``. The kernel is physically
-     side-effect-free, so it can never be the DB-owning path.
-  4. RUNTIME ISOLATION (subprocess) — importing the webhook path in a FRESH interpreter
-     never pulls ``outcomes.verified_proof`` into ``sys.modules`` (no transitive reach).
-  5. THREE-ENTRY FORGERY REJECTION (HTTP) — a valid callback token + a bare
-     ``case_created`` string, a webhook body smuggling internal-proof-shape fields
-     (``verified`` / ``provenance`` / ``resource_id`` / ``instance_verified``), a webhook
-     ``external_state`` Mapping dressed as a proof, and a reconcile body injecting proof
-     fields are ALL refused (422) with ZERO Outcome Fact. The empty thehive vocabulary +
-     ``extra="forbid"`` on both frozen request schemas close every entry.
+1. IMPORT ISOLATION (AST) — the webhook SERVICE (``outcomes/webhook.py``) and the
+webhook ROUTER (``api/v1/webhooks.py``) have NO import edge to the proof kernel
+(``read_adapters.verified``) or the proof orchestration (``outcomes.verified_proof``),
+and import NONE of the proof symbols. NO ``api/v1`` router wires
+``reconcile_verified_execution``.
+2. VERIFIER REACHABILITY (AST call-graph) — ``verify_creation_effect`` is CALLED from
+EXACTLY ONE module: ``outcomes/verified_proof``. This is the single controlled call
+chain: no webhook, no router, no other service reaches the verifier.
+3. PROOF-KERNEL PURITY (AST) — ``read_adapters.verified`` imports ONLY stdlib + the
+pure A1 read-request shape: NO sqlalchemy, NO HTTP, NO ``app.models``, NO
+``app.services.outcomes``, NO ``app.services.executions``. The kernel is physically
+side-effect-free, so it can never be the DB-owning path.
+4. RUNTIME ISOLATION (subprocess) — importing the webhook path in a FRESH interpreter
+never pulls ``outcomes.verified_proof`` into ``sys.modules`` (no transitive reach).
+5. THREE-ENTRY FORGERY REJECTION (HTTP) — a valid callback token + a bare
+``case_created`` string, a webhook body smuggling internal-proof-shape fields
+(``verified`` / ``provenance`` / ``resource_id`` / ``instance_verified``), a webhook
+``external_state`` Mapping dressed as a proof, and a reconcile body injecting proof
+fields are ALL refused (422) with ZERO Outcome Fact. The empty thehive vocabulary +
+``extra="forbid"`` on both request schemas close every entry.
 
 These are STRUCTURAL + HTTP-integration proofs. They are NOT a real TheHive E2E (LAB
 BLOCKED); they prove the isolation boundary holds with NO network and NO real system.
@@ -56,12 +54,12 @@ THEHIVE_TOKEN = "thehive-callback-secret"
 WEBHOOK = "/api/v1/webhooks"
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: The proof kernel (pure types + verifier) and the proof orchestration (DB-owning).
+# The proof kernel (pure types + verifier) and the proof orchestration (DB-owning).
 PROOF_MODULES = {
     "app.services.read_adapters.verified",
     "app.services.outcomes.verified_proof",
 }
-#: Every symbol the proof channel owns — a webhook/router must import NONE of them.
+# Every symbol the proof channel owns — a webhook/router must import NONE of them.
 PROOF_SYMBOLS = {
     "verify_creation_effect",
     "VerifiedCreationEffect",
@@ -77,9 +75,9 @@ PROOF_SYMBOLS = {
 }
 
 
-# ---------------------------------------------------------------------------
+#
 # AST helpers
-# ---------------------------------------------------------------------------
+#
 def _module_name(py_file: Path) -> str:
     return ".".join(py_file.relative_to(BACKEND).with_suffix("").parts)
 
@@ -118,9 +116,9 @@ def _parse(relpath: str) -> ast.AST:
     return ast.parse((APP / relpath).read_text(encoding="utf-8"))
 
 
-# ---------------------------------------------------------------------------
+#
 # seeding (mirrors test_webhook_persistence.py — correlation needs only existence)
-# ---------------------------------------------------------------------------
+#
 def _seed_approval(db_session) -> AIResponseApproval:
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex, title="SSH Brute Force on edge-gateway",
@@ -166,7 +164,7 @@ def _seed_chain(db_session, execution_id, *, operator="ops-1"):
 def _body(execution_id, *, external_state="case_created", external_reference="~42",
           observed_at=NOW, **extra):
     """A Gate-2-shaped callback body; ``extra`` smuggles forbidden fields to prove
-    ``extra="forbid"`` rejects them at the boundary."""
+``extra="forbid"`` rejects them at the boundary."""
     payload = {
         "execution_id": str(execution_id),
         "external_reference": external_reference,
@@ -200,7 +198,7 @@ class TestWebhookImportIsolation:
         assert not (_imported_names(tree) & PROOF_SYMBOLS)
 
     def test_no_api_router_wires_the_verified_channel(self):
-        # Amendment §5: the trusted channel is NOT wired into ANY route. No router
+        # Amendment : the trusted channel is NOT wired into ANY route. No router
         # imports the orchestration module or the reconcile_verified_execution entry.
         for router in sorted((APP / "api" / "v1").glob("*.py")):
             tree = ast.parse(router.read_text(encoding="utf-8"))
@@ -236,15 +234,15 @@ class TestVerifierReachability:
 
 
 # ===========================================================================
-# 2b. PROOF-CHANNEL CLOSURE (M4-C) — the effect has ONE mint site, persist ONE caller
+# 2b. PROOF-CHANNEL CLOSURE — the effect has ONE mint site, persist ONE caller
 # ===========================================================================
 class TestProofChannelClosure:
-    """M4-C: ``persist`` no longer trusts the TYPE NAME. ``VerifiedCreationEffect`` is minted
-    at EXACTLY ONE site (``verify_creation_effect``) and the now-PRIVATE
-    ``_persist_verified_creation_outcome`` is called from EXACTLY ONE module
-    (``reconcile_verified_execution``), so the verify -> authorize -> persist triad is a single
-    controlled chain. The runtime seal (``is_sealed()``) is the ACTIVE gate; these AST proofs
-    are the REAL boundary (constraint #1: an internal type is NOT a magic credential)."""
+    """C: ``persist`` no longer trusts the TYPE NAME. ``VerifiedCreationEffect`` is minted
+at EXACTLY ONE site (``verify_creation_effect``) and the now-PRIVATE
+``_persist_verified_creation_outcome`` is called from EXACTLY ONE module
+(``reconcile_verified_execution``), so the verify -> authorize -> persist triad is a single
+controlled chain. The runtime seal (``is_sealed()``) is the ACTIVE gate; these AST proofs
+are the REAL boundary (constraint #1: an internal type is NOT a magic credential)."""
 
     def test_verified_creation_effect_has_exactly_one_construction_site(self):
         sites = set()
@@ -283,17 +281,17 @@ class TestProofChannelClosure:
 
 
 # ===========================================================================
-# 2c. M4-B IDENTITY SEAM ISOLATION — the read-side probe is an UNWIRED seam
+# 2c. B IDENTITY SEAM ISOLATION — the read-side probe is an UNWIRED seam
 # ===========================================================================
 class TestIdentitySeamIsolation:
-    """M4-B: the read-side identity/version evidence seam (``TheHiveReadAdapter.read_identity``
-    + ``verified.assess_identity_evidence``) is DELIVERED + isolation-tested but NOT wired into
-    any production router, the webhook path, or the reconcile derive orchestration (contract:
-    the sealed registry stays empty, no production router). It NEVER back-fills a gate-5 binding:
-    the assessor is PURE and its ``gate5_instance_binding`` / ``gate5_tenant_binding`` are ALWAYS
-    ``None`` for TheHive 4.1.24-1 (the case-owned tenant is unobservable), so the seam can NEVER
-    unlock ``confirmed_success`` on its own — it upgrades the version assertion to a runtime
-    observation and records the reader's tenant context, nothing more."""
+    """B: the read-side identity/version evidence seam (``TheHiveReadAdapter.read_identity``
++ ``verified.assess_identity_evidence``) is DELIVERED + isolation-tested but NOT wired into
+any production router, the webhook path, or the reconcile derive orchestration (contract:
+the sealed registry stays empty, no production router). It NEVER back-fills a gate-5 binding:
+the assessor is PURE and its ``gate5_instance_binding`` / ``gate5_tenant_binding`` are ALWAYS
+``None`` for TheHive 4.1.24-1 (the case-owned tenant is unobservable), so the seam can NEVER
+unlock ``confirmed_success`` on its own — it upgrades the version assertion to a runtime
+observation and records the reader's tenant context, nothing more."""
 
     def test_no_api_router_wires_the_identity_probe(self):
         for router in sorted((APP / "api" / "v1").glob("*.py")):
@@ -321,7 +319,7 @@ class TestIdentitySeamIsolation:
 
     def test_derive_context_never_calls_the_identity_probe(self):
         # The reconcile derive path (verified_proof) NEVER consults read_identity to back-fill a
-        # gate-5 binding — instance_binding / tenant_binding come ONLY from the M4-A dispatch
+        # gate-5 binding — instance_binding / tenant_binding come ONLY from the A dispatch
         # binding (None for 4.1.24-1), never from a read-side identity probe.
         called = _called_function_names(_parse("services/outcomes/verified_proof.py"))
         assert "read_identity" not in called
@@ -369,7 +367,7 @@ class TestWebhookRuntimeIsolation:
 
 # ===========================================================================
 # 5. THREE-ENTRY FORGERY REJECTION (HTTP integration — fixture-approved, NOT a
-#    real approval-API flow; NO network, NO real TheHive)
+# real approval-API flow; NO network, NO real TheHive)
 # ===========================================================================
 class TestThreeEntryForgeryRejection:
     def test_entry1_webhook_bare_case_created_refused_zero_fact(
@@ -417,7 +415,7 @@ class TestThreeEntryForgeryRejection:
     ):
         # A structured "proof-like" MAPPING in external_state PASSES Gate 2 (str|Mapping)
         # but the EMPTY thehive vocabulary refuses it at Gate 4 -> 422, ZERO fact. A
-        # Mapping is NOT an authorization credential (Amendment §5.3).
+        # Mapping is NOT an authorization credential.
         monkeypatch.setattr(settings, "THEHIVE_CALLBACK_TOKEN", THEHIVE_TOKEN)
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)

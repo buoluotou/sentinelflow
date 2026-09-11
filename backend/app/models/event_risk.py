@@ -11,15 +11,15 @@ from app.models.alert import JSONVariant
 class EventRisk(Base):
     """Explainable risk assessment of one aggregated security event.
 
-    Phase 1 Step 5: the Risk Engine scores every AlertGroup ("event") with a
-    rule-based, fully explainable model — `factors` keeps the itemized
-    breakdown (e.g. "+30 high frequency", "+20 external source") so SOC
-    analysts can audit why a score was assigned, before any AI analysis is
-    introduced.
+Step 5: the Risk Engine scores every AlertGroup ("event") with a
+rule-based, fully explainable model — `factors` keeps the itemized
+breakdown (e.g. "+30 high frequency", "+20 external source") so SOC
+analysts can audit why a score was assigned, before any AI analysis is
+introduced.
 
-    One row per event (unique alert_group_id): rescoring updates this row in
-    place, keeping "current risk" a cheap O(1) join for the Events API.
-    """
+One row per event (unique alert_group_id): rescoring updates this row in
+place, keeping "current risk" a cheap O(1) join for the Events API.
+"""
 
     __tablename__ = "event_risk"
     __table_args__ = (
@@ -36,7 +36,7 @@ class EventRisk(Base):
         index=True,
     )
 
-    # 0-100 composite score produced by the rule engine (Step 5.2).
+    # 0-100 composite score produced by the rule engine ().
     score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Derived from score: low (0-30) / medium (31-70) / high (71-90) /

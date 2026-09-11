@@ -15,11 +15,11 @@ from sqlalchemy.orm import Session
 def ingest_alert(db: Session, payload: AlertCreate) -> Alert:
     """Ingest one unified alert into SentinelFlow.
 
-    Phase 1 Step 4.4 behaviour: every entry point (this one and
-    POST /api/v1/normalize) flows through the same
-    Normalization -> Deduplication -> DB pipeline, so repeated alerts are
-    aggregated into one AlertGroup while every event stays as evidence.
-    """
+behaviour: every entry point (this one and
+POST /api/v1/normalize) flows through the same
+Normalization -> Deduplication -> DB pipeline, so repeated alerts are
+aggregated into one AlertGroup while every event stays as evidence.
+"""
     normalized = _to_normalized(payload)
     result = dedup_engine.process(db, normalized, payload)
     return result.alert
@@ -28,10 +28,10 @@ def ingest_alert(db: Session, payload: AlertCreate) -> Alert:
 def _to_normalized(payload: AlertCreate) -> NormalizedAlert:
     """Map an already-unified AlertCreate onto the normalized model.
 
-    Category and the title fallback come from the shared event-type map so
-    that this entry point produces the SAME fingerprint as the adapter-based
-    /normalize path for identical events. Unknown types fall back to GENERIC.
-    """
+Category and the title fallback come from the shared event-type map so
+that this entry point produces the SAME fingerprint as the adapter-based
+/normalize path for identical events. Unknown types fall back to GENERIC.
+"""
     mapped = EVENT_TYPE_MAP.get(payload.event_type)
     category = mapped[0] if mapped else Category.GENERIC
     mapped_title = mapped[2] if mapped else None

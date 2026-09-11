@@ -1,15 +1,15 @@
-"""Phase 3.1.5: ResponseExecutor contract + Mock/DryRun + registry tests.
+"""ResponseExecutor contract + Mock/DryRun + registry tests.
 
 Hard requirements this suite nails down (acceptance gate 1–14):
- 1. mock name is always "mock"
- 2. the executable actions are supported
- 3. non-executable vocabulary words are NOT supported
- 4. compensation capability mirrors the executable vocabulary minus the
-    E1 non-compensable policy (escalate_to_incident, 3.2.5)
- 5. deterministic output — same dispatch, byte-identical outcome
- 6/7. ExecutionOutcome succeeded / failed paths
- 8. bad adapter result -> platform judges protocol_violation (D9)
- 9. fail_with injects the three ADAPTER classifications only
+1. mock name is always "mock"
+2. the executable actions are supported
+3. non-executable vocabulary words are NOT supported
+4. compensation capability mirrors the executable vocabulary minus the
+E1 non-compensable policy (escalate_to_incident, 3.2.5)
+5. deterministic output — same dispatch, byte-identical outcome
+6/7. ExecutionOutcome succeeded / failed paths
+8. bad adapter result -> platform judges protocol_violation (D9)
+9. fail_with injects the three ADAPTER classifications only
 10. compensate is deterministic too
 11. registry default is mock
 12. reserved/unknown adapters raise ConfigError — never fake support
@@ -350,7 +350,7 @@ class TestRegistry:
 
 class TestLayeringContract:
     """The 3.1.5 boundary: Guard -> ExecutorCapability protocol;
-    MockExecutor -> protocol. Guard never imports a concrete executor."""
+MockExecutor -> protocol. Guard never imports a concrete executor."""
 
     def test_mock_structurally_satisfies_executor_capability(self):
         executor = MockExecutor()

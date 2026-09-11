@@ -1,7 +1,7 @@
-/** Event detail (Step 8.3): fingerprint, risk factor breakdown, evidence.
- * Step 10.7 adds the AI Alert Explanation panel (display + explicit trigger).
- * Step 11.6 adds the AI Risk Summary panel (display + explicit trigger).
- * Step 12.5 adds the Response Recommendation panel (advisory only — display +
+/* * Event detail (): fingerprint, risk factor breakdown, evidence.
+ * adds the AI Alert Explanation panel (display + explicit trigger).
+ * adds the AI Risk Summary panel (display + explicit trigger).
+ * adds the Response Recommendation panel (advisory only — display +
  * explicit trigger, never an executor).
  */
 import { useCallback, useEffect, useState } from 'react'

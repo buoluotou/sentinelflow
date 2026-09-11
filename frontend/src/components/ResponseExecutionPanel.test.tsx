@@ -1,24 +1,24 @@
-/** Phase 3.1.8: ResponseExecutionPanel unit tests (jsdom, fetch mocked).
+/* * ResponseExecutionPanel unit tests (jsdom, fetch mocked).
  *
- * Locks the frozen Execute Console contract — the first UI able to trigger
+ * Locks the Execute Console contract — the first UI able to trigger
  * a real execution:
- *   A. approved + no execution yet      -> Execute button
- *   B. pending (approval=null)          -> nothing, zero fetches
- *   C. rejected                         -> nothing, zero fetches
- *   D. modal opens with Operator / Execution Token / Comment
- *   E/F/G. POST body strictly mirrors the API (no smuggled facts) +
- *          Bearer header + fresh randomUUID execution identity
- *   H/I/J. 201 succeeded / failed / guard_rejected render as execution
- *          FACTS — guard_rejected is NOT an error banner
- *   K. 401 -> static message, token never reaches the DOM
- *   L. 409 -> backend stable message verbatim
- *   M. double-click submits exactly ONE request
- *   N. no action/target anywhere in the request
- *   O. token never persists (localStorage/sessionStorage empty, gone on
- *      unmount)
- *   P. page load fires zero POSTs (GET-only status lookup)
- *   Q. an existing forward execution renders its status instead of a
- *      duplicate Execute button
+ * A. approved + no execution yet -> Execute button
+ * B. pending (approval=null) -> nothing, zero fetches
+ * C. rejected -> nothing, zero fetches
+ * D. modal opens with Operator / Execution Token / Comment
+ * E/F/G. POST body strictly mirrors the API (no smuggled facts) +
+ * Bearer header + fresh randomUUID execution identity
+ * H/I/J. 201 succeeded / failed / guard_rejected render as execution
+ * FACTS — guard_rejected is NOT an error banner
+ * K. 401 -> static message, token never reaches the DOM
+ * L. 409 -> backend stable message verbatim
+ * M. double-click submits exactly ONE request
+ * N. no action/target anywhere in the request
+ * O. token never persists (localStorage/sessionStorage empty, gone on
+ * unmount)
+ * P. page load fires zero POSTs (GET-only status lookup)
+ * Q. an existing forward execution renders its status instead of a
+ * duplicate Execute button
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -228,7 +228,7 @@ describe('ResponseExecutionPanel', () => {
     expect(headers.Authorization).toBe(`Bearer ${TOKEN}`)
     expect(headers['Content-Type']).toBe('application/json')
 
-    // N. the body is EXACTLY the frozen Intent — no smuggled facts
+    // N. the body is EXACTLY the Intent — no smuggled facts
     const body = JSON.parse(init?.body as string)
     expect(Object.keys(body).sort()).toEqual(
       ['approval_id', 'comment', 'execution_id', 'operator'].sort(),
