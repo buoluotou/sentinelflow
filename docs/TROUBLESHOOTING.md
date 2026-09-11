@@ -1,7 +1,6 @@
 # SentinelFlow Troubleshooting
 
-**Start here, not with a wall of text.** Almost every install/startup problem is
-identified in seconds by the doctor:
+Most install and startup problems show up in the doctor output, so run that first:
 
 ```powershell
 # Windows
@@ -16,29 +15,29 @@ Doctor prints one line per check as **PASS / WARN / FAIL** covering: Python,
 Node, Docker, Docker Compose, PostgreSQL, the required ports, `.env`,
 `DATABASE_URL`, the frontend API URL, migration head vs. current, backend
 health, database connectivity, the AI provider and whether any external adapter
-is enabled. **FAIL** = must fix; **WARN** = optional/absent tool (e.g. Docker or
-Ollama you have not installed — harmless for Demo Mode on a machine that already
-has PostgreSQL, but required for the Docker Quickstart).
+is enabled. **FAIL** means you must fix it before going on. **WARN** means an
+optional tool is missing or not running, for example Docker or Ollama. Docker is
+required for the Docker Quickstart; Ollama is never required.
 
 ---
 
 ## 1. Reading the logs
 
-- **Docker:** `docker compose logs backend` (or `-f` to follow). The stack is
+- **Docker:** `docker compose logs backend` (or `-f` to follow). The stack runs
   `postgres -> migrate -> backend -> frontend`; `docker compose ps` shows each
   service's health and whether the one-shot `migrate` job exited `0`.
 - **Native:** the `uvicorn` console prints the logs directly.
 - **Log level:** controlled by `DEBUG` in `.env`.
-  - `DEBUG=false` (default) → **INFO**: a short, meaningful startup line + a
-    **safe configuration summary** (which providers/adapters are enabled, the DB
-    *driver*, whether a token is set). It never prints secret **values**.
+  - `DEBUG=false` (default) → **INFO**: a short startup line plus a
+    configuration summary (which providers/adapters are enabled, the DB
+    *driver*, whether a token is set). Secret **values** are not printed.
   - `DEBUG=true` → **DEBUG** with exception stack traces. Turn this on only to
     diagnose; turn it back off for normal use.
 - **Secrets are never logged** at any level (API keys, tokens, passwords and the
-  DB URL are masked in config repr and filtered from records).
+  DB URL are masked in the config repr and filtered from records).
 
-A healthy Demo startup is a handful of lines — not hundreds. If you see a long
-stack trace on boot, set `DEBUG=false` first and re-read the last real ERROR.
+If a long stack trace appears on boot, set `DEBUG=false` first and read the last
+real ERROR line.
 
 ---
 
@@ -50,46 +49,47 @@ stack trace on boot, set `DEBUG=false` first and re-read the last real ERROR.
 | `the Docker daemon is not reachable` | Docker installed but not started | Start Docker Desktop / `systemctl start docker`, wait for the engine, re-run |
 | `'docker compose' (v2) not available` | Old `docker-compose` (v1) or missing plugin | Update Docker; the stack needs Compose **v2** (`docker compose`, not `docker-compose`) |
 | `port 5432 / 8000 / 5173 is already bound` | Another service holds the port | Set `POSTGRES_PORT` / `BACKEND_PORT` / `FRONTEND_PORT` in `.env` to free ports and re-run |
-| compose refuses: `POSTGRES_PASSWORD ... required` | Empty DB password (fail-closed by design) | Run `scripts/quickstart` (it generates a random local password), or set `POSTGRES_PASSWORD` in `.env` manually |
+| compose refuses: `POSTGRES_PASSWORD ... required` | Empty DB password; compose requires one | Run `scripts/quickstart` (it generates a random local password), or set `POSTGRES_PASSWORD` in `.env` manually |
 | `docker compose config failed` | Malformed `.env` / compose override | Fix `.env` (doctor shows the offending key); ensure you copied `.env.example` |
-| PyPI downloads slow / time out during the backend image build | The default index is the official `pypi.org`; some networks (e.g. in China) throttle it | Opt in to a trusted mirror: set `PIP_INDEX_URL=https://<mirror>/simple/` in `.env` and re-run `./scripts/quickstart.sh --rebuild` (or `docker compose build --build-arg PIP_INDEX_URL=...`). Default stays official PyPI |
+| PyPI downloads slow / time out during the backend image build | The default index is the official `pypi.org`; some networks (e.g. in China) throttle it | Opt in to a trusted mirror: set `PIP_INDEX_URL=https://<mirror>/simple/` in `.env` and re-run `./scripts/quickstart.sh --rebuild` (or `docker compose build --build-arg PIP_INDEX_URL=...`). The default stays the official PyPI |
 | backend never becomes `healthy` | Migration failed, or DB unreachable | `docker compose logs migrate` then `docker compose logs backend`; confirm `migrate` exited `0` and `postgres` is `healthy` |
 | frontend shows but API calls fail | backend not up yet, or port changed | `docker compose ps`; open `http://localhost:<BACKEND_PORT>/ready` — must be `200` |
 
 **Data persistence:** the PostgreSQL data lives in a compose project-scoped
-named volume — for the default project `sentinelflow` that is
+named volume. For the default project `sentinelflow` that volume is
 `sentinelflow_pg-data` (`docker volume ls | grep pg-data` lists it).
 `docker compose down` (or `scripts/quickstart -Down` / `--down`) **keeps** it —
 restart without losing data. `docker compose down -v` **erases** it.
 
-> **Upgrading a pre-RC2 checkout?** Older versions pinned the fixed volume name
-> `sentinelflow-pg-data`. Your data is not lost — copy it once into the
-> project-scoped volume, then start the stack and confirm the Dashboard
+> **Upgrading from an older checkout?** Older versions pinned the fixed volume
+> name `sentinelflow-pg-data`. Your data is still in that volume. Copy it into
+> the project-scoped volume once, then start the stack and confirm the Dashboard
 > counters:
 > `docker run --rm -v sentinelflow-pg-data:/from -v sentinelflow_pg-data:/to alpine sh -c 'cp -a /from/. /to/'`
 
 ---
 
-## 3. The most common Demo question: "execution returns 500 / database is locked" (SQLite)
+## 3. SQLite: execution returns 500 (`database is locked`)
 
 **If your `DATABASE_URL` is a SQLite file (`sqlite:///...`), the response-execution
-step (`POST /api/v1/executions`) fails CLOSED with `database is locked` (HTTP 500).**
+step (`POST /api/v1/executions`) fails with `database is locked` (HTTP 500).**
 
-This is **not a bug and not data loss** — it is a deliberate safety property:
+This is not a bug and it is not data loss: the request fails before anything is
+dispatched.
 
-- Before any external dispatch, SentinelFlow writes a **durable dispatch-attempt
-  record on an independent database connection and commits it first** (so the
-  attempt survives a later crash/rollback). PostgreSQL's MVCC lets that
-  independent commit coexist with the caller's open transaction.
-- **SQLite has a single database-level write lock**, so the independent commit
-  cannot proceed while the caller's transaction is open → it fails **closed**:
-  no dispatch, no external call, **no fabricated outcome**, execution metrics
-  stay `total_chains = 0`.
+- Before any external dispatch, SentinelFlow writes a dispatch-attempt record on
+  an independent database connection and commits it first, so the attempt
+  survives a later crash or rollback. PostgreSQL's MVCC lets that independent
+  commit coexist with the caller's open transaction.
+- SQLite has a single database-level write lock, so the independent commit
+  cannot proceed while the caller's transaction is open. The request fails with
+  HTTP 500 before dispatch: no external call is made, and execution metrics stay
+  `total_chains = 0`.
 
 **What to do:**
 
 - **For the complete Demo (through execution → audit → outcome), use PostgreSQL** —
-  that is exactly what the Docker Quickstart provisions (`postgres:16`). Run
+  that is what the Docker Quickstart provisions (`postgres:16`). Run
   `scripts/quickstart.ps1` / `scripts/quickstart.sh`.
 - **SQLite is fine** for zero-dependency development of the chain **up to human
   approval** (ingest → dedup → risk → incident → AI mock → approval). `scripts/smoke.py`
@@ -107,7 +107,7 @@ PostgreSQL (`postgresql+psycopg://user:pass@localhost:5432/sentinelflow`), then
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| **401** on the execution write path (execute / compensate / reconcile) | `EXECUTION_TOKEN` **and** `OPERATORS_JSON` are both empty → fail-closed by design | `scripts/quickstart` / `setup-dev` generate a random local `EXECUTION_TOKEN`. Natively, set `EXECUTION_TOKEN` in `.env` (or export it) and pass the same value to `smoke.py --token` |
+| **401** on the execution write path (execute / compensate / reconcile) | `EXECUTION_TOKEN` **and** `OPERATORS_JSON` are both empty, so every write path returns 401 | `scripts/quickstart` / `setup-dev` generate a random local `EXECUTION_TOKEN`. Natively, set `EXECUTION_TOKEN` in `.env` (or export it) and pass the same value to `smoke.py --token` |
 | **403** on execute/dispatch | The operator's role is not `executor` / `admin` | In `OPERATORS_JSON`, give the dispatching operator `"role":"executor"` (or `admin`). `viewer` / `reviewer` may not dispatch |
 | smoke says `no EXECUTION_TOKEN available` | Token not passed and not in `.env` | `--token <value>`, or `$env:EXECUTION_TOKEN` / `export EXECUTION_TOKEN`, or put it in `.env` |
 
@@ -115,11 +115,12 @@ On the **token-authenticated execution path** (execute / compensate / reconcile)
 identity comes **only** from the Bearer token — any `operator` field in a request
 body is ignored, so the execution operator cannot be impersonated. The
 **approval reviewer** name (`POST /response-recommendations/{id}/approve|reject`)
-carries **no token by design** ("Approve ≠ Execute") and is a display-only field
-that is **not** production-authenticated in this evaluation build — expose the
-service only behind trusted-network / SSO controls (see the README security
-model). Read-only endpoints (dashboard, events, incidents, metrics, health) and
-the approve/reject decision path need no token.
+carries **no token** and is a display-only field that is **not
+production-authenticated** in this build; approving and executing are separate
+steps, which is why reviewing needs no credential of its own. Expose the service
+only behind trusted-network / SSO controls (see the README security model).
+Read-only endpoints (dashboard, events, incidents, metrics, health) and the
+approve/reject decision path need no token.
 
 ---
 
@@ -129,11 +130,11 @@ the approve/reject decision path need no token.
 |---|---|---|
 | **503** on an AI endpoint | Provider unreachable (e.g. `AI_PROVIDER=ollama` but Ollama is not running) | For Demo, set `AI_PROVIDER=mock` (instant, offline). For AI Local Mode, start Ollama (`docker compose --profile ollama up -d`, or a host Ollama) and set `AI_BASE_URL` (Docker: `http://ollama:11434`; host: `http://localhost:11434`) |
 | AI is very slow / times out | Local models take tens of seconds per generation | Raise `AI_TIMEOUT_SECONDS`; pull a small model (e.g. `qwen3:4b`) |
-| **502** on an AI endpoint | Provider returned malformed structured output | The typed error contract rejects it and **persists nothing**; retry, or use `mock` for a deterministic Demo |
+| **502** on an AI endpoint | Provider returned malformed structured output | The typed error contract rejects it and persists nothing; retry, or use `mock` for a deterministic Demo |
 
-A missing/unreachable Ollama degrades **only** the AI endpoints — the platform
-still boots and the rest of the chain works. Ollama is **never** required for
-Demo Mode.
+A missing or unreachable Ollama degrades **only** the AI endpoints — the platform
+still boots and the rest of the chain works. Ollama is never required for Demo
+Mode.
 
 ---
 
@@ -160,11 +161,10 @@ Demo Mode.
 - The Docker stack runs migrations **once** through a dedicated one-shot `migrate`
   service (`postgres` healthy → `migrate` → `backend`). Do **not** also run
   `alembic` by hand against the compose database while the stack is up.
-- `Base.metadata.create_all()` is **never** used in production — schema only comes
-  from Alembic (`0001 … 0014`).
+- `Base.metadata.create_all()` is **never** used for deployments; the schema
+  comes only from Alembic (`0001 … 0014`).
 - Check state: `alembic current` (should read `0014 (head)`) vs `alembic heads`.
-  Doctor compares them for you. The chain is reversible
-  (`alembic downgrade base` → `upgrade head` verified).
+  Doctor compares them for you.
 - Native "database is locked" **during migration** usually means another process
   holds the SQLite file — stop the backend, delete the local `*.db`, re-run
   `alembic upgrade head`.
