@@ -20,11 +20,15 @@ from app.core.database import Base, get_db
 from app.main import app
 from app.services.executions.operators import reset_operator_registry
 
-# Real-model E2E lives under tests/e2e/ and is never collected by the
-# default run (explicit paths still work): plain `pytest tests` stays
-# mock-only and offline-safe. The `ollama` marker selects the real-model
-# chain; `browser` selects the Playwright browser E2E (Step 13.6).
-collect_ignore_glob = ["e2e/*"]
+# tests/e2e/ holds the real-model and real-browser suites: they need a live
+# Ollama or a PostgreSQL server plus a Chromium download, so the default run
+# excludes the directory and `pytest tests` stays fast, SQLite-only and
+# zero-outbound. The CI browser job sets SENTINELFLOW_BROWSER_E2E=1, which drops
+# the exclusion; the `browser` marker then selects the Playwright suites and the
+# `ollama` marker stays deselected.
+collect_ignore_glob = (
+    [] if os.environ.get("SENTINELFLOW_BROWSER_E2E") == "1" else ["e2e/*"]
+)
 
 
 @pytest.fixture(autouse=True)

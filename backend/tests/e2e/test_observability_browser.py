@@ -1,10 +1,10 @@
-"""Browser E2E for the Phase 3.3 observability layer (Step 3.3.4).
+"""Browser E2E for the execution observability surface.
 
 A genuine Chromium (Playwright) drives the real Vite app against the real
-uvicorn backend over a throwaway SQLite database — the SAME stack the
-3.1.11 execution E2E proved (real SQLite + real uvicorn + real Vite +
-real Chromium). This suite lifts what 3.3.3 proved at Service / API /
-React-unit / cross-layer level into real browser journeys:
+uvicorn backend on the PostgreSQL database named by ``DATABASE_URL`` — the
+process, database and browser lifecycle all come from
+``tests/e2e/harness.py``. The journeys lift the facts the Service / API /
+React-unit / cross-layer suites proved into real browser journeys:
 
   a. empty state: /observability renders N/A rates (never 0%) and
      "No adapter observations" on a fresh log — exactly two GETs
@@ -18,7 +18,7 @@ React-unit / cross-layer level into real browser journeys:
      1/3 -> "Observed: failing"; three direct successes lift it to 4/6
      -> "Observed: degraded"
   d. adapter failures: timeout / adapter_unavailable / protocol_violation
-     (test-only launcher seam; protocol_violation platform-judged, D9;
+     (test-only launcher seam; protocol_violation platform-judged;
      every boot synchronized by a one-shot PROBE execution through the
      same API) — Failed metrics rise, the verdict falls to
      "Observed: failing"
@@ -35,65 +35,35 @@ React-unit / cross-layer level into real browser journeys:
 NOT part of the default suite: tests/e2e/ is excluded from collection by
 tests/conftest.py; run explicitly with:
 
+    SENTINELFLOW_BROWSER_E2E=1 \
+    DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/sentinelflow \
     pytest tests/e2e/test_observability_browser.py -m browser -q
 
 Requires: playwright + pytest-playwright + httpx in the backend venv and
-``python -m playwright install chromium``. No Ollama call —
-AI_PROVIDER=mock pins generation to the deterministic provider.
+``python -m playwright install chromium``. No Ollama call — AI_PROVIDER=mock
+pins generation to the deterministic provider.
 """
-import os
-import shutil
-import socket
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
+import httpx
 import pytest
+from playwright.sync_api import Page, expect
 
-try:
-    import httpx
-    from playwright.sync_api import Page, expect
-except ImportError as exc:  # pragma: no cover - environment dependent
-    pytest.skip(
-        f"Playwright E2E dependencies missing ({exc}) — browser E2E skipped",
-        allow_module_level=True,
-    )
+from tests.e2e import harness
 
 pytestmark = pytest.mark.browser
-
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
-PYTHON = sys.executable  # the backend venv interpreter running this suite
-
-# The Vite dev proxy is frozen to http://localhost:8000 (vite.config.ts), so
-# the E2E backend MUST bind 8000; the port-busy check below fails loudly
-# instead of silently hitting a stray dev server.
-BACKEND_PORT = 8000
-FRONTEND_PORT = 5173
-BASE = f"http://localhost:{FRONTEND_PORT}"
-# Direct (non-browser) calls must pin IPv4: "localhost" may resolve to ::1,
-# where an unrelated listener happily answers 502 Bad Gateway.
-BACKEND_DIRECT = f"http://127.0.0.1:{BACKEND_PORT}"
 
 METRICS_URL = "/api/v1/executions/metrics"
 HEALTH_URL = "/api/v1/executions/health"
 EXECUTIONS_URL = "/api/v1/executions"
 
-# The deployment secret the E2E backend boots with (fail-closed otherwise).
-EXECUTION_TOKEN = "e2e-obs-token-3.3.4"
-OPERATOR = "legacy-execution"  # EXECUTION_TOKEN maps to this identity (3.3.1)
+#: The identity ``harness.EXECUTION_TOKEN`` resolves to in the backend's
+#: operator registry (app/services/executions/operators.py): the server records
+#: this name and ignores whatever the operator types into the modal.
+OPERATOR = "legacy-execution"
 TARGET_IP = "203.0.113.11"
-
-# First visibility assert after every navigation: vite cold-compiles modules
-# on first hit, so the default 5 s expect timeout is too tight on Windows.
-NAV_TIMEOUT = 30_000
 
 #: Governance flood (journey b): the SAME production policy settings, only
 #: booted with a closed window — [05:00, 05:00) admits nothing, so every
@@ -106,91 +76,6 @@ POLICY_FLOOD_ENV = {
 }
 
 FLOOD_COUNT = 20
-
-
-def _port_busy(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        return sock.connect_ex(("127.0.0.1", port)) == 0
-
-
-if _port_busy(BACKEND_PORT) or _port_busy(FRONTEND_PORT):
-    pytest.skip(
-        f"Ports {BACKEND_PORT}/{FRONTEND_PORT} already in use — stop the dev "
-        "servers (or any previous E2E run) before the browser E2E",
-        allow_module_level=True,
-    )
-
-
-def _wait_http(url: str, timeout: float = 60.0) -> None:
-    # ProxyHandler({}) disables ALL proxies: Windows registry proxies (VPN
-    # clients etc.) silently hijack urllib localhost probes and answer 502.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    deadline = time.monotonic() + timeout
-    last_error = "no attempt"
-    while time.monotonic() < deadline:
-        try:
-            with opener.open(url, timeout=3) as resp:
-                if resp.status < 500:
-                    return
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last_error = str(e)
-        time.sleep(0.5)
-    raise RuntimeError(f"{url} never came up: {last_error}")
-
-
-def _drain(proc: subprocess.Popen) -> list[bytes]:
-    """Read the child's stdout pipe in a daemon thread. Windows pipes hold
-    only ~4 KB: without a reader, uvicorn/vite BLOCK on their very next log
-    write once the buffer fills."""
-    chunks: list[bytes] = []
-
-    def _reader() -> None:
-        assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-
-    threading.Thread(target=_reader, daemon=True).start()
-    return chunks
-
-
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process tree (npm -> cmd -> node -> esbuild)."""
-    if proc.poll() is not None:
-        return
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            check=False,
-        )
-    else:  # pragma: no cover - dev machines are Windows
-        proc.terminate()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-def _clean_env(extra: dict[str, str]) -> dict[str, str]:
-    env = {**os.environ, **extra}
-    # Proxy env vars silently hijack local HTTP probes (known session-switch
-    # pitfall) — the browser stack must talk localhost only.
-    for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-        env.pop(var, None)
-    env["NO_PROXY"] = "localhost,127.0.0.1"
-    # The journey swaps decide policy / failure injection per boot; the
-    # inherited environment must never pre-pollute them.
-    for var in (
-        "EXECUTION_POLICY_ENABLED",
-        "EXECUTION_POLICY_WINDOW_START",
-        "EXECUTION_POLICY_WINDOW_END",
-        "E2E_FAIL_WITH",
-    ):
-        env.pop(var, None)
-    return env
 
 
 # ---------------------------------------------------------------------------
@@ -223,81 +108,84 @@ EVENT_CASES = (
 )
 
 
-def _seed_event_skeleton(db_url: str) -> dict:
+def _seed_database(db_url: str) -> dict:
     """Event skeletons (AlertGroup + EventRisk + Incident + one evidence
     Alert carrying source_ip) — the ONLY ORM rows in this E2E. Every
     recommendation + approval the browser meets is produced through the
-    real production endpoints after boot (see _seed_executions_via_api)."""
-    from sqlalchemy import create_engine
+    real production endpoints after boot (see _seed_executions_via_api).
+
+    Returns the case-name -> id map the stack exposes as ``stack["ids"]``.
+    The schema already exists: the harness ran ``alembic upgrade head``.
+    """
     from sqlalchemy.orm import sessionmaker
 
-    from app.core.database import Base
     from app.models import Alert, AlertGroup, EventRisk, Incident
 
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
+    engine = harness.engine_for(db_url)
     Session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
     base = datetime.now(timezone.utc) - timedelta(hours=2)
     ids: dict = {}
-    with Session() as session:
-        for index, (name, score) in enumerate(EVENT_CASES):
-            created = base + timedelta(seconds=30 * index)
-            group = AlertGroup(
-                fingerprint=f"e2e-obs-{name.lower()}" + "0" * 64,  # trimmed below
-                title=f"E2E Observability {name}",
-                category="brute_force",
-                severity="high",
-                alert_count=3,
-                first_seen=created,
-                last_seen=created,
-                created_at=created,
-                updated_at=created,
-            )
-            group.fingerprint = group.fingerprint[:64]  # exact 64-char shape
-            session.add(group)
-            session.flush()
-            session.add(
-                EventRisk(
-                    alert_group_id=group.id,
-                    score=score,
-                    level="high",
-                    factors=[{"name": "high_frequency", "score": 30, "reason": "E2E"}],
+    try:
+        with Session() as session:
+            for index, (name, score) in enumerate(EVENT_CASES):
+                created = base + timedelta(seconds=30 * index)
+                group = AlertGroup(
+                    fingerprint=f"e2e-obs-{name.lower()}" + "0" * 64,  # trimmed below
+                    title=f"E2E Observability {name}",
+                    category="brute_force",
+                    severity="high",
+                    alert_count=3,
+                    first_seen=created,
+                    last_seen=created,
                     created_at=created,
                     updated_at=created,
                 )
-            )
-            incident = Incident(
-                alert_group_id=group.id,
-                title=group.title,
-                severity=group.severity,
-                risk_score=score,
-                created_at=created,
-                updated_at=created,
-            )
-            session.add(incident)
-            # Evidence alert: without a source_ip the mock recommendation's
-            # target is "" and the execution Guard refuses to resolve it.
-            session.add(
-                Alert(
-                    source="e2e",
-                    event_type="ssh_brute_force",
-                    severity="high",
-                    status="open",
-                    title=f"E2E evidence for {name}",
-                    source_ip=TARGET_IP,
-                    first_seen_at=created,
-                    last_seen_at=created,
-                    event_count=3,
-                    alert_group_id=group.id,
+                group.fingerprint = group.fingerprint[:64]  # exact 64-char shape
+                session.add(group)
+                session.flush()
+                session.add(
+                    EventRisk(
+                        alert_group_id=group.id,
+                        score=score,
+                        level="high",
+                        factors=[{"name": "high_frequency", "score": 30, "reason": "E2E"}],
+                        created_at=created,
+                        updated_at=created,
+                    )
                 )
-            )
-            session.flush()
-            ids[name] = {"event": group.id, "incident": incident.id}
-        session.commit()
-        for name in ids:
-            ids[name] = {key: str(value) for key, value in ids[name].items()}
-    engine.dispose()
+                incident = Incident(
+                    alert_group_id=group.id,
+                    title=group.title,
+                    severity=group.severity,
+                    risk_score=score,
+                    created_at=created,
+                    updated_at=created,
+                )
+                session.add(incident)
+                # Evidence alert: without a source_ip the mock recommendation's
+                # target is "" and the execution Guard refuses to resolve it.
+                session.add(
+                    Alert(
+                        source="e2e",
+                        event_type="ssh_brute_force",
+                        severity="high",
+                        status="open",
+                        title=f"E2E evidence for {name}",
+                        source_ip=TARGET_IP,
+                        first_seen_at=created,
+                        last_seen_at=created,
+                        event_count=3,
+                        alert_group_id=group.id,
+                    )
+                )
+                session.flush()
+                ids[name] = {"event": group.id, "incident": incident.id}
+            session.commit()
+            for name in ids:
+                ids[name] = {key: str(value) for key, value in ids[name].items()}
+    finally:
+        engine.dispose()
     return ids
 
 
@@ -305,7 +193,7 @@ def _seed_executions_via_api(ids: dict) -> None:
     """ALL recommendations and approvals come from the real production
     endpoints (mock provider) — the E2E never hand-pushes AI/approval
     rows. One approved executable recommendation per journey case."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as api:
+    with harness.http_client() as api:
         for name in ids:
             resp = api.post(f"/api/v1/events/{ids[name]['event']}/response-recommendation")
             assert resp.status_code == 201, resp.text
@@ -318,113 +206,17 @@ def _seed_executions_via_api(ids: dict) -> None:
             ids[name]["approval"] = resp.json()["id"]
 
 
-# ---------------------------------------------------------------------------
-# Backend / frontend process management
-# ---------------------------------------------------------------------------
-
-
-def _start_backend(
-    env: dict[str, str], *, fail_with: str | None
-) -> subprocess.Popen:
-    """Pure app.main:app for the real journeys; the test-only launcher
-    (documented get_response_executor seam) for adapter-failure injection."""
-    if fail_with is None:
-        target = "app.main:app"
-        env.pop("E2E_FAIL_WITH", None)
-    else:
-        target = "tests.e2e._execution_fail_launcher:app"
-        env = {**env, "E2E_FAIL_WITH": fail_with}
-    return subprocess.Popen(
-        [PYTHON, "-m", "uvicorn", target, "--port", str(BACKEND_PORT)],
-        cwd=str(BACKEND_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-
-
-def _swap_backend(
-    state: dict, *, fail_with: str | None, extra_env: dict[str, str] | None = None
-) -> None:
-    """Kill the running backend and boot a replacement on the same port
-    (same DB, same vite). Windows may hold the listener briefly after the
-    kill, so both the port-free wait and the health wait are generous."""
-    _kill_tree(state["backend_proc"])
-    deadline = time.monotonic() + 30
-    while _port_busy(BACKEND_PORT) and time.monotonic() < deadline:
-        time.sleep(0.3)
-    env = {**state["env"], **(extra_env or {})}
-    proc = _start_backend(env, fail_with=fail_with)
-    log = _drain(proc)
-    state.setdefault("backend_logs", []).append(log)
-    try:
-        _wait_http(f"http://localhost:{BACKEND_PORT}/health", timeout=60)
-    except Exception:
-        state["tmp"].joinpath("backend_swap.log").write_bytes(b"".join(log))
-        _kill_tree(proc)
-        raise
-    state["backend_proc"] = proc
-
-
 @pytest.fixture(scope="module")
-def stack(tmp_path_factory) -> Generator[dict, None, None]:
-    """Boot backend + frontend on a seeded throwaway DB; tear both down."""
-    tmp = tmp_path_factory.mktemp("observability_e2e")
-    db_path = tmp / "e2e_observability.db"
-    db_url = f"sqlite:///{db_path.as_posix()}"
-
-    ids = _seed_event_skeleton(db_url)
-    env = _clean_env(
-        {
-            "AI_PROVIDER": "mock",  # this E2E never calls a real model
-            "DATABASE_URL": db_url,
-            "EXECUTION_TOKEN": EXECUTION_TOKEN,
-        }
-    )
-
-    backend_proc = _start_backend(dict(env), fail_with=None)
-    frontend_proc = subprocess.Popen(
-        "npm run dev",  # npm is npm.cmd on Windows -> needs the shell
-        cwd=str(FRONTEND_DIR),
-        env=env,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    backend_log = _drain(backend_proc)
-    frontend_log = _drain(frontend_proc)
-    state = {
-        "ids": ids,
-        "db_url": db_url,
-        "db_path": db_path,
-        "env": env,
-        "tmp": tmp,
-        "backend_proc": backend_proc,
-    }
-    success = False
-    try:
-        _wait_http(f"http://localhost:{BACKEND_PORT}/health", timeout=60)
-        _wait_http(BASE, timeout=90)
-        _seed_executions_via_api(ids)
-        yield state
-        success = True
-    finally:
-        if not success:
-            for name, log in (("backend", backend_log), ("frontend", frontend_log)):
-                if log:
-                    tmp.joinpath(f"{name}_e2e.log").write_bytes(b"".join(log))
-        for proc in (frontend_proc, state["backend_proc"]):
-            _kill_tree(proc)
-        if success:
-            shutil.rmtree(tmp, ignore_errors=True)
+def stack_seed():
+    """Rows the module needs before uvicorn starts: (db_url) -> id map."""
+    return _seed_database
 
 
 @pytest.fixture(scope="module")
 def api() -> httpx.Client:
-    """Direct backend access for journey ⑧ audits. proxy=None: trust_env
-    would inherit the Windows system proxy and 502."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as c:
-        yield c
+    """Direct backend access for the API-side audits."""
+    with harness.http_client() as client:
+        yield client
 
 
 # ---------------------------------------------------------------------------
@@ -435,14 +227,10 @@ def api() -> httpx.Client:
 def _execution_rows(db_url: str) -> list:
     """execution_log rows (ascending) as plain tuples:
     (decision, direction, operator, execution_id, action, target, detail)."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
     from app.models import ExecutionLog
 
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    with Session(engine) as session:
-        rows = [
+    with harness.orm_session(db_url) as session:
+        return [
             (
                 row.decision,
                 row.direction,
@@ -456,23 +244,17 @@ def _execution_rows(db_url: str) -> list:
             .order_by(ExecutionLog.created_at, ExecutionLog.id)
             .all()
         ]
-    engine.dispose()
-    return rows
 
 
 def _add_in_flight_row(db_url: str, approval_id: str) -> str:
-    """Journey b2: the documented crash simulation (frozen 3.3.3.1 pattern)
-    — a hand-written requested-only row with a server-recorded adapter
-    identity. Insert-only on the append log; the backend reads it on its
+    """Journey b2: the documented crash simulation — a hand-written
+    requested-only row with a server-recorded adapter identity.
+    Insert-only on the append log; the backend reads it on its
     NEXT read-model query."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
     from app.models import ExecutionLog
 
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
     execution_id = str(uuid.uuid4())
-    with Session(engine) as session:
+    with harness.orm_session(db_url) as session:
         session.add(
             ExecutionLog(
                 execution_id=uuid.UUID(execution_id),
@@ -486,7 +268,6 @@ def _add_in_flight_row(db_url: str, approval_id: str) -> str:
             )
         )
         session.commit()
-    engine.dispose()
     return execution_id
 
 
@@ -495,46 +276,33 @@ def _add_in_flight_row(db_url: str, approval_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args) -> dict:
-    """Chromium inherits the Windows system proxy (VPN clients etc.), which
-    hijacks localhost traffic with 502s — the E2E stack is loopback-only."""
-    return {**browser_type_launch_args, "args": ["--no-proxy-server"]}
-
-
-@pytest.fixture(scope="module")
-def browser_page(browser) -> Generator[Page, None, None]:
-    """Module-scoped tab: the journey tests share ONE continuous browser
-    session, mirroring the module-scoped stack."""
-    ctx = browser.new_context()
-    pg = ctx.new_page()
-    yield pg
-    ctx.close()
-
-
 @pytest.fixture(scope="module")
 def journey(stack, browser_page: Page) -> Generator[dict, None, None]:
-    """Shared journey state: every request the browser ever makes, so the
-    safety boundary and token audits see the FULL record."""
-    requests: list[dict] = []
-    browser_page.on(
-        "request",
-        lambda r: requests.append(
-            {"url": r.url, "method": r.method, "headers": dict(r.headers)}
-        ),
-    )
-    yield {"stack": stack, "page": browser_page, "requests": requests}
+    """Shared journey state: every request and response the browser ever
+    makes, so the safety boundary and token audits see the FULL record."""
+    # Recommendations and approvals only exist once uvicorn serves, so they are
+    # created here through the real production endpoints rather than in
+    # ``stack_seed``, which runs before the backend starts.
+    _seed_executions_via_api(stack["ids"])
+    log = harness.NetworkLog()
+    log.attach(browser_page)
+    yield {
+        "stack": stack,
+        "page": browser_page,
+        "requests": log.requests,
+        "responses": log.responses,
+    }
 
 
 def _goto_obs(page: Page) -> None:
-    page.goto(f"{BASE}/observability")
+    page.goto(f"{harness.BASE}/observability")
     expect(page.get_by_role("heading", name="Execution Observability")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
 
 
 def _goto_incident(page: Page, incident_id: str) -> None:
-    page.goto(f"{BASE}/incidents/{incident_id}")
+    page.goto(f"{harness.BASE}/incidents/{incident_id}")
 
 
 def _stat_value(page: Page, label: str) -> str:
@@ -554,7 +322,7 @@ def _execute_via_modal(page: Page, requests: list[dict], *, token: str) -> int:
     Confirm click (the network boundary for the safety assertions)."""
     page.get_by_role("button", name="Execute", exact=True).click()
     modal = page.locator(".panel", has=page.locator("h3:text-is('Execute Response')")).last
-    expect(modal).to_be_visible(timeout=NAV_TIMEOUT)
+    expect(modal).to_be_visible(timeout=harness.NAV_TIMEOUT)
     modal.get_by_label("Operator").fill(OPERATOR)
     modal.get_by_label("Execution Token").fill(token)
     mark = len(requests)
@@ -563,11 +331,11 @@ def _execute_via_modal(page: Page, requests: list[dict], *, token: str) -> int:
 
 
 def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {EXECUTION_TOKEN}"}
+    return {"Authorization": f"Bearer {harness.EXECUTION_TOKEN}"}
 
 
 def _format_rate(rate: float | None) -> str:
-    """The page's frozen display formatting (display only, never a
+    """The page's display formatting (display only, never a
     re-derivation): null -> N/A, otherwise x100 + round to 2 decimals."""
     if rate is None:
         return "N/A"
@@ -582,12 +350,25 @@ def _obs_gets(requests: list[dict]) -> tuple[list[dict], list[dict]]:
     return metrics, health
 
 
-def _swap_backend_sync(state: dict, **kwargs) -> None:
+def _swap_backend_sync(
+    state: dict, *, fail_with: str | None = None, extra_env: dict[str, str] | None = None
+) -> None:
     """Swap + synchronize: after this returns the NEW uvicorn process is
     provably serving (health probe + one read-model request served), so
-    the browser's next request can never land on the previous process."""
-    _swap_backend(state, **kwargs)
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as client:
+    the browser's next request can never land on the previous process.
+
+    ``harness.swap_backend`` boots from ``state["env"]``, so per-boot
+    settings are applied there for the boot and removed again — the next
+    boot must not inherit them.
+    """
+    if extra_env:
+        state["env"].update(extra_env)
+    try:
+        harness.swap_backend(state, fail_with=fail_with)
+    finally:
+        for key in extra_env or ():
+            state["env"].pop(key, None)
+    with harness.http_client() as client:
         assert client.get(METRICS_URL).status_code == 200
 
 
@@ -596,7 +377,7 @@ def _probe_failed_boot(stack: dict, probe_case: str, classification: str) -> Non
     throwaway execution through the REAL API proves the injected
     executor is live BEFORE the browser journey executes — a stale
     backend would SUCCEED here and fail this probe loudly."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as client:
+    with harness.http_client() as client:
         resp = client.post(
             EXECUTIONS_URL,
             json={
@@ -676,21 +457,21 @@ def test_b_governance_flood_never_pollutes_health(journey):
     assert _stat_value(page, "Success Rate") == "N/A"
     card = _adapter_card(page)
     expect(card.get_by_text("Observed: unknown", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
     card_text = card.inner_text()
     assert "Recent Success Rate: N/A" in card_text
     assert "Recent Failed: 0" in card_text
 
     # Beat 2 — the one chain that reaches the adapter, on the PURE
-    # backend (policy disabled = the frozen 3.1/3.2 behavior).
+    # backend (policy disabled, the production default).
     _goto_incident(page, ids["SUCCESS"]["incident"])
     expect(
         page.get_by_role("heading", name="E2E Observability SUCCESS")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
-    _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    _execute_via_modal(page, requests, token=harness.EXECUTION_TOKEN)
     expect(page.get_by_text("Succeeded", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
 
     # Boot the closed-window policy and flood it with 20 real browser
@@ -702,10 +483,10 @@ def test_b_governance_flood_never_pollutes_health(journey):
             _goto_incident(page, ids[name]["incident"])
             expect(
                 page.get_by_role("button", name="Execute", exact=True)
-            ).to_be_visible(timeout=NAV_TIMEOUT)
-            _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
+            ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+            _execute_via_modal(page, requests, token=harness.EXECUTION_TOKEN)
             expect(page.get_by_text("Guard Rejected", exact=True)).to_be_visible(
-                timeout=NAV_TIMEOUT
+                timeout=harness.NAV_TIMEOUT
             )
             expect(
                 page.get_by_text(
@@ -761,7 +542,7 @@ def test_c_degraded_status(journey):
     # this journey, so there is no connection-reuse race).
     _swap_backend_sync(stack, fail_with="timeout")
     try:
-        with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as client:
+        with harness.http_client() as client:
             for case in ("DEGRADED_A", "DEGRADED_B"):
                 resp = client.post(
                     EXECUTIONS_URL,
@@ -780,7 +561,7 @@ def test_c_degraded_status(journey):
     _goto_obs(page)
     # 1/3 window success rate -> BELOW the degraded band: failing first.
     expect(_adapter_card(page).get_by_text("Observed: failing")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
     card_text = _adapter_card(page).inner_text()
     assert "Recent Success Rate: 33.33%" in card_text  # 1/3 window
@@ -795,7 +576,7 @@ def test_c_degraded_status(journey):
     # Recovery facts lift the window to 4/6 -> degraded — built via the
     # same real API the browser observes, so journey g's mirror check
     # stays exact.
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as client:
+    with harness.http_client() as client:
         for case in ("RECOVER_A", "RECOVER_B", "RECOVER_C"):
             resp = client.post(
                 EXECUTIONS_URL,
@@ -810,7 +591,7 @@ def test_c_degraded_status(journey):
             assert resp.json()["derived_state"] == "succeeded"
     _goto_obs(page)
     expect(_adapter_card(page).get_by_text("Observed: degraded")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
     card_text = _adapter_card(page).inner_text()
     assert "Recent Success Rate: 66.67%" in card_text  # 4/6 window
@@ -819,7 +600,7 @@ def test_c_degraded_status(journey):
 
 def test_d_adapter_failures_reach_failing(journey):
     """⑤ timeout / adapter_unavailable (test-only launcher seam) +
-    protocol_violation (platform-judged, D9 — injected as an executor
+    protocol_violation (platform-judged — injected as an executor
     answering the forbidden word `dispatched`): every boot is
     synchronized by a one-shot PROBE execution through the same API,
     then the real browser confirms render Failed; the verdict falls to
@@ -838,9 +619,9 @@ def test_d_adapter_failures_reach_failing(journey):
             _swap_backend_sync(stack, fail_with=classification)
             _probe_failed_boot(stack, probe, classification)
             _goto_incident(page, ids[case]["incident"])
-            _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
+            _execute_via_modal(page, requests, token=harness.EXECUTION_TOKEN)
             expect(page.get_by_text("Failed", exact=True)).to_be_visible(
-                timeout=NAV_TIMEOUT
+                timeout=harness.NAV_TIMEOUT
             )
     finally:
         _swap_backend_sync(stack, fail_with=None)
@@ -861,7 +642,7 @@ def test_d_adapter_failures_reach_failing(journey):
 
     _goto_obs(page)
     expect(_adapter_card(page).get_by_text("Observed: failing")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
     card_text = _adapter_card(page).inner_text()
     assert "Recent Success Rate: 33.33%" in card_text  # 4/12 window
@@ -884,11 +665,11 @@ def test_e_page_safety_boundary_zero_writes(journey):
     _goto_incident(page, ids["SUCCESS"]["incident"])
     expect(
         page.get_by_role("heading", name="E2E Observability SUCCESS")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
 
-    page.goto(f"{BASE}/executions")
+    page.goto(f"{harness.BASE}/executions")
     expect(page.get_by_role("heading", name="Execution Audit")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
 
     _goto_obs(page)
@@ -914,8 +695,8 @@ def test_f_token_never_participates_in_observability(journey):
     _goto_obs(page)
     assert page.evaluate("Object.keys(window.localStorage).length") == 0
     assert page.evaluate("Object.keys(window.sessionStorage).length") == 0
-    assert EXECUTION_TOKEN not in page.url
-    assert EXECUTION_TOKEN not in page.content()
+    assert harness.EXECUTION_TOKEN not in page.url
+    assert harness.EXECUTION_TOKEN not in page.content()
 
     metrics_gets, health_gets = _obs_gets(requests)
     assert metrics_gets and health_gets
@@ -937,9 +718,9 @@ def test_g_browser_displays_api_facts_verbatim(journey):
     page: Page = journey["page"]
 
     _goto_obs(page)
-    expect(_adapter_card(page)).to_be_visible(timeout=NAV_TIMEOUT)
+    expect(_adapter_card(page)).to_be_visible(timeout=harness.NAV_TIMEOUT)
 
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as client:
+    with harness.http_client() as client:
         metrics = client.get(METRICS_URL).json()
         assert metrics["total_chains"] == 33
         assert metrics["succeeded"] == 4

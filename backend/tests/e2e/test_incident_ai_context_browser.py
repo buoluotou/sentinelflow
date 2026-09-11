@@ -1,14 +1,16 @@
-"""Step 14.6: REAL-BROWSER end-to-end test of the Incident AI view.
+"""Real-browser end-to-end test of the Incident AI view.
 
 A genuine Chromium (Playwright) drives the real Vite app against the real
-uvicorn backend over a throwaway SQLite database:
+uvicorn backend over PostgreSQL: the shared harness in ``tests/e2e/harness.py``
+takes the database URL from ``DATABASE_URL`` and fails the run when it is
+unset or unreachable, so there is no SQLite fallback.
 
     /incidents/{id} -> GET /incidents/{id}/ai-context -> AI Investigation
     (Explanation history + Risk Summary history + Recommendation history
     with Approval audit — Observe/Review/Audit only, never Decide/Execute)
 
-The four cases are seeded the SAME way 14.4 proved the chain: every AI row
-is produced through the REAL production endpoints (mock provider):
+The four cases are seeded the same way the API-level chain was proven: every AI
+row is produced through the REAL production endpoints (mock provider):
 
     POST /events/{id}/ai-analysis | ai-risk-summary | response-recommendation
     POST /response-recommendations/{id}/approve | reject
@@ -16,7 +18,7 @@ is produced through the REAL production endpoints (mock provider):
 Only the event skeleton (AlertGroup + EventRisk + Incident) is seeded into
 the database before boot — UI test data is never hand-pushed as AI rows.
 
-Blocks, mirroring the frozen plan:
+The blocks below run in file order against one shared stack:
   A. full AI context: incident info, risk snapshot, AI Investigation with
      Explanation / Risk Summary / Recommendation / Approval audit visible
   B. approval states in a real browser: Approved + Rejected chips, and
@@ -38,195 +40,32 @@ tests/conftest.py; run explicitly with:
 
     pytest tests/e2e/test_incident_ai_context_browser.py -m browser -q
 
-Requires: playwright + pytest-playwright in the backend venv and
-``python -m playwright install chromium``. The module skips cleanly when
-Playwright is missing, so an explicit run never breaks the machine.
-No Ollama call — AI_PROVIDER=mock pins generation to the deterministic
-provider; 14.6 observes display semantics, not model output.
+Requires playwright + pytest-playwright in the backend venv and
+``python -m playwright install chromium``. A missing Playwright is a
+collection error, never a skip. No Ollama call — AI_PROVIDER=mock pins
+generation to the deterministic provider; this suite observes display
+semantics, not model output.
 """
-import os
 import re
-import shutil
-import socket
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.request
 import uuid
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
+import httpx
 import pytest
+from playwright.sync_api import Page, expect
 
-try:
-    import httpx
-    from playwright.sync_api import Page, expect
-except ImportError as exc:  # pragma: no cover - environment dependent
-    pytest.skip(
-        f"Playwright E2E dependencies missing ({exc}) — browser E2E skipped",
-        allow_module_level=True,
-    )
+from tests.e2e import harness
 
 pytestmark = pytest.mark.browser
 
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
-PYTHON = sys.executable  # the backend venv interpreter running this suite
-
-# The Vite dev proxy is frozen to http://localhost:8000 (vite.config.ts), so
-# the E2E backend MUST bind 8000; the port-busy check below fails loudly
-# instead of silently hitting a stray dev server.
-BACKEND_PORT = 8000
-FRONTEND_PORT = 5173
-BASE = f"http://localhost:{FRONTEND_PORT}"
-# Direct (non-browser) calls must pin IPv4: "localhost" may resolve to ::1,
-# where an unrelated listener happily answers 502 Bad Gateway.
-BACKEND_DIRECT = f"http://127.0.0.1:{BACKEND_PORT}"
-
 SNAPSHOT_SCORE = 80
 
-# First visibility assert after every navigation: vite cold-compiles modules
-# on first hit, so the default 5 s expect timeout is too tight on Windows.
-NAV_TIMEOUT = 30_000
 
-
-def _port_busy(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        return sock.connect_ex(("127.0.0.1", port)) == 0
-
-
-if _port_busy(BACKEND_PORT) or _port_busy(FRONTEND_PORT):
-    pytest.skip(
-        f"Ports {BACKEND_PORT}/{FRONTEND_PORT} already in use — stop the dev "
-        "servers (or any previous E2E run) before the browser E2E",
-        allow_module_level=True,
-    )
-
-
-def _wait_http(url: str, timeout: float = 60.0) -> None:
-    # ProxyHandler({}) disables ALL proxies: Windows registry proxies (VPN
-    # clients etc.) silently hijack urllib localhost probes and answer 502.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    deadline = time.monotonic() + timeout
-    last_error = "no attempt"
-    while time.monotonic() < deadline:
-        try:
-            with opener.open(url, timeout=3) as resp:
-                if resp.status < 500:
-                    return
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last_error = str(e)
-        time.sleep(0.5)
-    raise RuntimeError(f"{url} never came up: {last_error}")
-
-
-def _drain(proc: subprocess.Popen) -> list[bytes]:
-    """Read the child's stdout pipe in a daemon thread. Windows pipes hold
-    only ~4 KB: without a reader, uvicorn/vite BLOCK on their very next log
-    write once the buffer fills — the backend then hangs mid-run (the page
-    stops leaving 'Loading…') while looking perfectly healthy otherwise."""
-    chunks: list[bytes] = []
-
-    def _reader() -> None:
-        assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-
-    threading.Thread(target=_reader, daemon=True).start()
-    return chunks
-
-
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process tree: `npm run dev` spawns cmd -> node ->
-    esbuild children, and proc.terminate() only kills the shell, leaving an
-    orphan vite that blocks the next run's port check."""
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            check=False,
-        )
-    else:  # pragma: no cover - dev machines are Windows
-        proc.terminate()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-# ---------------------------------------------------------------------------
-# Stack: throwaway SQLite DB -> event skeleton -> uvicorn -> vite -> Chromium
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def stack(tmp_path_factory) -> Generator[dict, None, None]:
-    """Boot backend + frontend on a seeded throwaway DB; tear both down."""
-    tmp = tmp_path_factory.mktemp("incident_ai_e2e")
-    db_path = tmp / "e2e_incident_ai.db"
-    db_url = f"sqlite:///{db_path.as_posix()}"
-
-    # Event skeleton BEFORE boot: the AI rows themselves are produced AFTER
-    # boot through the real production endpoints (see _seed_ai_via_api).
-    ids = _seed_event_skeleton(db_url)
-
-    backend_env = {
-        **os.environ,
-        "AI_PROVIDER": "mock",  # this E2E never calls a real model
-        "DATABASE_URL": db_url,
-    }
-    # Proxy env vars silently hijack local HTTP probes (known session-switch
-    # pitfall) — the browser stack must talk localhost only.
-    for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-        backend_env.pop(var, None)
-    backend_env["NO_PROXY"] = "localhost,127.0.0.1"
-
-    backend_proc = subprocess.Popen(
-        [PYTHON, "-m", "uvicorn", "app.main:app", "--port", str(BACKEND_PORT)],
-        cwd=str(BACKEND_DIR),
-        env=backend_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    frontend_proc = subprocess.Popen(
-        "npm run dev",  # npm is npm.cmd on Windows -> needs the shell
-        cwd=str(FRONTEND_DIR),
-        env=backend_env,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    backend_log = _drain(backend_proc)
-    frontend_log = _drain(frontend_proc)
-    success = False
-    try:
-        _wait_http(f"http://localhost:{BACKEND_PORT}/health", timeout=60)
-        _wait_http(BASE, timeout=90)
-        _seed_ai_via_api(ids)
-        yield {"ids": ids, "db_path": db_path, "db_url": db_url}
-        success = True
-    finally:
-        # On failure, keep the child logs + DB for post-mortem inspection.
-        if not success:
-            for name, log in (("backend", backend_log), ("frontend", frontend_log)):
-                if log:
-                    (tmp / f"{name}_e2e.log").write_bytes(b"".join(log))
-        for proc in (frontend_proc, backend_proc):
-            _kill_tree(proc)
-        if success:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-
-def _seed_event_skeleton(db_url: str) -> dict:
+def _seed_database(db_url: str) -> dict:
     """Four events with EventRisk + Incident — the case records the browser
-    will open. AI history is NOT seeded here (14.4 standard: AI rows only
-    ever come from the production endpoints).
+    will open. AI history is NOT seeded here: AI rows only ever come from the
+    production endpoints.
 
     FULL    : 3 analyses + 3 summaries + 3 recommendations (1 approved,
               1 rejected, 1 pending) — blocks A/B/C/H/I
@@ -234,19 +73,11 @@ def _seed_event_skeleton(db_url: str) -> dict:
     PARTIAL : analysis only — block E
     SNAPSHOT: full chain used for the risk-score freeze — block G
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-
-    from app.core.database import Base
     from app.models import AlertGroup, EventRisk, Incident
-
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
     base = datetime.now(timezone.utc) - timedelta(hours=2)
     ids: dict = {}
-    with Session() as session:
+    with harness.orm_session(db_url) as session:
         for index, name in enumerate(("FULL", "EMPTY", "PARTIAL", "SNAPSHOT")):
             created = base + timedelta(minutes=2 * index)
             group = AlertGroup(
@@ -276,7 +107,7 @@ def _seed_event_skeleton(db_url: str) -> dict:
                 alert_group_id=group.id,
                 title=group.title,
                 severity=group.severity,
-                risk_score=SNAPSHOT_SCORE,  # Step 7 creation-time snapshot
+                risk_score=SNAPSHOT_SCORE,  # creation-time snapshot
                 created_at=created,
                 updated_at=created,
             )
@@ -284,15 +115,19 @@ def _seed_event_skeleton(db_url: str) -> dict:
             session.flush()
             ids[name] = {"event": str(group.id), "incident": str(incident.id)}
         session.commit()
-    engine.dispose()
     return ids
+
+
+@pytest.fixture(scope="module")
+def stack_seed():
+    """Rows the module needs before uvicorn starts: (db_url) -> id map."""
+    return _seed_database
 
 
 def _seed_ai_via_api(ids: dict) -> None:
     """Produce ALL AI rows through the real production endpoints (mock
-    provider), exactly as 14.4 drove the cross-layer regression — the E2E
-    never hand-pushes AI rows into the database."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as api:
+    provider) — the suite never hand-pushes AI rows into the database."""
+    with harness.http_client() as api:
 
         def run_full_chain(event_id: str, rounds: int) -> list[str]:
             """One round = explanation + summary + recommendation. Returns
@@ -309,11 +144,11 @@ def _seed_ai_via_api(ids: dict) -> None:
                 rec_ids.append(rec.json()["id"])
             return rec_ids
 
-        # FULL + SNAPSHOT: three rounds each (SQLite stamps second-granular
-        # created_at; the mock rounds run sequentially so history order stays
-        # deterministic enough for the "all visible" assertions).
+        # FULL + SNAPSHOT: three rounds each. The rounds are sequential, so
+        # the history order the "all visible" assertions rely on is
+        # deterministic.
         full_recs = run_full_chain(ids["FULL"]["event"], 3)
-        # The 13.2 audit vocabulary: decisions record ONLY approved/rejected.
+        # Decision rows carry only approved/rejected.
         approve = api.post(
             f"/api/v1/response-recommendations/{full_recs[0]}/approve",
             json={"reviewer": "alice", "review_comment": "confirmed abuse"},
@@ -344,26 +179,27 @@ def _seed_ai_via_api(ids: dict) -> None:
         ids["SNAPSHOT"]["recs"] = snapshot_recs
 
 
+@pytest.fixture(scope="module", autouse=True)
+def ai_history(stack) -> None:
+    """The AI rows come from the production endpoints, so they can only be
+    created once uvicorn is serving: seed them after ``stack`` and before the
+    first block."""
+    _seed_ai_via_api(stack["ids"])
+
+
 @pytest.fixture(scope="module")
 def api() -> httpx.Client:
-    """Direct backend access for DB-level audits. proxy=None: trust_env would
-    inherit the Windows system proxy and 502."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as c:
-        yield c
+    """Direct backend access for DB-level audits."""
+    with harness.http_client() as client:
+        yield client
 
 
 def _approval_statuses(db_url: str) -> list[str]:
     """Every stored approval status anywhere in the database."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
     from app.models import AIResponseApproval
 
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    with Session(engine) as session:
-        statuses = [row.status for row in session.query(AIResponseApproval).all()]
-    engine.dispose()
-    return statuses
+    with harness.orm_session(db_url) as session:
+        return [row.status for row in session.query(AIResponseApproval).all()]
 
 
 # ---------------------------------------------------------------------------
@@ -371,33 +207,21 @@ def _approval_statuses(db_url: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args) -> dict:
-    """Chromium inherits the Windows system proxy (VPN clients etc.), which
-    hijacks localhost traffic with 502s — the E2E stack is loopback-only."""
-    return {**browser_type_launch_args, "args": ["--no-proxy-server"]}
-
-
-@pytest.fixture(scope="module")
-def browser_page(browser) -> Generator[Page, None, None]:
-    """Module-scoped tab: the journey tests share ONE continuous browser
-    session, mirroring the module-scoped stack."""
-    ctx = browser.new_context()
-    pg = ctx.new_page()
-    yield pg
-    ctx.close()
-
-
 @pytest.fixture(scope="module")
 def journey(stack, browser_page: Page) -> Generator[dict, None, None]:
     """Shared journey state across the ordered block tests."""
-    requests: list = []
-    browser_page.on("request", lambda r: requests.append({"url": r.url, "method": r.method}))
-    yield {"stack": stack, "page": browser_page, "requests": requests}
+    log = harness.NetworkLog()
+    log.attach(browser_page)
+    yield {
+        "stack": stack,
+        "page": browser_page,
+        "requests": log.requests,
+        "responses": log.responses,
+    }
 
 
 def _goto_incident(page: Page, incident_id: str) -> None:
-    page.goto(f"{BASE}/incidents/{incident_id}")
+    page.goto(f"{harness.BASE}/incidents/{incident_id}")
 
 
 def _panel(page: Page, title: str):
@@ -417,7 +241,7 @@ def test_a_full_context_renders_the_complete_chain(journey):
     # Incident header + case record stay intact.
     expect(
         page.get_by_role("heading", name="E2E Incident FULL")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
     expect(page.locator(".kv .k", has_text="Risk Score (snapshot)")).to_be_visible()
 
     # AI Investigation with all four sub-views.
@@ -513,7 +337,7 @@ def test_i_network_whitelist_get_only_exactly_once(journey):
     _goto_incident(page, incident_id)
     expect(
         _ai_panel(page).get_by_text(re.compile(r"AI Explanation History \(3\)"))
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
 
     fresh = requests[mark:]
     context_gets = [
@@ -535,7 +359,7 @@ def test_d_empty_context_is_a_legal_state(journey):
     panel = _ai_panel(page)
     expect(
         panel.get_by_text("No AI analysis available yet.")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
     assert panel.locator(".error-banner").count() == 0
     expect(panel.get_by_text("Risk Score (snapshot):")).to_be_visible()
 
@@ -548,7 +372,7 @@ def test_e_partial_context_renders_cleanly(journey):
     panel = _ai_panel(page)
     expect(
         panel.get_by_text(re.compile(r"AI Explanation History \(1\)"))
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
     expect(panel.get_by_text("Analysis #1")).to_be_visible()
     assert panel.get_by_text(re.compile(r"Risk Summary History")).count() == 0
     assert panel.get_by_text(re.compile(r"Response Recommendation History")).count() == 0
@@ -564,7 +388,7 @@ def test_f_unknown_incident_404_leaks_nothing(journey):
     # The detail page renders the 404 banner full-page (no Loading limbo).
     expect(
         page.locator(".error-banner", has_text="Incident not found")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
     assert page.get_by_text("AI Investigation").count() == 0
     # No FULL-case AI data can surface through the error path.
     assert page.get_by_text("E2E Incident FULL").count() == 0
@@ -579,7 +403,7 @@ def test_g_risk_snapshot_stays_80_after_more_ai_history(journey):
     panel = _ai_panel(page)
     expect(
         panel.get_by_text(re.compile(r"AI Explanation History \(1\)"))
-    ).to_be_visible(timeout=NAV_TIMEOUT)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
     expect(panel.get_by_text("Approved")).to_be_visible()
     snapshot_line = panel.locator("p", has_text=re.compile(r"Risk Score \(snapshot\):"))
     expect(snapshot_line).to_contain_text("80")

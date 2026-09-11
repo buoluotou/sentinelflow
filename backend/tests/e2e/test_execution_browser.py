@@ -1,235 +1,185 @@
-"""Browser E2E for the Phase 3.1 response-execution layer (Step 3.1.11).
+"""Browser E2E for the response-execution chain, on PostgreSQL.
 
-A genuine Chromium (Playwright) drives the real Vite app against the real
-uvicorn backend over a throwaway SQLite database — the SAME stack 14.6
-proved (real SQLite + real uvicorn + real Vite + real Chromium). This
-suite lifts the execution chain that 3.1.10 proved at API/Service/DB level
-into a real browser, covering the frozen checklist:
+Chromium drives the real vite console against a real uvicorn backend and a
+PostgreSQL database built by ``alembic upgrade head``. The business chain runs
+end to end through the UI:
 
-  a. page-load safety boundary: Approval / Incident / Audit pages fire
-     ZERO POSTs to /executions and /compensate — only an explicit
-     Confirm Execute may ever produce the first POST (GETs may repeat
-     1-2x under dev-mode StrictMode; side effects never may)
-  b. happy path: Approved Recommendation -> Execute -> Token -> Confirm
-     -> POST /executions -> Succeeded (201 body authoritative)
-  c. duplicate protection: no second forward chain — no Execute button,
-     replays (same or fresh execution_id) are 409, facts untouched
-  d. unauthorized: wrong / missing token -> 401 + zero execution_log rows
-  e. guard reject (pure API path): mock provider's 40..69 band yields the
-     advisory action hunt_related_activity -> executed -> Guard Rejected
-  f. guard reject (seeded path): one ORM-seeded monitor_only snapshot
-     approved through the REAL approve endpoint -> Guard Rejected (the
-     ONLY ORM deviation in this file, unavoidable: the mock provider
-     never emits a single advisory-only executable-looking snapshot)
-  g. compensation: created via the real POST /executions/compensate
-     (httpx; the browser deliberately has NO compensation button in
-     3.1.8/3.1.9), then viewed both ways in the Audit UI
-  h. execution audit: /executions -> /executions/:id with state,
-     timeline, operator, action, target, compensation link
-  i. token leakage: localStorage / sessionStorage / URL / DOM / API
-     response bodies never contain the token
-  j. adapter failures: backend restarted through the test-only launcher
-     (tests/e2e/_execution_fail_launcher.py overriding the documented
-     get_response_executor seam) — timeout / adapter_unavailable /
-     adapter_error each render Failed + Classification
-  k. migration: 0009 -> 0008 -> base -> head on a scratch DB
+    alert -> event -> incident -> recommendation -> approval -> execution
+    (mock adapter) -> the execution in the audit list and its detail page
 
-NOT part of the default suite: tests/e2e/ is excluded from collection by
-tests/conftest.py; run explicitly with:
+Journeys:
+    a  the stack runs on PostgreSQL at the migration head
+    b  an ingested alert reaches the dashboard, the event list and the case queue
+    c  the event page generates the recommendation; the case shows it pending
+    d  the approval queue approves it through the UI
+    e  the case offers Execute only for the approved recommendation
+    f  Execute in the browser succeeds through the mock adapter
+    g  the execution appears in the audit list and its detail page
+    h  the observability page reports the execution
+    i  a compensation renders both relation directions
+    j  a second execution of the same approval is refused
+    k  a wrong token writes nothing
+    l  a guard-rejected action renders as status
+    m  adapter failures render Failed with their classification
+    n  the token never leaves the modal and the one request header
 
-    pytest tests/e2e/test_execution_browser.py -m browser -q
+The journeys share one module-scoped stack and one browser tab, and run in file
+order; each records what it produced in ``CENTRAL`` for the next one.
 
-Requires: playwright + pytest-playwright + httpx in the backend venv and
-``python -m playwright install chromium``. No Ollama call —
-AI_PROVIDER=mock pins generation to the deterministic provider.
+Recommendations and approvals always come from the real endpoints. Only the
+event skeletons behind the negative journeys (an advisory-only action, a
+rejected credential, three adapter failures) are inserted directly, because the
+mock provider cannot produce those shapes on demand.
+
+The mock adapter is the only executor, so the run makes no external request and
+needs no credential beyond the local execution token.
+
+    SENTINELFLOW_BROWSER_E2E=1 DATABASE_URL=postgresql+psycopg://... \
+        python -m pytest tests/e2e/test_execution_browser.py -m browser -q
 """
-import os
-import re
-import shutil
-import socket
-import subprocess
-import sys
-import threading
-import time
-import urllib.error
-import urllib.request
+from __future__ import annotations
+
 import uuid
-from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
+from playwright.sync_api import Page, expect
 
-try:
-    import httpx
-    from playwright.sync_api import Page, expect
-except ImportError as exc:  # pragma: no cover - environment dependent
-    pytest.skip(
-        f"Playwright E2E dependencies missing ({exc}) — browser E2E skipped",
-        allow_module_level=True,
-    )
+from tests.e2e import harness
 
 pytestmark = pytest.mark.browser
-
-BACKEND_DIR = Path(__file__).resolve().parents[2]
-FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
-PYTHON = sys.executable  # the backend venv interpreter running this suite
-
-# The Vite dev proxy is frozen to http://localhost:8000 (vite.config.ts), so
-# the E2E backend MUST bind 8000; the port-busy check below fails loudly
-# instead of silently hitting a stray dev server.
-BACKEND_PORT = 8000
-FRONTEND_PORT = 5173
-BASE = f"http://localhost:{FRONTEND_PORT}"
-# Direct (non-browser) calls must pin IPv4: "localhost" may resolve to ::1,
-# where an unrelated listener happily answers 502 Bad Gateway.
-BACKEND_DIRECT = f"http://127.0.0.1:{BACKEND_PORT}"
 
 EXECUTIONS_URL = "/api/v1/executions"
 COMPENSATE_URL = "/api/v1/executions/compensate"
 
-# The deployment secret the E2E backend boots with (fail-closed otherwise).
-# It doubles as the token typed into the modal by hand — exactly like a
-# real operator.
-EXECUTION_TOKEN = "e2e-exec-token-3.1.11"
-# The RECORDED operator identity (3.3.1 frozen semantics): the server
-# resolves the Bearer token to its authenticated Operator and ignores
-# any client-supplied field — EXECUTION_TOKEN maps to "legacy-execution".
-# The modal still types a client-side value below, but the facts (DB
-# rows, timeline, audit table) always carry this authenticated name.
-OPERATOR = "legacy-execution"
-CLIENT_TYPED_OPERATOR = "ops-e2e"  # typed into the modal, never recorded
+#: TEST-NET-3 (RFC 5737): the risk engine treats documentation ranges as
+#: non-public, so the ingested alert scores exactly 70 — severity only.
 TARGET_IP = "203.0.113.10"
+#: The title of the event the central journey ingests; it also becomes the
+#: incident title and the approval-queue heading.
+ALERT_TITLE = "E2E response chain IOC match"
+#: Typed into the Execute modal and never recorded: the server binds the
+#: operator identity to the token instead.
+CLIENT_TYPED_OPERATOR = "ops-e2e"
+#: Credentials an operator confirms with. Journey f, l and the three inside m
+#: each send it once, so the leakage audit expects exactly this many.
+EXPECTED_TOKEN_POSTS = 5
 
-# First visibility assert after every navigation: vite cold-compiles modules
-# on first hit, so the default 5 s expect timeout is too tight on Windows.
-NAV_TIMEOUT = 30_000
+#: Adapter failure classifications and the seeded case each is injected into.
+FAILURE_CASES = (
+    ("timeout", "FAIL_TIMEOUT"),
+    ("adapter_unavailable", "FAIL_UNAVAILABLE"),
+    ("adapter_error", "FAIL_ERROR"),
+)
 
-FAIL_CLASSIFICATIONS = ("timeout", "adapter_unavailable", "adapter_error")
+#: Ids produced by the central journey, read back by the later ones.
+CENTRAL: dict[str, str] = {}
 
-
-def _port_busy(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        return sock.connect_ex(("127.0.0.1", port)) == 0
-
-
-if _port_busy(BACKEND_PORT) or _port_busy(FRONTEND_PORT):
-    pytest.skip(
-        f"Ports {BACKEND_PORT}/{FRONTEND_PORT} already in use — stop the dev "
-        "servers (or any previous E2E run) before the browser E2E",
-        allow_module_level=True,
-    )
-
-
-def _wait_http(url: str, timeout: float = 60.0) -> None:
-    # ProxyHandler({}) disables ALL proxies: Windows registry proxies (VPN
-    # clients etc.) silently hijack urllib localhost probes and answer 502.
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    deadline = time.monotonic() + timeout
-    last_error = "no attempt"
-    while time.monotonic() < deadline:
-        try:
-            with opener.open(url, timeout=3) as resp:
-                if resp.status < 500:
-                    return
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            last_error = str(e)
-        time.sleep(0.5)
-    raise RuntimeError(f"{url} never came up: {last_error}")
-
-
-def _drain(proc: subprocess.Popen) -> list[bytes]:
-    """Read the child's stdout pipe in a daemon thread. Windows pipes hold
-    only ~4 KB: without a reader, uvicorn/vite BLOCK on their very next log
-    write once the buffer fills."""
-    chunks: list[bytes] = []
-
-    def _reader() -> None:
-        assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-
-    threading.Thread(target=_reader, daemon=True).start()
-    return chunks
-
-
-def _kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the whole process tree (npm -> cmd -> node -> esbuild)."""
-    if proc.poll() is not None:
-        return
-    if sys.platform == "win32":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            capture_output=True,
-            check=False,
-        )
-    else:  # pragma: no cover - dev machines are Windows
-        proc.terminate()
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-def _clean_env(extra: dict[str, str]) -> dict[str, str]:
-    env = {**os.environ, **extra}
-    # Proxy env vars silently hijack local HTTP probes (known session-switch
-    # pitfall) — the browser stack must talk localhost only.
-    for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-        env.pop(var, None)
-    env["NO_PROXY"] = "localhost,127.0.0.1"
-    return env
-
-
-# ---------------------------------------------------------------------------
-# Seeding: event skeleton (ORM) -> AI recommendations + approvals (REAL API)
-# ---------------------------------------------------------------------------
-
-#: (case name, risk score) — the mock provider bands: >=70 emits the
-#: executable block_source_ip first, 40..69 the advisory hunt_related_activity.
+#: Event skeletons for the negative journeys: (case name, risk score). The
+#: scores select what the mock provider recommends — 40..69 yields the advisory
+#: hunt_related_activity, >= 70 the executable block_source_ip.
 EVENT_CASES = (
-    ("SUCCESS", 80),        # b/c/g/h: happy path, duplicate, compensation, audit
-    ("GUARD_API", 55),      # e: advisory action straight from the mock provider
-    ("GUARD_SEED", 80),     # f: ORM-seeded monitor_only snapshot (reported)
-    ("WRONG_TOKEN", 80),    # d: 401 journeys, zero facts
-    ("FAIL_TIMEOUT", 80),   # j: adapter failure classifications
+    ("GUARD_API", 55),
+    ("WRONG_TOKEN", 80),
+    ("FAIL_TIMEOUT", 80),
     ("FAIL_UNAVAILABLE", 80),
     ("FAIL_ERROR", 80),
 )
 
 
+# ---------------------------------------------------------------------------
+# API and database helpers
+# ---------------------------------------------------------------------------
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {harness.EXECUTION_TOKEN}"}
+
+
+def _execution_rows(db_url: str, approval_id: str | None = None) -> list[tuple]:
+    """execution_log rows in chain order as
+    (decision, direction, operator, execution_id, action, target, detail)."""
+    from sqlalchemy.orm import Session
+
+    from app.models import ExecutionLog
+
+    engine = harness.engine_for(db_url)
+    try:
+        with Session(engine) as session:
+            query = session.query(ExecutionLog)
+            if approval_id is not None:
+                query = query.filter(ExecutionLog.approval_id == uuid.UUID(approval_id))
+            return [
+                (
+                    row.decision,
+                    row.direction,
+                    row.operator,
+                    str(row.execution_id),
+                    row.action,
+                    row.target,
+                    row.detail,
+                )
+                for row in query.order_by(ExecutionLog.created_at, ExecutionLog.id).all()
+            ]
+    finally:
+        engine.dispose()
+
+
+def _execution_count(db_url: str) -> int:
+    return len(_execution_rows(db_url))
+
+
+def _approval_decision(db_url: str, approval_id: str) -> tuple[str, str]:
+    """(status, reviewer) of one recorded decision."""
+    from app.models import AIResponseApproval
+
+    with harness.orm_session(db_url) as session:
+        row = session.get(AIResponseApproval, uuid.UUID(approval_id))
+        assert row is not None, f"no approval row {approval_id}"
+        return row.status, row.reviewer
+
+
+def _post_alert() -> str:
+    """Submit one alert through the simulator contract; returns the event id.
+
+    A critical alert scores 70, which is the auto-incident threshold, so the
+    ingestion pipeline opens the case the console then shows.
+    """
+    payload = {
+        "source": "e2e-browser",
+        "event_type": "malicious_ioc",
+        "severity": "critical",
+        "title": ALERT_TITLE,
+        "message": "Outbound connection to a known C2 server (browser E2E)",
+        "source_ip": TARGET_IP,
+        "host": {"hostname": "e2e-host-01", "ip": "192.0.2.50"},
+        "raw_data": {"ioc_type": "ip", "ioc_value": TARGET_IP},
+    }
+    with harness.http_client() as api:
+        response = api.post("/api/v1/alerts", json=payload)
+        assert response.status_code == 201, response.text
+        event_id = response.json()["alert_group_id"]
+    assert event_id, "POST /api/v1/alerts returned no alert_group_id"
+    return event_id
+
+
 def _seed_event_skeleton(db_url: str) -> dict:
-    """Event skeletons (AlertGroup + EventRisk + Incident + one evidence
-    Alert carrying source_ip) — the ONLY ORM rows in this E2E, plus the one
-    reported monitor_only recommendation snapshot for path f. Every
-    recommendation + approval the browser meets is produced through the
-    real production endpoints after boot (see _seed_executions_via_api)."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
+    """Event skeletons for the negative journeys.
 
-    from app.core.database import Base
-    from app.models import (
-        AIResponseRecommendation,
-        Alert,
-        AlertGroup,
-        EventRisk,
-        Incident,
-    )
-
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    Each case gets an AlertGroup, an EventRisk snapshot at a fixed score, the
+    incident the console opens and one evidence Alert carrying the source IP the
+    Guard resolves as the execution target. Recommendations and approvals are
+    still produced by the real endpoints after boot.
+    """
+    from app.models import Alert, AlertGroup, EventRisk, Incident
 
     base = datetime.now(timezone.utc) - timedelta(hours=2)
     ids: dict = {}
-    with Session() as session:
+    with harness.orm_session(db_url) as session:
         for index, (name, score) in enumerate(EVENT_CASES):
             created = base + timedelta(minutes=2 * index)
             group = AlertGroup(
-                fingerprint=f"e2e-exec-{name.lower()}" + "0" * 64,  # trimmed below
+                fingerprint=f"e2e-exec-{name.lower()}".ljust(64, "0"),
                 title=f"E2E Execution {name}",
                 category="brute_force",
                 severity="high",
@@ -239,7 +189,6 @@ def _seed_event_skeleton(db_url: str) -> dict:
                 created_at=created,
                 updated_at=created,
             )
-            group.fingerprint = group.fingerprint[:64]  # exact 64-char shape
             session.add(group)
             session.flush()
             session.add(
@@ -261,8 +210,6 @@ def _seed_event_skeleton(db_url: str) -> dict:
                 updated_at=created,
             )
             session.add(incident)
-            # Evidence alert: without a source_ip the mock recommendation's
-            # target is "" and the execution Guard refuses to resolve it.
             session.add(
                 Alert(
                     source="e2e",
@@ -278,891 +225,643 @@ def _seed_event_skeleton(db_url: str) -> dict:
                 )
             )
             session.flush()
-            ids[name] = {"event": group.id, "incident": incident.id}
-        # UUID columns need real UUID objects: flush the skeleton first so
-        # the seeded recommendation below can reference a generated id.
-        session.flush()
-
-        # Reported deviation (path f): the mock provider never emits a
-        # single advisory-only snapshot, so ONE monitor_only recommendation
-        # is seeded via ORM — it is then approved through the REAL approve
-        # endpoint and executed through the REAL browser flow.
-        seeded_rec = AIResponseRecommendation(
-            alert_group_id=ids["GUARD_SEED"]["event"],
-            provider="mock",
-            model="mock-deterministic",
-            overall_rationale="[e2e] advisory-only snapshot for the Guard Reject path",
-            recommendations=[
-                {
-                    "action": "monitor_only",
-                    "target": TARGET_IP,
-                    "rationale": "[e2e] seeded advisory action",
-                }
-            ],
-            confidence=0.8,
-        )
-        session.add(seeded_rec)
+            ids[name] = {"event": str(group.id), "incident": str(incident.id)}
         session.commit()
-        for name in ids:
-            ids[name] = {key: str(value) for key, value in ids[name].items()}
-        ids["GUARD_SEED"]["seeded_rec"] = str(seeded_rec.id)
-    engine.dispose()
     return ids
 
 
-def _seed_executions_via_api(ids: dict) -> None:
-    """ALL recommendations and approvals come from the real production
-    endpoints (mock provider) — the E2E never hand-pushes AI/approval
-    rows. Approval ids are recorded for the DB-level audits."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=30, proxy=None) as api:
+@pytest.fixture(scope="module")
+def stack_seed():
+    """Rows the module needs before uvicorn starts."""
+    return _seed_event_skeleton
 
-        def recommend(event_id: str) -> str:
-            resp = api.post(f"/api/v1/events/{event_id}/response-recommendation")
-            assert resp.status_code == 201, resp.text
-            return resp.json()["id"]
 
-        def approve(rec_id: str) -> str:
-            resp = api.post(
-                f"/api/v1/response-recommendations/{rec_id}/approve",
-                json={"reviewer": "e2e-seed", "review_comment": "E2E approval"},
+@pytest.fixture(scope="module")
+def seeded(stack) -> dict:
+    """Recommendations and approvals for the negative journeys, via the API."""
+    ids = stack["ids"]
+    with harness.http_client() as api:
+        for name, _score in EVENT_CASES:
+            created = api.post(
+                f"/api/v1/events/{ids[name]['event']}/response-recommendation"
             )
-            assert resp.status_code == 201, resp.text
-            return resp.json()["id"]
-
-        # SUCCESS: two recommendations — the first approved (journey b),
-        # the second deliberately left PENDING (journey a: a pending entry
-        # must render with zero execution requests).
-        rec1 = recommend(ids["SUCCESS"]["event"])
-        recommend(ids["SUCCESS"]["event"])
-        ids["SUCCESS"]["approval"] = approve(rec1)
-
-        # GUARD_API: score 55 -> the mock emits only hunt_related_activity
-        # (advisory) — a Guard Reject produced by the PURE API path.
-        ids["GUARD_API"]["approval"] = approve(recommend(ids["GUARD_API"]["event"]))
-
-        # GUARD_SEED: approve the ORM-seeded snapshot through the real
-        # endpoint (the approve endpoint records a decision — it does not
-        # validate executability; that stays the execution Guard's job).
-        ids["GUARD_SEED"]["approval"] = approve(ids["GUARD_SEED"]["seeded_rec"])
-
-        ids["WRONG_TOKEN"]["approval"] = approve(recommend(ids["WRONG_TOKEN"]["event"]))
-        for name in ("FAIL_TIMEOUT", "FAIL_UNAVAILABLE", "FAIL_ERROR"):
-            ids[name]["approval"] = approve(recommend(ids[name]["event"]))
-
-
-# ---------------------------------------------------------------------------
-# Backend / frontend process management
-# ---------------------------------------------------------------------------
-
-
-def _start_backend(env: dict[str, str], *, fail_with: str | None) -> subprocess.Popen:
-    """Pure app.main:app for the real journeys; the test-only launcher
-    (documented get_response_executor seam) for adapter-failure injection."""
-    if fail_with is None:
-        target = "app.main:app"
-        env.pop("E2E_FAIL_WITH", None)
-    else:
-        target = "tests.e2e._execution_fail_launcher:app"
-        env = {**env, "E2E_FAIL_WITH": fail_with}
-    return subprocess.Popen(
-        [PYTHON, "-m", "uvicorn", target, "--port", str(BACKEND_PORT)],
-        cwd=str(BACKEND_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-
-
-def _swap_backend(state: dict, *, fail_with: str | None) -> None:
-    """Kill the running backend and boot a replacement on the same port
-    (same DB, same vite). Windows may hold the listener briefly after the
-    kill, so both the port-free wait and the health wait are generous."""
-    _kill_tree(state["backend_proc"])
-    deadline = time.monotonic() + 30
-    while _port_busy(BACKEND_PORT) and time.monotonic() < deadline:
-        time.sleep(0.3)
-    proc = _start_backend(dict(state["env"]), fail_with=fail_with)
-    log = _drain(proc)
-    state.setdefault("backend_logs", []).append(log)
-    try:
-        _wait_http(f"http://localhost:{BACKEND_PORT}/health", timeout=60)
-    except Exception:
-        state["tmp"].joinpath("backend_swap.log").write_bytes(b"".join(log))
-        _kill_tree(proc)
-        raise
-    state["backend_proc"] = proc
-
-
-@pytest.fixture(scope="module")
-def stack(tmp_path_factory) -> Generator[dict, None, None]:
-    """Boot backend + frontend on a seeded throwaway DB; tear both down."""
-    tmp = tmp_path_factory.mktemp("execution_e2e")
-    db_path = tmp / "e2e_execution.db"
-    db_url = f"sqlite:///{db_path.as_posix()}"
-
-    ids = _seed_event_skeleton(db_url)
-    env = _clean_env(
-        {
-            "AI_PROVIDER": "mock",  # this E2E never calls a real model
-            "DATABASE_URL": db_url,
-            "EXECUTION_TOKEN": EXECUTION_TOKEN,
-        }
-    )
-
-    backend_proc = _start_backend(dict(env), fail_with=None)
-    frontend_proc = subprocess.Popen(
-        "npm run dev",  # npm is npm.cmd on Windows -> needs the shell
-        cwd=str(FRONTEND_DIR),
-        env=env,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    backend_log = _drain(backend_proc)
-    frontend_log = _drain(frontend_proc)
-    state = {
-        "ids": ids,
-        "db_url": db_url,
-        "db_path": db_path,
-        "env": env,
-        "tmp": tmp,
-        "backend_proc": backend_proc,
-    }
-    success = False
-    try:
-        _wait_http(f"http://localhost:{BACKEND_PORT}/health", timeout=60)
-        _wait_http(BASE, timeout=90)
-        _seed_executions_via_api(ids)
-        yield state
-        success = True
-    finally:
-        if not success:
-            for name, log in (("backend", backend_log), ("frontend", frontend_log)):
-                if log:
-                    tmp.joinpath(f"{name}_e2e.log").write_bytes(b"".join(log))
-        for proc in (frontend_proc, state["backend_proc"]):
-            _kill_tree(proc)
-        if success:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-
-@pytest.fixture(scope="module")
-def api() -> httpx.Client:
-    """Direct backend access for DB-level audits. proxy=None: trust_env
-    would inherit the Windows system proxy and 502."""
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as c:
-        yield c
-
-
-# ---------------------------------------------------------------------------
-# DB-level audit helpers
-# ---------------------------------------------------------------------------
-
-
-def _execution_rows(db_url: str, approval_id: str | None = None) -> list:
-    """execution_log rows (ascending chain order) as plain tuples:
-    (decision, direction, operator, execution_id, action, target, detail)."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-
-    from app.models import ExecutionLog
-
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    with Session(engine) as session:
-        query = session.query(ExecutionLog)
-        if approval_id is not None:
-            query = query.filter(ExecutionLog.approval_id == uuid.UUID(approval_id))
-        rows = [
-            (
-                row.decision,
-                row.direction,
-                row.operator,
-                str(row.execution_id),
-                row.action,
-                row.target,
-                row.detail,
+            assert created.status_code == 201, created.text
+            approved = api.post(
+                f"/api/v1/response-recommendations/{created.json()['id']}/approve",
+                json={"reviewer": "e2e-seed", "review_comment": "E2E seed approval"},
             )
-            for row in query.order_by(ExecutionLog.created_at, ExecutionLog.id).all()
-        ]
-    engine.dispose()
-    return rows
-
-
-def _execution_count(db_url: str) -> int:
-    return len(_execution_rows(db_url))
-
-
-# ---------------------------------------------------------------------------
-# The browser journey (a-j run in order against one shared stack)
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args) -> dict:
-    """Chromium inherits the Windows system proxy (VPN clients etc.), which
-    hijacks localhost traffic with 502s — the E2E stack is loopback-only."""
-    return {**browser_type_launch_args, "args": ["--no-proxy-server"]}
+            assert approved.status_code == 201, approved.text
+            ids[name]["approval"] = approved.json()["id"]
+    return ids
 
 
 @pytest.fixture(scope="module")
-def browser_page(browser) -> Generator[Page, None, None]:
-    """Module-scoped tab: the journey tests share ONE continuous browser
-    session, mirroring the module-scoped stack."""
-    ctx = browser.new_context()
-    pg = ctx.new_page()
-    yield pg
-    ctx.close()
+def journey(seeded, stack, browser_page: Page):
+    """The shared tab plus the full network record of the module."""
+    log = harness.NetworkLog()
+    log.attach(browser_page)
+    yield {"stack": stack, "page": browser_page, "log": log}
 
 
-@pytest.fixture(scope="module")
-def journey(stack, browser_page: Page) -> Generator[dict, None, None]:
-    """Shared journey state: every request/response the browser ever makes,
-    so the safety boundary and token-leakage audits see the FULL record."""
-    requests: list[dict] = []
-    responses: list[dict] = []
-    browser_page.on(
-        "request",
-        lambda r: requests.append(
-            {"url": r.url, "method": r.method, "headers": dict(r.headers)}
-        ),
+# ---------------------------------------------------------------------------
+# Page helpers
+# ---------------------------------------------------------------------------
+
+
+def _card_value(page: Page, label: str) -> str:
+    """The value a stat card shows, addressed by its label."""
+    card = page.locator(".stat-card").filter(has_text=label).first
+    expect(card).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    return card.locator(".value").inner_text().strip()
+
+
+def _dashboard_counts(page: Page) -> dict[str, int]:
+    page.goto(f"{harness.BASE}/")
+    expect(page.get_by_role("heading", name="Dashboard")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
     )
-    browser_page.on(
-        "response",
-        lambda resp: responses.append(
-            {"url": resp.url, "status": resp.status, "response": resp}
-        ),
-    )
-    yield {"stack": stack, "page": browser_page, "requests": requests, "responses": responses}
+    labels = ("Active Incidents", "Today's Alerts", "Today's Events")
+    return {label: int(_card_value(page, label)) for label in labels}
 
 
-def _exec_posts(requests: list[dict]) -> list[dict]:
-    return [
-        r
-        for r in requests
-        if r["method"] == "POST" and r["url"].rstrip("/").endswith(EXECUTIONS_URL)
-    ]
+def _panel(page: Page, title: str):
+    """The panel whose own heading is `title`.
 
-
-def _compensate_posts(requests: list[dict]) -> list[dict]:
-    return [
-        r for r in requests if r["method"] == "POST" and COMPENSATE_URL in r["url"]
-    ]
-
-
-def _execute_via_modal(
-    page: Page, requests: list[dict], *, token: str, operator: str = CLIENT_TYPED_OPERATOR
-) -> int:
-    """Open the Execute modal, fill Operator + Token by hand, and click
-    Confirm Execute. Returns the request-list mark recorded JUST BEFORE the
-    Confirm click (the network boundary for the safety assertions)."""
-    page.get_by_role("button", name="Execute", exact=True).click()
-    # Direct-child h3 match: the incident page's own "AI Investigation"
-    # panel is also .panel and would swallow a descendant-style filter.
-    modal = page.locator(".panel", has=page.locator("h3:text-is('Execute Response')")).last
-    expect(modal).to_be_visible(timeout=NAV_TIMEOUT)
-    modal.get_by_label("Operator").fill(operator)
-    modal.get_by_label("Execution Token").fill(token)
-    mark = len(requests)
-    modal.get_by_role("button", name="Confirm Execute").click()
-    return mark
-
-
-def _goto_incident(page: Page, incident_id: str) -> None:
-    page.goto(f"{BASE}/incidents/{incident_id}")
-
-
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {EXECUTION_TOKEN}"}
-
-
-def _panel_by_h2(page: Page, title: str):
-    """Panel whose DIRECT-CHILD h2 is `title` (the AI Investigation panel
-    on incident pages is itself a .panel — descendant filters match two)."""
-    return page.locator(".panel", has=page.locator(f"h2:text-is('{title}')")).filter(
+    Panels nest (the AI Investigation panel contains the execution console), so
+    the heading is matched as a direct child.
+    """
+    return page.locator(".panel").filter(
         has=page.locator(f":scope > h2:text-is('{title}')")
     )
 
 
-def test_a_page_load_safety_boundary_zero_posts(journey):
-    """⑧ THE core boundary: opening Incident / Approval Queue / Audit pages
-    fires ZERO POSTs to /executions and /compensate — page load is strictly
-    read-only. GETs may appear 1-2 times (dev-mode StrictMode remount); the
-    assertion locks side-effect freedom, never GET multiplicity."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    ids = journey["stack"]["ids"]
-
-    mark = len(requests)
-    _goto_incident(page, ids["SUCCESS"]["incident"])
-    # Approved entry offers Execute; the pending entry renders nothing.
-    expect(
-        page.get_by_role("heading", name="E2E Execution SUCCESS")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
-    expect(page.get_by_role("button", name="Execute", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
+def _open_case(page: Page, title: str) -> None:
+    """Open the incident queue and click the case titled `title`."""
+    page.goto(f"{harness.BASE}/incidents")
+    expect(page.get_by_role("heading", name="Incident Queue")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
     )
-    # Status lookup is GET-only (1-2x under StrictMode) — never a POST.
-    exec_gets = [
-        r
-        for r in requests[mark:]
-        if r["method"] == "GET" and EXECUTIONS_URL in r["url"]
+    page.locator("tr.clickable", has_text=title).click()
+    expect(page.get_by_role("heading", name=title, exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+
+
+def _execute_via_modal(
+    page: Page, log: harness.NetworkLog, *, token: str, operator: str = CLIENT_TYPED_OPERATOR
+) -> int:
+    """Open the Execute modal, fill the fields by hand and confirm.
+
+    Returns the request-log mark taken just before the Confirm click, which is
+    the boundary the safety assertions read.
+    """
+    page.get_by_role("button", name="Execute", exact=True).click()
+    modal = page.locator(
+        "div.panel", has=page.locator("h3:text-is('Execute Response')")
+    ).last
+    expect(modal).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    modal.get_by_label("Operator").fill(operator)
+    modal.get_by_label("Execution Token").fill(token)
+    mark = log.mark()
+    modal.get_by_role("button", name="Confirm Execute").click()
+    return mark
+
+
+# ---------------------------------------------------------------------------
+# a: the stack itself
+# ---------------------------------------------------------------------------
+
+
+def test_a_stack_runs_on_postgresql_at_the_migration_head(stack):
+    """The suite is PostgreSQL-only: the schema came from the migrations and the
+    dialect is not SQLite, where the durable dispatch fails closed."""
+    from sqlalchemy import inspect, text
+
+    engine = harness.engine_for(stack["db_url"])
+    try:
+        with engine.connect() as connection:
+            assert connection.dialect.name == "postgresql"
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
+            tables = set(inspect(connection).get_table_names())
+    finally:
+        engine.dispose()
+
+    assert revision == harness.alembic_head()
+    assert {"alert_groups", "event_risk", "incidents", "execution_log", "dispatch_attempt"} <= tables
+
+
+# ---------------------------------------------------------------------------
+# b: alert -> event -> incident, seen in the console
+# ---------------------------------------------------------------------------
+
+
+def test_b_alert_reaches_the_dashboard_events_and_case_queue(journey):
+    """One ingested alert becomes an event with a risk snapshot and a case, and
+    the console shows it: dashboard counters, the event list, the case queue."""
+    page: Page = journey["page"]
+
+    before = _dashboard_counts(page)
+    event_id = _post_alert()
+    CENTRAL["event"] = event_id
+
+    after = _dashboard_counts(page)
+    assert after["Today's Alerts"] >= before["Today's Alerts"] + 1
+    assert after["Today's Events"] >= before["Today's Events"] + 1
+    assert after["Active Incidents"] >= before["Active Incidents"] + 1
+
+    with harness.http_client() as api:
+        detail = api.get(f"/api/v1/events/{event_id}")
+        assert detail.status_code == 200, detail.text
+        risk = detail.json()["risk"]
+    assert risk["score"] >= 70, risk
+
+    page.goto(f"{harness.BASE}/events")
+    expect(page.get_by_role("heading", name="Events")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    row = page.locator("tr.clickable", has_text=ALERT_TITLE)
+    expect(row).to_be_visible()
+    # The list renders the API's own snapshot, never a recomputed one.
+    expect(row.get_by_text(str(risk["score"]), exact=True)).to_be_visible()
+    expect(row.get_by_text(risk["level"], exact=True)).to_be_visible()
+
+    page.goto(f"{harness.BASE}/incidents")
+    expect(page.get_by_role("heading", name="Incident Queue")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    expect(page.locator("tr.clickable", has_text=ALERT_TITLE)).to_be_visible()
+
+
+def test_c_event_page_generates_the_recommendation_and_the_case_shows_it_pending(journey):
+    """The event detail page triggers the recommendation through the real
+    endpoint; the case shows it as Pending Review with no execution affordance."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+
+    page.goto(f"{harness.BASE}/events/{CENTRAL['event']}")
+    expect(page.get_by_role("heading", name=ALERT_TITLE, exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    panel = _panel(page, "Response Recommendation")
+    expect(panel).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    expect(panel.get_by_text("No recommendation generated yet.")).to_be_visible()
+
+    mark = log.mark()
+    panel.get_by_role("button", name="Generate Response Recommendation").click()
+    expect(panel.get_by_text("Block Source IP")).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    expect(panel.get_by_text(TARGET_IP)).to_be_visible()
+    expect(panel.get_by_text("mock", exact=True).first).to_be_visible()
+    assert len(log.posts_to(f"/events/{CENTRAL['event']}/response-recommendation", mark)) == 1
+
+    with harness.http_client() as api:
+        latest = api.get(f"/api/v1/events/{CENTRAL['event']}/response-recommendation")
+        assert latest.status_code == 200, latest.text
+        actions = [item["action"] for item in latest.json()["recommendations"]]
+    assert actions == ["block_source_ip", "escalate_to_incident"], actions
+
+    # The case is open with the incident the pipeline created, showing the
+    # recommendation as pending and no way to execute it.
+    mark = log.mark()
+    _open_case(page, ALERT_TITLE)
+    ai_panel = _panel(page, "AI Investigation")
+    expect(
+        ai_panel.get_by_role("heading", name="Response Recommendation History (1)")
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    expect(ai_panel.get_by_text("Pending Review", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Execute", exact=True)).to_have_count(0)
+    expect(page.get_by_role("button", name="Approve", exact=True)).to_have_count(0)
+    assert log.posts(mark) == []
+
+
+# ---------------------------------------------------------------------------
+# d: approval queue
+# ---------------------------------------------------------------------------
+
+
+def test_d_approval_queue_approves_through_the_ui(journey):
+    """The queue lists the pending recommendation, the analyst approves it and
+    the item leaves the queue; the recorded reviewer is what the UI submitted."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+    stack = journey["stack"]
+
+    page.goto(f"{harness.BASE}/approvals")
+    expect(page.get_by_role("heading", name="Approval Queue")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    item = _panel(page, ALERT_TITLE)
+    expect(item).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    expect(item.get_by_text("Block Source IP")).to_be_visible()
+    expect(item.get_by_text(TARGET_IP)).to_be_visible()
+    expect(item.get_by_role("button", name="Execute", exact=True)).to_have_count(0)
+
+    page.get_by_label("Reviewer").fill("e2e-browser")
+    mark = log.mark()
+    item.get_by_role("button", name="Approve", exact=True).click()
+    expect(item).to_have_count(0, timeout=harness.NAV_TIMEOUT)
+
+    approvals = log.posts_to("/approve", mark)
+    assert len(approvals) == 1, approvals
+
+    with harness.http_client() as api:
+        queue = api.get("/api/v1/approvals")
+        assert queue.status_code == 200, queue.text
+        assert [row["event_title"] for row in queue.json()] == []
+
+    approval_id = _approval_id_of(stack["db_url"], CENTRAL["event"])
+    CENTRAL["approval"] = approval_id
+    status, reviewer = _approval_decision(stack["db_url"], approval_id)
+    assert (status, reviewer) == ("approved", "e2e-browser")
+
+
+def _approval_id_of(db_url: str, event_id: str) -> str:
+    """The approval recorded for the event's latest recommendation."""
+    from sqlalchemy import select
+
+    from app.models import AIResponseApproval, AIResponseRecommendation
+
+    with harness.orm_session(db_url) as session:
+        recommendation_id = session.scalars(
+            select(AIResponseRecommendation.id)
+            .where(AIResponseRecommendation.alert_group_id == uuid.UUID(event_id))
+            .order_by(AIResponseRecommendation.created_at.desc())
+            .limit(1)
+        ).one()
+        approval_id = session.scalars(
+            select(AIResponseApproval.id).where(
+                AIResponseApproval.recommendation_id == recommendation_id
+            )
+        ).one()
+    return str(approval_id)
+
+
+# ---------------------------------------------------------------------------
+# e / f: the case offers Execute, then the browser executes it
+# ---------------------------------------------------------------------------
+
+
+def test_e_case_offers_execute_only_for_the_approved_recommendation(journey):
+    """Reloading the case after the approval shows the Approved chip and the
+    Execute console; the page load itself still writes nothing."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+
+    mark = log.mark()
+    _open_case(page, ALERT_TITLE)
+    ai_panel = _panel(page, "AI Investigation")
+    expect(ai_panel.get_by_text("Approved", exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    expect(page.get_by_role("button", name="Execute", exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    # Page load is read-only: only the execution status GETs run.
+    assert log.posts(mark) == []
+    status_gets = [
+        item
+        for item in log.since(mark)
+        if item["method"] == "GET" and EXECUTIONS_URL in item["url"]
     ]
-    assert 1 <= len(exec_gets) <= 2
-
-    _goto_incident(page, ids["GUARD_API"]["incident"])
-    expect(
-        page.get_by_role("heading", name="E2E Execution GUARD_API")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
-
-    page.goto(f"{BASE}/approvals")
-    # The queue renders the one still-pending recommendation (SUCCESS #2);
-    # loading it fires only GETs — the zero-POST audit below covers it.
-    expect(page.get_by_text("E2E Execution SUCCESS").first).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-
-    page.goto(f"{BASE}/executions")
-    expect(page.get_by_role("heading", name="Execution Audit")).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-
-    # The whole page tour produced ZERO write traffic of any kind.
-    assert _exec_posts(requests) == []
-    assert _compensate_posts(requests) == []
-    assert [r for r in requests if r["method"] == "POST"] == []
+    assert 1 <= len(status_gets) <= 2, status_gets
 
 
-def test_b_execute_happy_path(journey):
-    """① Approved Recommendation -> Execute -> Token -> Confirm ->
-    POST /executions -> Succeeded. The FIRST POST /executions of the entire
-    browser session lands exactly at the explicit Confirm click."""
+def test_f_execute_through_the_ui_succeeds_with_the_mock_adapter(journey):
+    """Approved recommendation -> Execute -> token -> Confirm -> 201 ->
+    Succeeded, backed by a requested -> dispatched -> succeeded chain."""
     page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    ids = journey["stack"]["ids"]
+    log: harness.NetworkLog = journey["log"]
+    stack = journey["stack"]
+    approval_id = CENTRAL["approval"]
 
-    _goto_incident(page, ids["SUCCESS"]["incident"])
+    _open_case(page, ALERT_TITLE)
     expect(page.get_by_role("button", name="Execute", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
-
-    assert _exec_posts(requests) == []  # no execution POST before intent
-    mark = _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
+    mark = _execute_via_modal(page, log, token=harness.EXECUTION_TOKEN)
 
     expect(page.get_by_text("Succeeded", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
     expect(page.get_by_text("requested → dispatched → succeeded")).to_be_visible()
-    expect(page.get_by_text(OPERATOR).first).to_be_visible()
+    expect(page.get_by_text(harness.OPERATOR).first).to_be_visible()
 
-    # Exactly one POST /executions, starting at the Confirm click, carrying
-    # the Bearer token — and nothing else ever carried it.
-    posts = _exec_posts(requests)
-    assert len(posts) == 1
-    assert posts[0] in requests[mark:]
-    assert posts[0]["headers"]["authorization"] == f"Bearer {EXECUTION_TOKEN}"
-    assert _compensate_posts(requests) == []
+    posts = log.posts_to(EXECUTIONS_URL, mark)
+    assert len(posts) == 1, posts
+    assert posts[0]["headers"]["authorization"] == f"Bearer {harness.EXECUTION_TOKEN}"
+    # The 201 body is authoritative: no follow-up GET after the POST.
+    assert [item for item in log.since(mark) if item["method"] == "GET"] == []
 
-    # The fact block renders from the 201 body: no follow-up GET after POST.
-    exec_gets_after = [
-        r for r in requests[mark:] if r["method"] == "GET" and EXECUTIONS_URL in r["url"]
-    ]
-    assert exec_gets_after == []
-
-    # DB mirrors the browser: exactly the 3-row chain, token never stored.
-    rows = _execution_rows(
-        journey["stack"]["db_url"], approval_id=ids["SUCCESS"]["approval"]
-    )
-    assert [r[0] for r in rows] == ["requested", "dispatched", "succeeded"]
-    assert all(r[2] == OPERATOR for r in rows)
+    rows = _execution_rows(stack["db_url"], approval_id=approval_id)
+    assert [row[0] for row in rows] == ["requested", "dispatched", "succeeded"]
+    assert all(row[2] == harness.OPERATOR for row in rows)
     assert rows[0][4] == "block_source_ip" and rows[0][5] == TARGET_IP
-    assert EXECUTION_TOKEN not in repr(rows)
+    assert harness.EXECUTION_TOKEN not in repr(rows)
+    CENTRAL["execution"] = rows[0][3]
 
 
-def test_c_duplicate_protection(journey):
-    """⑤ No second forward chain — ever. The panel shows the execution fact
-    instead of an Execute button; replays (same execution_id AND a fresh
-    one) are 409 with the original facts untouched."""
+# ---------------------------------------------------------------------------
+# g / h: audit and observability
+# ---------------------------------------------------------------------------
+
+
+def test_g_execution_appears_in_the_audit_list_and_its_detail(journey):
+    """/executions lists the chain and a row click lands on the detail page with
+    state, timeline, action, target and operator. Both surfaces stay GET-only."""
     page: Page = journey["page"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["SUCCESS"]["approval"]
+    log: harness.NetworkLog = journey["log"]
+    execution_id = CENTRAL["execution"]
 
-    # Reload the incident: the fact block stands, no Execute affordance.
-    _goto_incident(page, stack["ids"]["SUCCESS"]["incident"])
-    expect(page.get_by_text("Succeeded", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-    assert page.get_by_role("button", name="Execute", exact=True).count() == 0
-    assert page.get_by_role("button", name="Confirm Execute").count() == 0
-    body = page.locator("body").inner_text()
-    for forbidden in ("Retry", "Compensate", "Execute Now"):
-        assert forbidden not in body
-
-    rows_before = _execution_rows(stack["db_url"], approval_id=approval_id)
-    execution_id = rows_before[0][3]
-    exec_body = {
-        "execution_id": execution_id,
-        "approval_id": approval_id,
-        "operator": OPERATOR,
-    }
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as api:
-        # Replay of the identical Intent -> 409, facts byte-for-byte intact.
-        replay = api.post(EXECUTIONS_URL, json=exec_body, headers=_auth_headers())
-        assert replay.status_code == 409
-        # A FRESH execution_id on the same approval -> 409 as well.
-        dup = api.post(
-            EXECUTIONS_URL,
-            json={**exec_body, "execution_id": str(uuid.uuid4())},
-            headers=_auth_headers(),
-        )
-        assert dup.status_code == 409
-    assert _execution_rows(stack["db_url"], approval_id=approval_id) == rows_before
-
-
-def test_d_unauthorized_zero_facts(journey):
-    """⑦ Wrong token in the real modal -> static 401 message, zero
-    execution_log rows; missing / wrong Bearer over httpx -> 401 too."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["WRONG_TOKEN"]["approval"]
-    total_before = _execution_count(stack["db_url"])
-
-    _goto_incident(page, stack["ids"]["WRONG_TOKEN"]["incident"])
-    mark = _execute_via_modal(page, requests, token="wrong-token-never-valid")
-
-    # Static operator-facing message; the modal stays open for correction.
-    expect(page.get_by_text("Execution credentials invalid")).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-    expect(page.get_by_role("button", name="Confirm Execute")).to_be_visible()
-    posts = _exec_posts(requests[mark:])
-    assert len(posts) == 1
-    matched = [r for r in journey["responses"] if EXECUTIONS_URL in r["url"]]
-    assert any(r["status"] == 401 for r in matched)
-
-    # 401 writes NOTHING: zero rows for the approval, total unchanged.
-    assert _execution_rows(stack["db_url"], approval_id=approval_id) == []
-    assert _execution_count(stack["db_url"]) == total_before
-
-    # Close the modal — the wrong token dies with the unmount.
-    page.locator(".panel", has=page.locator("h3:text-is('Execute Response')")).last.get_by_role(
-        "button", name="Cancel"
-    ).click()
-
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as api:
-        body = {
-            "execution_id": str(uuid.uuid4()),
-            "approval_id": approval_id,
-            "operator": OPERATOR,
-        }
-        missing = api.post(EXECUTIONS_URL, json=body)  # no Authorization at all
-        assert missing.status_code == 401
-        assert missing.json()["detail"] == "Invalid execution credentials"
-        wrong = api.post(
-            EXECUTIONS_URL,
-            json=body,
-            headers={"Authorization": "Bearer another-wrong-token"},
-        )
-        assert wrong.status_code == 401
-        assert wrong.json()["detail"] == "Invalid execution credentials"
-        # Static detail: the presented (wrong) credential is never echoed.
-        assert "another-wrong-token" not in wrong.text
-    assert _execution_count(stack["db_url"]) == total_before
-
-
-def test_e_guard_reject_pure_api_path(journey):
-    """②A Guard Reject straight off the pure API path: the mock provider's
-    40..69 band yields the advisory hunt_related_activity; executing it is
-    a legal Intent the Guard refuses. The browser renders 201 + guard_rejected
-    as a STATUS (Guard Rejected badge + Reason) — never an error banner."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["GUARD_API"]["approval"]
-
-    _goto_incident(page, stack["ids"]["GUARD_API"]["incident"])
-    mark = _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
-
-    expect(page.get_by_text("Guard Rejected", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-    expect(
-        page.get_by_text(re.compile("advisory, not machine-executable"))
-    ).to_be_visible()
-    # 201 closed the modal -> this is status rendering, not error rendering.
-    assert page.get_by_role("heading", name="Execute Response").count() == 0
-    posts = _exec_posts(requests[mark:])
-    assert len(posts) == 1
-    matched = [r for r in journey["responses"] if EXECUTIONS_URL in r["url"]]
-    assert any(r["status"] == 201 for r in matched)
-
-    rows = _execution_rows(stack["db_url"], approval_id=approval_id)
-    assert [r[0] for r in rows] == ["requested", "guard_rejected"]
-    assert rows[1][4] == "hunt_related_activity"
-    assert rows[1][6]["code"] == "action_not_executable"
-
-
-def test_f_guard_reject_seeded_path(journey):
-    """②B Same verdict for the ORM-seeded monitor_only snapshot (the one
-    reported deviation — approved through the REAL approve endpoint, then
-    executed through the REAL browser flow)."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["GUARD_SEED"]["approval"]
-
-    _goto_incident(page, stack["ids"]["GUARD_SEED"]["incident"])
-    mark = _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
-
-    expect(page.get_by_text("Guard Rejected", exact=True)).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-    expect(
-        page.get_by_text(re.compile("advisory, not machine-executable"))
-    ).to_be_visible()
-    posts = _exec_posts(requests[mark:])
-    assert len(posts) == 1
-
-    rows = _execution_rows(stack["db_url"], approval_id=approval_id)
-    assert [r[0] for r in rows] == ["requested", "guard_rejected"]
-    assert rows[1][4] == "monitor_only"
-    assert rows[1][6]["code"] == "action_not_executable"
-
-
-def test_g_compensation_view_only(journey):
-    """④ Compensation facts exist (created via the REAL
-    POST /executions/compensate — the browser deliberately has NO
-    compensation button in 3.1.8/3.1.9) and the Audit UI shows the relation
-    BOTH ways: Original -> "Compensated by" and Compensation -> "Compensates"."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["SUCCESS"]["approval"]
-
-    exec_a = _execution_rows(stack["db_url"], approval_id=approval_id)[0][3]
-    comp_execution_id = str(uuid.uuid4())
-    with httpx.Client(base_url=BACKEND_DIRECT, timeout=10, proxy=None) as api:
-        resp = api.post(
-            COMPENSATE_URL,
-            json={
-                "execution_id": comp_execution_id,
-                "compensates_execution_id": exec_a,
-                "operator": OPERATOR,
-            },
-            headers=_auth_headers(),
-        )
-        assert resp.status_code == 201, resp.text
-    comp_rows = _execution_rows(stack["db_url"], approval_id=approval_id)
-    comp_directions = {r[1] for r in comp_rows}
-    assert comp_directions == {"execute", "compensate"}
-
-    # Original execution: "Compensated by: <comp>" as a real link.
-    mark = len(requests)
-    page.goto(f"{BASE}/executions/{exec_a}")
-    expect(
-        page.get_by_role("heading", name=f"Execution {exec_a}")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
-    rel_panel = _panel_by_h2(page, "Compensation Relation")
-    expect(rel_panel.get_by_text(re.compile("Compensated by:"))).to_be_visible()
-    expect(rel_panel.get_by_role("link", name=comp_execution_id)).to_be_visible()
-
-    # Follow the link: the compensation page points back to the original.
-    rel_panel.get_by_role("link", name=comp_execution_id).click()
-    expect(
-        page.get_by_role("heading", name=f"Execution {comp_execution_id}")
-    ).to_be_visible(timeout=NAV_TIMEOUT)
-    comp_rel = _panel_by_h2(page, "Compensation Relation")
-    expect(comp_rel.get_by_text(re.compile("Compensates:"))).to_be_visible()
-    expect(comp_rel.get_by_role("link", name=exec_a)).to_be_visible()
-
-    # The compensation's complete timeline + inherited facts. Its terminal
-    # state renders the 8-word vocabulary word verbatim (only succeeded /
-    # failed / guard_rejected get shortened badge labels).
-    expect(page.get_by_text("compensation succeeded", exact=True).first).to_be_visible(
-        timeout=NAV_TIMEOUT
-    )
-    expect(page.get_by_text(f"by {OPERATOR}").first).to_be_visible()
-    # Compensation chains run compensation_requested -> compensation_succeeded
-    # (no dispatched row — the 3.1.6 frozen shape, proven in 3.1.10).
-    timeline = _panel_by_h2(page, "Timeline").locator("li")
-    assert timeline.count() == 2
-    expect(timeline.get_by_text("compensation requested")).to_be_visible()
-    expect(timeline.get_by_text("compensation succeeded")).to_be_visible()
-    expect(page.locator(".kv", has_text="Action").locator(".v")).to_have_text(
-        "block_source_ip"
-    )
-    expect(page.locator(".kv", has_text="Target").locator(".v")).to_have_text(TARGET_IP)
-
-    # Read-only boundary: NO action affordances anywhere on the detail page.
-    for button_name in ("Execute", "Retry", "Compensate", "Approve", "Reject"):
-        assert page.get_by_role("button", name=button_name, exact=True).count() == 0
-    # And the audit navigation issued ZERO writes.
-    assert _exec_posts(requests[mark:]) == []
-    assert _compensate_posts(requests[mark:]) == []
-
-
-def test_h_execution_audit_list_to_detail(journey):
-    """⑥ /executions lists every execution fact; a row click lands on
-    /executions/:id with state, timeline, operator, action, target and the
-    compensation link. The audit surface is GET-only end to end."""
-    page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
-    stack = journey["stack"]
-    approval_id = stack["ids"]["SUCCESS"]["approval"]
-    exec_a = _execution_rows(stack["db_url"], approval_id=approval_id)[0][3]
-
-    mark = len(requests)
-    page.goto(f"{BASE}/executions")
+    mark = log.mark()
+    page.goto(f"{harness.BASE}/executions")
     expect(page.get_by_role("heading", name="Execution Audit")).to_be_visible(
-        timeout=NAV_TIMEOUT
+        timeout=harness.NAV_TIMEOUT
     )
-    row = page.locator("tr.clickable", has_text=exec_a)
-    expect(row).to_be_visible()
-    expect(row.get_by_text("Succeeded")).to_be_visible()
-    expect(row.get_by_text("block_source_ip")).to_be_visible()
-    expect(row.get_by_text(OPERATOR)).to_be_visible()
-    expect(row.get_by_text("execute")).to_be_visible()
-    # Filter affordances exist; using them is GET-only (never asserted as
-    # writes — the zero-POST check below covers the whole tour).
+    row = page.locator("tr.clickable", has_text=execution_id)
+    expect(row).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    expect(row.get_by_text("Succeeded", exact=True)).to_be_visible()
+    expect(row.get_by_text("block_source_ip", exact=True)).to_be_visible()
+    expect(row.get_by_text(TARGET_IP, exact=True)).to_be_visible()
+    expect(row.get_by_text(harness.OPERATOR, exact=True)).to_be_visible()
+    expect(row.get_by_text("execute", exact=True)).to_be_visible()
     expect(page.get_by_label("State")).to_be_visible()
     expect(page.get_by_label("Direction")).to_be_visible()
 
     row.click()
-    expect(page.get_by_role("heading", name=f"Execution {exec_a}")).to_be_visible(
-        timeout=NAV_TIMEOUT
+    expect(
+        page.get_by_role("heading", name=f"Execution {execution_id}", exact=True)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    detail_panel = _panel(page, "Execution")
+    expect(detail_panel.get_by_text("Succeeded", exact=True)).to_be_visible()
+    expect(detail_panel.locator(".kv", has_text="Action").locator(".v")).to_have_text(
+        "block_source_ip"
     )
-    # Current state + complete timeline + compensation link on the detail.
-    expect(page.locator(".kv", has_text="State").get_by_text("Succeeded")).to_be_visible()
-    timeline = _panel_by_h2(page, "Timeline").locator("li")
+    expect(detail_panel.locator(".kv", has_text="Target").locator(".v")).to_have_text(
+        TARGET_IP
+    )
+    expect(detail_panel.locator(".kv", has_text="Approval").locator(".v")).to_have_text(
+        CENTRAL["approval"]
+    )
+    timeline = _panel(page, "Timeline").locator("li")
     assert timeline.count() == 3
-    expect(page.get_by_text(re.compile("Compensated by:"))).to_be_visible()
+    expect(timeline.get_by_text("requested", exact=True)).to_be_visible()
+    expect(timeline.get_by_text("dispatched", exact=True)).to_be_visible()
+    expect(timeline.get_by_text("succeeded", exact=True)).to_be_visible()
 
-    assert _exec_posts(requests[mark:]) == []
-    assert _compensate_posts(requests[mark:]) == []
-    assert [r for r in requests[mark:] if r["method"] == "POST"] == []
+    assert log.posts(mark) == []
 
 
-def test_i_token_never_leaks(journey):
-    """⑨ The execution token touched ONLY the modal's memory and the one
-    Bearer header: localStorage / sessionStorage / URLs / DOM / API response
-    bodies stay clean."""
+def test_h_observability_reports_the_execution(journey):
+    """The observability page renders the metrics read model verbatim and the
+    observed-health card of the mock adapter, with no write request."""
     page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
+    log: harness.NetworkLog = journey["log"]
 
-    # Fresh settled view: the SUCCESS fact block persists across reloads,
-    # so the DOM snapshot covers real post-execution content.
-    _goto_incident(page, journey["stack"]["ids"]["SUCCESS"]["incident"])
-    expect(page.get_by_text("Succeeded", exact=True).first).to_be_visible(
-        timeout=NAV_TIMEOUT
+    with harness.http_client() as api:
+        metrics = api.get("/api/v1/executions/metrics")
+        assert metrics.status_code == 200, metrics.text
+        body = metrics.json()
+    assert body["total_chains"] >= 1, body
+    assert body["succeeded"] >= 1, body
+
+    mark = log.mark()
+    page.goto(f"{harness.BASE}/observability")
+    expect(page.get_by_role("heading", name="Execution Observability")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
     )
-
-    assert page.evaluate("Object.keys(window.localStorage).length") == 0
-    assert page.evaluate("Object.keys(window.sessionStorage).length") == 0
-    assert EXECUTION_TOKEN not in page.url
-    assert EXECUTION_TOKEN not in page.content()
-
-    for request in journey["requests"]:
-        assert EXECUTION_TOKEN not in request["url"]
-        auth = request["headers"].get("authorization", "")
-        if not auth:
-            continue
-        # Credentials only ever travel on explicit execution POSTs — GETs
-        # and every other call go unauthenticated.
-        assert request["method"] == "POST"
-        assert request["url"].rstrip("/").endswith(EXECUTIONS_URL)
-        if EXECUTION_TOKEN in auth:
-            # The real secret: exactly one home — the single confirmed
-            # execution POST of journey b.
-            assert auth == f"Bearer {EXECUTION_TOKEN}"
-        else:
-            # Journey d's wrong-token attempt: server-refused (401, zero
-            # facts). Whatever the operator typed never lands anywhere.
-            assert auth == "Bearer wrong-token-never-valid"
-    # Sanity: the authorized POSTs of journeys b / e / f really happened —
-    # three explicit operator confirms, three credential bearers, nowhere
-    # else.
-    assert (
-        len(
-            [
-                r
-                for r in requests
-                if r["headers"].get("authorization") == f"Bearer {EXECUTION_TOKEN}"
-            ]
-        )
-        == 3
-    )
-
-    for record in journey["responses"]:
-        if "/api/" not in record["url"]:
-            continue
-        try:
-            body = record["response"].text()
-        except Exception:
-            continue
-        assert EXECUTION_TOKEN not in body
+    assert _card_value(page, "Total Executions") == str(body["total_chains"])
+    assert _card_value(page, "Succeeded") == str(body["succeeded"])
+    adapter_card = page.get_by_test_id("adapter-mock")
+    expect(adapter_card).to_be_visible()
+    expect(adapter_card.get_by_text("Observed:")).to_be_visible()
+    assert log.posts(mark) == []
 
 
-def test_j_adapter_failures_render_failed_with_classification(journey):
-    """③ The backend restarts through the test-only launcher (documented
-    get_response_executor seam — production code carries NO failure knob);
-    each adapter classification renders Failed + Classification in the real
-    browser, backed by a requested -> dispatched -> failed chain."""
+# ---------------------------------------------------------------------------
+# i / j: compensation and duplicate protection
+# ---------------------------------------------------------------------------
+
+
+def test_i_compensation_renders_both_relations(journey):
+    """A compensation created over the real endpoint shows on both detail pages:
+    the original points at it and it points back at the original."""
     page: Page = journey["page"]
-    requests: list[dict] = journey["requests"]
+    log: harness.NetworkLog = journey["log"]
     stack = journey["stack"]
-    case_by_classification = {
-        "timeout": "FAIL_TIMEOUT",
-        "adapter_unavailable": "FAIL_UNAVAILABLE",
-        "adapter_error": "FAIL_ERROR",
+    approval_id = CENTRAL["approval"]
+
+    compensation_id = str(uuid.uuid4())
+    with harness.http_client() as api:
+        response = api.post(
+            COMPENSATE_URL,
+            json={
+                "execution_id": compensation_id,
+                "compensates_execution_id": CENTRAL["execution"],
+            },
+            headers=_auth_headers(),
+        )
+        assert response.status_code == 201, response.text
+    rows = _execution_rows(stack["db_url"], approval_id=approval_id)
+    assert {row[1] for row in rows} == {"execute", "compensate"}
+
+    mark = log.mark()
+    page.goto(f"{harness.BASE}/executions/{CENTRAL['execution']}")
+    expect(
+        page.get_by_role("heading", name=f"Execution {CENTRAL['execution']}", exact=True)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    relation = _panel(page, "Compensation Relation")
+    expect(relation.get_by_role("link", name=compensation_id)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+
+    relation.get_by_role("link", name=compensation_id).click()
+    expect(
+        page.get_by_role("heading", name=f"Execution {compensation_id}", exact=True)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    back = _panel(page, "Compensation Relation")
+    expect(back.get_by_role("link", name=CENTRAL["execution"])).to_be_visible()
+    expect(page.get_by_text("compensation succeeded", exact=True).first).to_be_visible()
+    timeline = _panel(page, "Timeline").locator("li")
+    assert timeline.count() == 2
+    for button in ("Execute", "Retry", "Compensate", "Approve", "Reject"):
+        assert page.get_by_role("button", name=button, exact=True).count() == 0
+    assert log.posts(mark) == []
+
+
+def test_j_second_execution_of_the_same_approval_is_refused(journey):
+    """The settled approval offers no second Execute, and both replays — the same
+    execution id and a fresh one — are 409 with the stored facts untouched."""
+    page: Page = journey["page"]
+    stack = journey["stack"]
+    approval_id = CENTRAL["approval"]
+
+    _open_case(page, ALERT_TITLE)
+    expect(page.get_by_text("Succeeded", exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    assert page.get_by_role("button", name="Execute", exact=True).count() == 0
+    assert page.get_by_role("button", name="Confirm Execute").count() == 0
+
+    rows_before = _execution_rows(stack["db_url"], approval_id=approval_id)
+    body = {
+        "execution_id": CENTRAL["execution"],
+        "approval_id": approval_id,
+        "operator": CLIENT_TYPED_OPERATOR,
     }
+    with harness.http_client() as api:
+        replay = api.post(EXECUTIONS_URL, json=body, headers=_auth_headers())
+        assert replay.status_code == 409, replay.text
+        fresh = api.post(
+            EXECUTIONS_URL,
+            json={**body, "execution_id": str(uuid.uuid4())},
+            headers=_auth_headers(),
+        )
+        assert fresh.status_code == 409, fresh.text
+    assert _execution_rows(stack["db_url"], approval_id=approval_id) == rows_before
+
+
+# ---------------------------------------------------------------------------
+# k / l / m: refusals and failures
+# ---------------------------------------------------------------------------
+
+
+def test_k_wrong_token_writes_nothing(journey):
+    """A wrong token in the real modal is a 401 with a static message, and the
+    database keeps zero rows for that approval."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+    stack = journey["stack"]
+    approval_id = stack["ids"]["WRONG_TOKEN"]["approval"]
+    total_before = _execution_count(stack["db_url"])
+
+    _open_case(page, "E2E Execution WRONG_TOKEN")
+    mark = _execute_via_modal(page, log, token="wrong-token-never-valid")
+    expect(page.get_by_text("Execution credentials invalid")).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    expect(page.get_by_role("button", name="Confirm Execute")).to_be_visible()
+    assert len(log.posts_to(EXECUTIONS_URL, mark)) == 1
+    assert 401 in log.statuses(EXECUTIONS_URL)
+
+    assert _execution_rows(stack["db_url"], approval_id=approval_id) == []
+    assert _execution_count(stack["db_url"]) == total_before
+
+    page.locator("div.panel", has=page.locator("h3:text-is('Execute Response')")).last.get_by_role(
+        "button", name="Cancel"
+    ).click()
+
+    with harness.http_client() as api:
+        payload = {"execution_id": str(uuid.uuid4()), "approval_id": approval_id}
+        missing = api.post(EXECUTIONS_URL, json=payload)
+        assert missing.status_code == 401
+        assert missing.json()["detail"] == "Invalid execution credentials"
+        wrong = api.post(
+            EXECUTIONS_URL,
+            json=payload,
+            headers={"Authorization": "Bearer another-wrong-token"},
+        )
+        assert wrong.status_code == 401
+        assert "another-wrong-token" not in wrong.text
+    assert _execution_count(stack["db_url"]) == total_before
+
+
+def test_l_guard_rejected_action_renders_as_status(journey):
+    """Executing the mock provider's advisory action is refused by the Guard: the
+    browser renders 201 + Guard Rejected as a status, never as an error."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+    stack = journey["stack"]
+    approval_id = stack["ids"]["GUARD_API"]["approval"]
+
+    _open_case(page, "E2E Execution GUARD_API")
+    mark = _execute_via_modal(page, log, token=harness.EXECUTION_TOKEN)
+
+    expect(page.get_by_text("Guard Rejected", exact=True)).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
+    )
+    expect(page.get_by_text("advisory, not machine-executable")).to_be_visible()
+    # 201 closed the modal, so this is a fact rendered as status.
+    assert page.get_by_role("heading", name="Execute Response").count() == 0
+    assert len(log.posts_to(EXECUTIONS_URL, mark)) == 1
+    assert 201 in log.statuses(EXECUTIONS_URL)
+
+    rows = _execution_rows(stack["db_url"], approval_id=approval_id)
+    assert [row[0] for row in rows] == ["requested", "guard_rejected"]
+    assert rows[1][4] == "hunt_related_activity"
+    assert rows[1][6]["code"] == "action_not_executable"
+
+
+def test_m_adapter_failures_render_failed_with_their_classification(journey):
+    """Three adapter failures, each injected through the test-only launcher on the
+    documented executor seam, render Failed with their classification and a
+    requested -> dispatched -> failed chain."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
+    stack = journey["stack"]
 
     try:
-        for classification, case in case_by_classification.items():
-            _swap_backend(stack, fail_with=classification)
-            approval_id = stack["ids"][case]["approval"]
-
-            _goto_incident(page, stack["ids"][case]["incident"])
-            mark = _execute_via_modal(page, requests, token=EXECUTION_TOKEN)
+        for classification, case in FAILURE_CASES:
+            harness.swap_backend(stack, fail_with=classification)
+            _open_case(page, f"E2E Execution {case}")
+            mark = _execute_via_modal(page, log, token=harness.EXECUTION_TOKEN)
 
             expect(page.get_by_text("Failed", exact=True)).to_be_visible(
-                timeout=NAV_TIMEOUT
+                timeout=harness.NAV_TIMEOUT
             )
             expect(
                 page.locator(".kv", has_text="Classification").locator(".v")
             ).to_have_text(classification)
-            assert len(_exec_posts(requests[mark:])) == 1
+            assert len(log.posts_to(EXECUTIONS_URL, mark)) == 1
 
-            rows = _execution_rows(stack["db_url"], approval_id=approval_id)
-            assert [r[0] for r in rows] == ["requested", "dispatched", "failed"]
+            rows = _execution_rows(stack["db_url"], approval_id=stack["ids"][case]["approval"])
+            assert [row[0] for row in rows] == ["requested", "dispatched", "failed"]
             assert rows[2][6]["classification"] == classification
     finally:
-        # Restore the PURE backend so the session ends exactly as it began.
-        _swap_backend(stack, fail_with=None)
+        harness.swap_backend(stack, fail_with=None)
 
 
 # ---------------------------------------------------------------------------
-# ⑩ Migration: 0008 -> 0009 -> base -> head on a scratch DB (independent)
+# n: the token stays where it belongs
 # ---------------------------------------------------------------------------
 
 
-def _migration_facts(db_url: str) -> dict:
-    from sqlalchemy import create_engine, inspect
+def test_n_token_never_leaks(journey):
+    """The token reaches the modal, the one request header per confirmation and
+    nowhere else: no storage, no URL, no DOM, no response body."""
+    page: Page = journey["page"]
+    log: harness.NetworkLog = journey["log"]
 
-    engine = create_engine(db_url, connect_args={"check_same_thread": False})
-    inspector = inspect(engine)
-    tables = set(inspector.get_table_names())
-    with engine.connect() as conn:
-        version_rows = conn.exec_driver_sql(
-            "SELECT version_num FROM alembic_version"
-        ).fetchall()
-    versions = [row[0] for row in version_rows]
-    indexes = (
-        {ix["name"] for ix in inspector.get_indexes("execution_log")}
-        if "execution_log" in tables
-        else set()
+    _open_case(page, ALERT_TITLE)
+    expect(page.get_by_text("Succeeded", exact=True).first).to_be_visible(
+        timeout=harness.NAV_TIMEOUT
     )
-    dispatch_indexes = (
-        {ix["name"] for ix in inspector.get_indexes("dispatch_attempt")}
-        if "dispatch_attempt" in tables
-        else set()
-    )
-    engine.dispose()
-    return {
-        "tables": tables,
-        "versions": versions,
-        "indexes": indexes,
-        "dispatch_attempt_indexes": dispatch_indexes,
-    }
+    assert page.evaluate("Object.keys(window.localStorage).length") == 0
+    assert page.evaluate("Object.keys(window.sessionStorage).length") == 0
+    assert harness.EXECUTION_TOKEN not in page.url
+    assert harness.EXECUTION_TOKEN not in page.content()
 
+    carried = 0
+    for request in log.requests:
+        assert harness.EXECUTION_TOKEN not in request["url"]
+        authorization = request["headers"].get("authorization", "")
+        if not authorization:
+            continue
+        # Credentials travel only on an explicit execution confirmation.
+        assert request["method"] == "POST", request
+        assert request["url"].rstrip("/").endswith(EXECUTIONS_URL), request
+        if authorization == f"Bearer {harness.EXECUTION_TOKEN}":
+            carried += 1
+        else:
+            # Journey k's rejected attempt: the payload never lands anywhere.
+            assert authorization == "Bearer wrong-token-never-valid", authorization
+    assert carried == EXPECTED_TOKEN_POSTS
 
-def _alembic_current_head() -> str:
-    """The CURRENT Alembic head revision, read DYNAMICALLY from the migration script
-    directory. M4-GR: this E2E must NEVER hardcode a version literal (0009 / 0011 /
-    0012 / ...) — it rots the moment a new migration lands, which is exactly how the
-    pre-existing ``assert facts["versions"] == ["0009"]`` broke once head advanced to
-    0012 (the Final Review's disclosed e2e failure). ``script_location`` is pinned to
-    the absolute backend migrations dir so the read is independent of the caller's cwd."""
-    from alembic.config import Config
-    from alembic.script import ScriptDirectory
-
-    cfg = Config(str(BACKEND_DIR / "alembic.ini"))
-    cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
-    # Alembic emits a benign DeprecationWarning about a missing ``path_separator`` when a
-    # legacy alembic.ini is read in-process; it does not affect the head revision, so
-    # silence it to keep this explicit e2e run's warning summary clean.
-    import warnings
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        return ScriptDirectory.from_config(cfg).get_current_head()
-
-
-PARTIAL_UNIQUE_INDEXES = {
-    "ux_execution_log_execution_id_requested",
-    "ux_execution_log_approval_id_execute",
-    "ux_execution_log_compensates_requested",
-}
-
-#: The head schema is the DURABLE dispatch schema (M4-F 0011 + M4-G 0012): the
-#: append-only ``dispatch_attempt`` table carries THREE unique reservations — one per
-#: attempt_id, one per execution_id, and (M4-G §1) one per approval_id. Asserting these
-#: at ``upgrade head`` verifies the FINAL schema/index invariant instead of a version
-#: string that silently rots on the next migration.
-DURABLE_DISPATCH_UNIQUE_INDEXES = {
-    "ux_dispatch_attempt_attempt_id",
-    "ux_dispatch_attempt_execution_id",
-    "ux_dispatch_attempt_approval_id",
-}
-
-
-def test_k_migration_up_down_base_up(tmp_path):
-    """0009 applies cleanly, downgrades to 0008 and base without residue, and
-    ``upgrade head`` rebuilds the FINAL schema — verified against the CURRENT Alembic
-    head (read dynamically, never a hardcoded version literal) plus the durable
-    execution_log + dispatch_attempt index invariants (M4-GR)."""
-    db_path = tmp_path / "migration_e2e.db"
-    db_url = f"sqlite:///{db_path.as_posix()}"
-    env = _clean_env(
-        {"AI_PROVIDER": "mock", "DATABASE_URL": db_url, "EXECUTION_TOKEN": EXECUTION_TOKEN}
-    )
-
-    def alembic(*args: str) -> None:
-        proc = subprocess.run(
-            [PYTHON, "-m", "alembic", *args],
-            cwd=str(BACKEND_DIR),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-        assert proc.returncode == 0, f"alembic {' '.join(args)} failed:\n{proc.stderr}"
-
-    alembic("upgrade", "0009")
-    facts = _migration_facts(db_url)
-    assert facts["versions"] == ["0009"]
-    assert "execution_log" in facts["tables"]
-    assert PARTIAL_UNIQUE_INDEXES <= facts["indexes"]
-
-    alembic("downgrade", "0008")
-    facts = _migration_facts(db_url)
-    assert facts["versions"] == ["0008"]
-    assert "execution_log" not in facts["tables"]
-
-    alembic("downgrade", "base")
-    facts = _migration_facts(db_url)
-    assert facts["versions"] == []
-    assert "execution_log" not in facts["tables"]
-    assert "ai_response_approvals" not in facts["tables"]
-
-    alembic("upgrade", "head")
-    facts = _migration_facts(db_url)
-    # M4-GR: compare against the DYNAMICALLY-read current head, never a hardcoded
-    # ["0009"] / ["0012"] literal that rots on the next migration.
-    assert facts["versions"] == [_alembic_current_head()]
-    # Verify the FINAL schema/index INVARIANTS, not a version number: the durable
-    # execution_log partial-unique indexes AND the M4-F/M4-G dispatch_attempt unique
-    # reservations (attempt_id / execution_id / approval_id) all exist at head.
-    assert "execution_log" in facts["tables"]
-    assert PARTIAL_UNIQUE_INDEXES <= facts["indexes"]
-    assert "dispatch_attempt" in facts["tables"]
-    assert DURABLE_DISPATCH_UNIQUE_INDEXES <= facts["dispatch_attempt_indexes"]
+    for record in log.responses:
+        if "/api/" not in record["url"]:
+            continue
+        try:
+            text = record["response"].text()
+        except Exception:
+            continue
+        assert harness.EXECUTION_TOKEN not in text
