@@ -169,14 +169,16 @@ RESOURCE BLOCKED / NOT CERTIFIED.
 ## 7. Git state at the stop point
 
 ```
-branch: main          HEAD: 8e3d016 (this report adds the final commit)
-baseline: d3025ac     ahead of origin/main: 9 commits (8 code/docs + report)
+branch: main          HEAD: 6bf2049 (11 local forward commits; report + hygiene included)
+baseline: d3025ac     ahead of origin/main: 11 commits • origin/main untouched
 working tree: only the known CRLF artifacts + the report/bundle additions
 no push • no tag • no release • no remote branch-protection change
 ```
 
-RC2 commits on `d3025ac`: `df27c4c` → `d40381b` → `f489c0c` → `456c52b` →
-`c083e82` → `89d61e0` → `e12f557` → `8e3d016` → (this report).
+RC2 commits on `d3025ac` (11): `df27c4c` → `d40381b` → `f489c0c` → `456c52b` →
+`c083e82` → `89d61e0` → `e12f557` → `8e3d016` → `52ec326` (matrix/audits/SBOM)
+→ `2068902` (this report) → `6bf2049` (LF hygiene). No push; `origin/main`
+still `d3025ac`.
 
 ## 8. Review bundle
 
