@@ -1,34 +1,36 @@
-# SentinelFlow CI — RC2 §14.
+# SentinelFlow CI.
 #
-# What this pipeline DOES prove: the exact-lock install, the default (zero-
-# outbound) backend suite, the frontend typecheck/test/production build, the
-# compose file's structural validity, a REAL fresh-PostgreSQL migration to the
-# single head, both Docker images building, a dependency advisory report and a
-# high-signal secret scan.
+# Nine jobs. What they cover:
 #
-# Since the RC2 §14 finalization the pipeline ALSO starts the real stack: the
-# `compose-demo-e2e` job brings the documented `docker compose` Demo up on
-# PostgreSQL, waits for the enforced boot order (postgres healthy -> migrate
-# exited 0 -> backend healthy -> frontend healthy), checks the nginx same-origin
-# reverse proxy, and runs scripts/smoke.py INSIDE the backend container — a job
-# that fails on anything other than the full "demo smoke test: PASS" banner.
+#   backend             the default suite from the exact dev lock, under
+#                       coverage, against per-module floors
+#   frontend            npm ci, typecheck, unit tests, production build
+#   quality             whitespace, shell syntax, rendered compose config
+#   migration           a fresh PostgreSQL 16 migrated to the single head, plus
+#                       an upgrade from revision 0009 holding rows to head
+#   docker              both images build
+#   postgres-external   the durable concurrency and recovery suites on a real
+#                       PostgreSQL service, gated so a skip cannot pass
+#   security            pip-audit, the npm audit policy, and a secret scan
+#   compose-demo-e2e    the documented compose demo, booted in order on
+#                       PostgreSQL, with scripts/smoke.py run inside the
+#                       backend container; it fails unless the full
+#                       "demo smoke test: PASS" banner is produced
+#   browser-e2e         the Playwright suite against PostgreSQL, gated on the
+#                       pytest counts (collected > 0, passed == collected,
+#                       skipped == 0)
 #
-# What it deliberately does NOT do (frozen discipline, RC2 §14):
-#   - never touches a production system, never needs real credentials
-#     (the only secret in this file is a throwaway local service password);
-#   - never runs the EXTERNAL-lab suites (TheHive / Shuffle / Wazuh real
-#     targets) — those stay opt-in on a lab host (`pytest -m external`);
-#   - the PostgreSQL durable suite runs in its own job (postgres-external);
-#   - never collects backend/tests/e2e/ in the default suite: those suites need
-#     PostgreSQL, a Chromium download and the two dev ports, so they are keyed
-#     off SENTINELFLOW_BROWSER_E2E and run only in the `browser-e2e` job, which
-#     gates the pytest counts (collected > 0, passed == collected, skipped == 0).
+# What it deliberately does not do:
+#   - it never touches a production system and needs no real credentials; the
+#     only secret in this file is a throwaway local service password
+#   - it never runs the external-lab suites (real TheHive / Shuffle / Wazuh
+#     targets); those stay opt-in on a lab host with `pytest -m external`
+#   - it never collects backend/tests/e2e in the default suite: those tests need
+#     PostgreSQL, a Chromium download and two dev ports, so they are keyed off
+#     SENTINELFLOW_BROWSER_E2E and run only in the browser-e2e job
 #
-# CI STATUS: CONFIGURED / LOCALLY VALIDATED (see docs/audit/CI-VALIDATION.md).
-# Until this file actually runs on GitHub, no "GITHUB CI PASS" claim is made.
-#
-# Actions are pinned to major-version tags (the stable, reviewable choice;
-# SHA-pinning is a future hardening step once this repo has a release cadence).
+# Actions are pinned to major-version tags. Pinning them to SHAs is a hardening
+# step for when this repository has a release cadence that needs it.
 
 name: CI
 
@@ -532,6 +534,12 @@ jobs:
       # The harness archives the uvicorn/vite output here so a failure is
       # diagnosable from the job log.
       SENTINELFLOW_E2E_LOG_DIR: /tmp/browser-e2e-logs
+      # The opt-in Ollama suite (marker `ollama`, tests/e2e/test_ai_risk_summary_ollama.py)
+      # is outside the browser selection: when Ollama is unreachable it skips at
+      # import time, which adds a "1 skipped" entry to the run tally that
+      # --collect-only never reports — the collect and run steps must select the
+      # same tests, and the browser selection must contain no skip path.
+      IGNORE_OLLAMA: "--ignore=tests/e2e/test_ai_risk_summary_ollama.py"
     # No job-level working-directory: every step below cd's where it needs to be,
     # so nothing depends on how a step-level path would compose with a default.
     steps:
@@ -564,13 +572,13 @@ jobs:
         run: |
           set -o pipefail
           cd backend
-          python -m pytest tests/e2e -m browser -q --collect-only | tee /tmp/e2e-collect.txt
+          python -m pytest tests/e2e -m browser -q --collect-only "$IGNORE_OLLAMA" | tee /tmp/e2e-collect.txt
       - name: Browser E2E against PostgreSQL (bounded)
         timeout-minutes: 30
         run: |
           set -o pipefail
           cd backend
-          python -m pytest tests/e2e -m browser -q | tee /tmp/e2e-run.txt
+          python -m pytest tests/e2e -m browser -q "$IGNORE_OLLAMA" | tee /tmp/e2e-run.txt
       - name: Anti-false-green gate (collected>0, passed==collected, skipped=0)
         run: python scripts/ci/check_browser_e2e_result.py /tmp/e2e-collect.txt /tmp/e2e-run.txt
       - name: Dump uvicorn/vite logs (failure only)

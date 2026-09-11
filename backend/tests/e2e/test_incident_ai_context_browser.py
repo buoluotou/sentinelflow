@@ -7,7 +7,9 @@ unset or unreachable, so there is no SQLite fallback.
 
     /incidents/{id} -> GET /incidents/{id}/ai-context -> AI Investigation
     (Explanation history + Risk Summary history + Recommendation history
-    with Approval audit — Observe/Review/Audit only, never Decide/Execute)
+    with Approval audit; the panel decides nothing — decisions belong to the
+    Approval Queue — and its only action is the guarded Execute console of an
+    approved recommendation)
 
 The four cases are seeded the same way the API-level chain was proven: every AI
 row is produced through the REAL production endpoints (mock provider):
@@ -29,8 +31,9 @@ The blocks below run in file order against one shared stack:
   E. partial pipeline: explanation only — the page stays healthy
   F. 404: unknown incident -> "Incident not found", no fake AI view
   G. risk snapshot freeze: 80 stays 80 after more AI history lands
-  H. safety audit: the AI Investigation panel has ZERO buttons and no
-     Execute/Block Now/Isolate Now/... affordance anywhere
+  H. the AI panel decides nothing itself: no Approve / Reject affordance, and
+     its only action is the guarded Execute console of the APPROVED
+     recommendation (absent for the rejected and the pending one)
   I. network whitelist: a page load issues ONLY GET .../ai-context (the
      dev-mode StrictMode remount may repeat the read-only GET once) and
      no POST of any kind (no generate/approve/reject/execute)
@@ -233,6 +236,17 @@ def _ai_panel(page: Page):
     return _panel(page, "AI Investigation")
 
 
+def _recommendation_entries(page: Page):
+    """The recommendation blocks of the AI panel.
+
+    Each block is the div that directly owns the Approval key/value grid;
+    ResponseExecutionPanel and the closing note are rendered inside it.
+    """
+    return page.locator("div").filter(
+        has=page.locator(":scope > .kv-grid .kv > .k:text-is('Approval')")
+    )
+
+
 def test_a_full_context_renders_the_complete_chain(journey):
     """14.6-A: incident info + risk snapshot + every AI section visible."""
     page: Page = journey["page"]
@@ -297,27 +311,64 @@ def test_c_multiple_histories_all_visible(journey):
         expect(panel.get_by_text(label)).to_be_visible()
 
 
-def test_h_ai_panel_has_zero_buttons_and_no_execution_affordance(journey):
-    """14.6-H: Observe/Review/Audit only — the AI Investigation panel renders
-    ZERO buttons (no Approve/Reject, no Execute/Block Now/Isolate Now/...)."""
+def test_h_ai_panel_decides_nothing_and_offers_execute_only_when_approved(journey):
+    """The AI Investigation panel decides nothing on its own: it renders no
+    Approve / Reject affordance, and the only action it offers is the guarded
+    Execute console of an APPROVED recommendation (the panel mounts
+    ResponseExecutionPanel per entry, which returns nothing unless that entry's
+    approval is approved). Loading it stays GET-only."""
     page: Page = journey["page"]
-    panel = _ai_panel(page)  # still on the FULL incident
+    requests = journey["requests"]
+    incident_id = journey["stack"]["ids"]["FULL"]["incident"]
+    mark = len(requests)
 
-    assert panel.get_by_role("button").count() == 0
+    _goto_incident(page, incident_id)
+    panel = _ai_panel(page)
+    expect(
+        panel.get_by_text(re.compile(r"Response Recommendation History \(3\)"))
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
+    # The approved entry's Execute console appears only after its status GET.
+    expect(
+        panel.get_by_role("button", name="Execute", exact=True)
+    ).to_be_visible(timeout=harness.NAV_TIMEOUT)
 
+    entries = _recommendation_entries(page)
+    assert entries.count() == 3
+    approved = entries.filter(has=page.locator(".badge:text-is('Approved')"))
+    rejected = entries.filter(has=page.locator(".badge:text-is('Rejected')"))
+    pending = entries.filter(has=page.locator(".badge:text-is('Pending Review')"))
+    assert (approved.count(), rejected.count(), pending.count()) == (1, 1, 1)
+
+    # Execute is offered for the approved entry and for none of the others.
+    expect(approved.get_by_role("button", name="Execute", exact=True)).to_be_visible()
+    expect(rejected.get_by_role("button", name="Execute", exact=True)).to_have_count(0)
+    expect(pending.get_by_role("button", name="Execute", exact=True)).to_have_count(0)
+    expect(panel.get_by_role("button", name="Execute", exact=True)).to_have_count(1)
+
+    # Decisions belong to the Approval Queue.
+    expect(panel.get_by_role("button", name="Approve", exact=True)).to_have_count(0)
+    expect(panel.get_by_role("button", name="Reject", exact=True)).to_have_count(0)
+
+    # No further execution affordance is invented anywhere in the panel.
     text = panel.inner_text()
     for forbidden in (
-        "Execute",
         "Execute Now",
         "Block Now",
         "Isolate Now",
         "Disable Now",
         "Run Response",
         "Retry Execution",
-        "Approve",
-        "Reject",
+        "Compensate",
     ):
         assert forbidden not in text, f"forbidden affordance rendered: {forbidden}"
+
+    # The page load itself mutated nothing.
+    fresh = requests[mark:]
+    assert [r for r in fresh if r["method"] != "GET"] == [], fresh
+    assert any(
+        r["method"] == "GET" and r["url"].endswith(f"/incidents/{incident_id}/ai-context")
+        for r in fresh
+    ), fresh
 
 
 def test_i_network_whitelist_get_only_exactly_once(journey):
@@ -404,7 +455,8 @@ def test_g_risk_snapshot_stays_80_after_more_ai_history(journey):
     expect(
         panel.get_by_text(re.compile(r"AI Explanation History \(1\)"))
     ).to_be_visible(timeout=harness.NAV_TIMEOUT)
-    expect(panel.get_by_text("Approved")).to_be_visible()
+    # The approval chip, not the closing note that also mentions approval.
+    expect(panel.locator(".badge:text-is('Approved')")).to_be_visible()
     snapshot_line = panel.locator("p", has_text=re.compile(r"Risk Score \(snapshot\):"))
     expect(snapshot_line).to_contain_text("80")
     # No AI-invented score anywhere in the panel: the snapshot sentence is
