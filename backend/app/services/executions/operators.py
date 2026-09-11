@@ -117,12 +117,21 @@ class OperatorRegistry:
         Returns ``None`` when the token matches no registered operator
         and no legacy fallback applies. The caller (auth dependency)
         raises 401 in that case — the registry itself stays silent."""
+        # Constant-time compare. Encoding BOTH sides to UTF-8 bytes first means
+        # a malformed NON-ASCII credential can never raise inside
+        # compare_digest (which rejects non-ASCII str with a TypeError) — so
+        # every bad credential collapses to the SAME uniform 401, never a 500.
+        # Mirrors the webhook credential gate (api/v1/webhooks.py), which
+        # carries a regression test for exactly this input class.
+        candidate = token.encode("utf-8")
         # 1. Registered operators (OPERATORS_JSON).
         for known_token, operator in self._by_token.items():
-            if secrets.compare_digest(token, known_token):
+            if secrets.compare_digest(candidate, known_token.encode("utf-8")):
                 return operator
         # 2. Legacy EXECUTION_TOKEN fallback.
-        if legacy_token and secrets.compare_digest(token, legacy_token):
+        if legacy_token and secrets.compare_digest(
+            candidate, legacy_token.encode("utf-8")
+        ):
             return Operator(name=LEGACY_OPERATOR_NAME, role=OperatorRole.EXECUTOR)
         return None
 
