@@ -7,8 +7,9 @@ lagged a whole release behind the tag). Bump this ONE constant as part of the
 release step, together with the matching doc headers and the CHANGELOG entry.
 """
 
-#: Current release identity. The shipped line's HEAD is the annotated tag
-#: ``v1.4.0-rc1``; bump to the next release BEFORE tagging it.
-__version__ = "1.4.0-rc1"
+#: Current release identity. Kept in sync with the released git tag: the OpenAPI
+#: version, this constant and the release tag must agree. Bump this one line as
+#: part of the release step.
+__version__ = "1.4.0-rc2"
 
 __all__ = ["__version__"]
