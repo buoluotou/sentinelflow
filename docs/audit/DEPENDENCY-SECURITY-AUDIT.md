@@ -22,18 +22,32 @@ Raw evidence: `rc2-evidence/09-dependency-audit.txt`.
 - **Reason:** zero advisories found at every severity; no compatibility-driven
   bumps were needed.
 
-## Policy going forward
+## Policy (RC2-R §4 — COMPUTED GATES, not reports)
 
-1. CI (`.github/workflows/ci.yml`, `security` job) reruns `pip-audit` on the
-   base lock and `npm audit` on every push/PR. `npm audit` fails the job on
-   **critical** only; `pip-audit` is report-first today — triage below decides
-   when it should be flipped to fail-closed.
-2. Any upgrade must be a deliberate, reviewed change with a full re-test
+1. **pip-audit is a REAL gate** (`.github/workflows/ci.yml`, `security` job):
+   `pip-audit -r backend/requirements/base.lock` runs with NO `|| true` — any
+   unallowlisted advisory FAILS the job. The lock is currently advisory-free.
+   If an exception ever becomes necessary it must be an **explicit CVE
+   allowlist entry** carrying (a) the CVE id, (b) the reason, and (c) an
+   expiry/review date, recorded in this document; a blanket exit-code swallow
+   is forbidden.
+2. **npm audit policy: HIGH + CRITICAL block, MEDIUM/LOW report.** The CI job
+   reads `npm audit --json` and exits 1 when `high > 0 || critical > 0`; the
+   severity counts are printed and tracked here. Current state stays
+   **0 blocking advisories** at every severity.
+3. **Secret gate (RC2-R §4.3)**: `scripts/ci/secret-scan.sh` FAILS on any
+   unallowlisted high-confidence hit (private-key header, `ghp_`/
+   `github_pat_`, AWS `AKIA`, Slack `xox*`, OpenAI-style `sk-`, long Bearer
+   credentials) and on a tracked `.env`. The only allowlist entry is the
+   exact AWS documentation example value `AKIAIOSFODNN7EXAMPLE` (a redaction
+   sentinel) — there is NO whole-directory exclusion, so a real key committed
+   under `backend/tests` would still be caught. Validated RED/GREEN locally
+   (synthetic `ghp_` fixture + staged `.env` → exit 1; cleanup → exit 0).
+4. Any upgrade must be a deliberate, reviewed change with a full re-test
    (backend suite + frontend suite + the PostgreSQL external suite), never a
    silent range bump.
-3. The `[Unreleased]` dependency wording rule stands: `base.lock` is **exact
-   version pins**, not pip `--hash` verification; lockfile artifact SHA-256 is
-   recorded separately (see `docs/operations/BACKUP-RESTORE.md` §1 for the
-   same distinction in backup context, and `CHANGELOG.md`).
-4. External labs (TheHive/Shuffle/Wazuh) are NOT dependency inputs of this
+5. The dependency wording rule stands: `base.lock` is **exact version pins**,
+   not pip `--hash` verification; lockfile artifact SHA-256 is recorded
+   separately (`rc2-evidence/lockfile-sha256.txt`).
+6. External labs (TheHive/Shuffle/Wazuh) are NOT dependency inputs of this
    repository — nothing here pulls them in.

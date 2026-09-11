@@ -84,10 +84,12 @@ jobs:
           git diff --cached --check
       - name: Shell script syntax (bash -n)
         run: |
-          for f in scripts/*.sh; do
+          for f in scripts/*.sh scripts/ci/*.sh; do
             bash -n "$f"
             echo "bash -n $f OK"
           done
+      - name: CI helper scripts (python syntax)
+        run: python -m py_compile scripts/ci/check_pg_external_result.py
       - name: docker compose config (throwaway local .env, no real secrets)
         run: |
           cp .env.example .env
@@ -161,7 +163,11 @@ jobs:
 
   # ----------------------------------------------------------- postgres-external
   # The REAL PostgreSQL durable concurrency/recovery suite on its own service
-  # container — same tests the RM validated 9/9 locally.
+  # container (RC2-R §1). Collected = 22: dispatch 9 + compensation 9 +
+  # audit-ordering 2 + risk/incident 2. The dedicated
+  # SENTINELFLOW_PG_TEST_URL is what the tests ACTUALLY read — DATABASE_URL
+  # alone silently skips everything, so the result is gated hard: an
+  # unexpected skip or a collection shortfall FAILS the job (no false green).
   postgres-external:
     name: PostgreSQL external durable suite
     runs-on: ubuntu-24.04
@@ -180,6 +186,9 @@ jobs:
           --health-cmd "pg_isready -U sentinelflow -d sentinelflow"
           --health-interval 5s --health-timeout 5s --health-retries 20
     env:
+      # The dedicated test database the PG suites read (required).
+      SENTINELFLOW_PG_TEST_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
+      # Kept for migration/runtime tooling that speaks DATABASE_URL.
       DATABASE_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
     steps:
       - uses: actions/checkout@v4
@@ -187,8 +196,26 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install --no-cache-dir -r requirements/dev.lock
-      - name: Durable dispatch/compensation + audit-ordering concurrency (real PG)
-        run: python -m pytest -m external tests/test_dispatch_durable_postgres.py tests/test_compensation_durable_postgres.py tests/test_audit_ordering_concurrency_postgres.py -v
+      - name: Collect-only (must be exactly 22 tests)
+        run: |
+          set -o pipefail
+          python -m pytest -m external -q --collect-only \
+            tests/test_dispatch_durable_postgres.py \
+            tests/test_compensation_durable_postgres.py \
+            tests/test_audit_ordering_concurrency_postgres.py \
+            tests/test_risk_incident_atomicity_postgres.py \
+            | tee /tmp/pg-collect.txt
+      - name: Real PostgreSQL external suite (22 passed / 0 skipped)
+        run: |
+          set -o pipefail
+          python -m pytest -m external -q \
+            tests/test_dispatch_durable_postgres.py \
+            tests/test_compensation_durable_postgres.py \
+            tests/test_audit_ordering_concurrency_postgres.py \
+            tests/test_risk_incident_atomicity_postgres.py \
+            | tee /tmp/pg-run.txt
+      - name: Anti-false-green gate (collected=22, passed=22, skipped=0)
+        run: python ../scripts/ci/check_pg_external_result.py /tmp/pg-collect.txt /tmp/pg-run.txt
 
   # ------------------------------------------------------------- security
   security:
@@ -199,14 +226,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: pip-audit against the exact base lock
+      - name: pip-audit against the exact base lock (real gate)
         run: |
           pip install --no-cache-dir pip-audit
-          pip-audit -r backend/requirements/base.lock --progress-spinner off || true
-        # Report-first: the advisory output is the deliverable. A known-vuln
-        # triage lives in docs/audit/DEPENDENCY-SECURITY-AUDIT.md; flipping
-        # this to fail-on-critical is a deliberate follow-up decision.
-      - name: npm audit — fail ONLY on critical
+          pip-audit -r backend/requirements/base.lock --progress-spinner off
+        # RC2-R §4.1: a real gate — the lock is currently advisory-free, so
+        # ANY unallowlisted advisory FAILS the job. If an exception ever
+        # becomes necessary it must be an explicit CVE allowlist with a
+        # reason + expiry in docs/audit/DEPENDENCY-SECURITY-AUDIT.md; never
+        # a blanket `|| true`.
+      - name: npm audit — HIGH + CRITICAL fail, MEDIUM/LOW report
         working-directory: frontend
         run: |
           npm audit --json > /tmp/npm-audit.json || true
@@ -214,14 +243,12 @@ jobs:
             const d = require("/tmp/npm-audit.json");
             const v = (d.metadata && d.metadata.vulnerabilities) || {};
             console.log("npm audit severities:", JSON.stringify(v));
-            if ((v.critical || 0) > 0) { console.log("CRITICAL vulnerabilities present"); process.exit(1); }
+            if ((v.high || 0) > 0 || (v.critical || 0) > 0) {
+              console.log("HIGH/CRITICAL advisories present — release policy: FAIL");
+              process.exit(1);
+            }
           '
-      - name: High-signal secret scan (tracked files, fixtures excluded)
-        run: |
-          set +e
-          git grep -nEI '(AKIA[0-9A-Z]{16}|-----BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|github_pat_|xox[baprs]-|sk-[A-Za-z0-9]{20,})' -- . ':(exclude)backend/tests' ':(exclude)frontend/node_modules'
-          RC=$?
-          if [ "$RC" -eq 0 ]; then echo "SECRET_PATTERN_HITS_FOUND=true"; else echo "SECRET_SCAN_CLEAN"; fi
-          # Inventory check: .env must never be tracked.
-          if git ls-files --error-unmatch .env >/dev/null 2>&1; then echo "TRACKED_ENV_FOUND"; exit 1; fi
-          echo "TRACKED_ENV=absent"
+        # RC2-R §4.2 policy: HIGH + CRITICAL block; MEDIUM/LOW are reported
+        # (the JSON above) and tracked in the audit doc.
+      - name: High-confidence secret gate (real FAIL, precise allowlist)
+        run: bash scripts/ci/secret-scan.sh
