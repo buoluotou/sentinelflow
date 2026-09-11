@@ -7,8 +7,9 @@ records the exact, executed procedure — not a plan.
 Evidence: `/tmp/rc2-evidence/12-backup-restore.txt` (full command log, count
 tables, content digests, failure case) and the artifact
 `sentinelflow-backup.dump` (streamed to the host at validation time;
-SHA-256 `23b26231aece3b3622dd8a70db4737683639575a58bf5bd1f3bbd903f76cbfeb`,
-44 KiB).
+SHA-256 `507f3759343b3c24ec63ccfb18c1638f40fa2b373c0f6716a3c8d95117288582`,
+48 KiB — regenerated 2026-09-11 after the host reboot; the streamed procedure
+was reproduced end-to-end and both snapshot diffs matched again).
 
 > **RC2 §18 interaction — read this first.** The production hardening makes
 > `postgres` run with a **read-only root filesystem + tmpfs `/tmp`**. The
@@ -77,20 +78,20 @@ Two independent rounds, both streamed **from the host artifact**:
 
 **Per-table comparison (counts + row-order-independent `md5(string_agg(x::text ORDER BY x::text))` content digests): 13/13 MATCH, 0 MISMATCH** —
 the full-source snapshot diff against the restored database is empty.
-Validation dataset (post-smoke, head 0014): `alerts=7`, `alert_events=7`,
-`alert_groups=1`, `event_risk=1`, `incidents=1`, `ai_analyses=7`,
-`ai_response_recommendations=7`, `ai_response_approvals=7`, `execution_log=18`,
-`execution_outcome=1` (documented synthetic fixture for outcome coverage —
-the demo reconcile path is intentionally 404/fail-closed),
-`dispatch_attempt=6`, `compensation_attempt=0`, `alembic_version=1` (`0014`).
+Validation dataset (post-smoke, head 0014): `alerts=8`, `alert_events=8`,
+`alert_groups=2`, `event_risk=2`, `incidents=2`, `ai_analyses=8`,
+`ai_response_recommendations=12`, `ai_response_approvals=12`,
+`execution_log=33`, `execution_outcome=1` (documented synthetic fixture for
+outcome coverage — the demo reconcile path is intentionally 404/fail-closed),
+`dispatch_attempt=11`, `compensation_attempt=0`, `alembic_version=1` (`0014`).
 
 **Relational probes on the restored database** (all non-zero where data is
-expected): `chains_with_approval=6`, `all_chains=6`, `succeeded_terminals=6`,
-`dispatch_attempts_joined=18`, `outcomes_joined=3`, `open_incidents=1`,
-`incidents_with_group=1`, `alembic_version=0014`.
+expected): `chains_with_approval=11`, `all_chains=11`, `succeeded_terminals=10`,
+`dispatch_attempts_joined=33`, `outcomes_joined=3`, `open_incidents=2`,
+`incidents_with_group=2`, `alembic_version=0014`.
 
 **Independence check**: after restore, source and restored databases answered
-`count(*) FROM alerts` independently (`7` / `7`) — the demo database was never
+`count(*) FROM alerts` independently (`8` / `8`) — the demo database was never
 the restore target.
 
 ## 4. Failure cases (verified behavior)

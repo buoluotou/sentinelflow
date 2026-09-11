@@ -78,6 +78,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Resource guidance (recommended minimums + optional production limits) is
   documented in docs/deployment.md.
 
+### Added
+- **RC2 engineering documentation set**: the external integration safety
+  matrix (per-capability, never one PASS), the TheHive supported-version
+  (5.x) feasibility study, the dependency security audit, the CI local
+  validation mapping, the production-edge (TLS/reverse-proxy) design, the
+  GitHub branch-protection plan, the backup/restore procedure (with the
+  read-only+tmpfs finding), and the CycloneDX SBOMs (`artifacts/sbom/`).
+
 ### Changed
 - **Compose project isolation** — removed the fixed `container_name:` values and
   the global volume names from `docker-compose.yml`; `docker compose -p <project>`
