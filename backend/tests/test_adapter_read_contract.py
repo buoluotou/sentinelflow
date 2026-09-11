@@ -1,4 +1,4 @@
-"""Phase 3.4.5-A1 — Adapter Read Contract + Registry.
+"""A1 — Adapter Read Contract + Registry.
 
 This step builds ONLY the read-side abstraction future concrete readers plug
 into: ``AdapterReadRequest`` / ``AdapterReadResult`` / ``ReadAdapter`` (ABC) /
@@ -11,16 +11,16 @@ in 3.4.5-B/C/D; the Manual Reconcile API + pipeline is 3.4.5-A2. The production
 default registry is EMPTY, so EVERY adapter (mock / shuffle / wazuh / thehive /
 unknown) resolves to ``UnsupportedAdapterRead`` — a rejection, never a fake.
 
-Coverage map (user-frozen minimum bar, 25 items):
- 1. ReadAdapter contract shape        14. unsupported creates no fact
- 2. request immutable                 15. no HTTP
- 3. result immutable                  16. no DB
- 4. required execution_id             17. no executor
- 5. required adapter                  18. no write adapter
- 6. required external_reference       19. no execute/compensate
- 7. registry registration             20. deterministic lookup
- 8. registry lookup                   21. duplicate registration behavior
- 9. unknown adapter                   22. input immutability
+Coverage map (user-minimum bar, 25 items):
+1. ReadAdapter contract shape        14. unsupported creates no fact
+2. request immutable                 15. no HTTP
+3. result immutable                  16. no DB
+4. required execution_id             17. no executor
+5. required adapter                  18. no write adapter
+6. required external_reference       19. no execute/compensate
+7. registry registration             20. deterministic lookup
+8. registry lookup                   21. duplicate registration behavior
+9. unknown adapter                   22. input immutability
 10. mock unsupported                  23. output immutability
 11. shuffle unsupported               24. external state remains raw
 12. wazuh unsupported                 25. no outcome_status in ReadResult
@@ -51,8 +51,8 @@ from app.services.manual_reconcile import (
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _READ_PKG = _BACKEND_ROOT / "app" / "services" / "manual_reconcile"
 
-#: The ONLY import roots the read layer may use (design §16): stdlib shape
-#: primitives + its own package. Anything else is a leak.
+# The ONLY import roots the read layer may use: stdlib shape
+# primitives + its own package. Anything else is a leak.
 _ALLOWED_STDLIB_ROOTS = {
     "__future__",
     "abc",
@@ -65,15 +65,15 @@ _ALLOWED_STDLIB_ROOTS = {
 }
 _OWN_PACKAGE_ROOT = "app.services.manual_reconcile"
 
-#: Roots that must NEVER appear in the read layer (design §12/§13/§16/§17).
+# Roots that must NEVER appear in the read layer.
 _HTTP_ROOTS = {"urllib", "requests", "httpx", "aiohttp", "http"}
 _DB_ROOTS = {"sqlalchemy", "alembic", "app.models", "app.db"}
 _WRITE_ROOTS = {"app.services.executions"}
 _OTHER_FORBIDDEN_ROOTS = {"fastapi", "starlette", "pydantic", "app.api", "app.services.outcomes"}
 _FORBIDDEN_ROOTS = _HTTP_ROOTS | _DB_ROOTS | _WRITE_ROOTS | _OTHER_FORBIDDEN_ROOTS
 
-#: Modules that must be ABSENT from sys.modules after importing the read layer
-#: in a CLEAN interpreter (runtime proof of §12/§13/§16/§17/§18).
+# Modules that must be ABSENT from sys.modules after importing the read layer
+# in a CLEAN interpreter.
 _RUNTIME_FORBIDDEN_MODULES = (
     "sqlalchemy",
     "urllib.request",
@@ -88,7 +88,7 @@ _RUNTIME_FORBIDDEN_MODULES = (
     "app.services.outcomes.reconciliation",
 )
 
-#: The five outcome words — none may be a field of AdapterReadResult (test #25).
+# The five outcome words — none may be a field of AdapterReadResult (test #25).
 _OUTCOME_WORDS = (
     "confirmed_success",
     "confirmed_failure",
@@ -124,12 +124,12 @@ def _is_allowed_root(root: str) -> bool:
 
 
 class _FakeReader(ReadAdapter):
-    """Test-only concrete reader (design §18).
+    """Test-only concrete reader.
 
-    Exercises registry registration/lookup WITHOUT touching the production
-    default registry. Lives ONLY in tests — never imported by app code, never
-    registered into ``default_read_adapter_registry()``.
-    """
+Exercises registry registration/lookup WITHOUT touching the production
+default registry. Lives ONLY in tests — never imported by app code, never
+registered into ``default_read_adapter_registry()``.
+"""
 
     def __init__(self, name: str = "fake") -> None:
         self._name = name
@@ -158,9 +158,9 @@ def _request(**overrides) -> AdapterReadRequest:
     return AdapterReadRequest(**base)
 
 
-# ---------------------------------------------------------------------------
+#
 # 1 / 19 — ReadAdapter contract shape: read-only verb surface
-# ---------------------------------------------------------------------------
+#
 class TestReadAdapterContract:
     """1/19. the ReadAdapter contract can ONLY read — no write verb exists."""
 
@@ -203,9 +203,9 @@ class TestReadAdapterContract:
         assert not issubclass(ResponseExecutor, ReadAdapter)
 
 
-# ---------------------------------------------------------------------------
+#
 # 2 / 4 / 5 / 6 / 22 — AdapterReadRequest: immutable, three required fields
-# ---------------------------------------------------------------------------
+#
 class TestAdapterReadRequest:
     """2/4/5/6/22. the read request is a frozen, three-field, credential-free shape."""
 
@@ -219,7 +219,7 @@ class TestAdapterReadRequest:
 
     def test_request_field_set_is_exact(self):
         # 4/5/6. exactly the three read-only fields — no credential, no token,
-        # no write intent (design §3/§9).
+        # no write intent.
         names = {f.name for f in dataclasses.fields(AdapterReadRequest)}
         assert names == {"execution_id", "adapter", "external_reference"}
 
@@ -253,9 +253,9 @@ class TestAdapterReadRequest:
             AdapterReadRequest(**kwargs)
 
 
-# ---------------------------------------------------------------------------
+#
 # 3 / 23 / 24 / 25 — AdapterReadResult: immutable, raw state, no outcome word
-# ---------------------------------------------------------------------------
+#
 class TestAdapterReadResult:
     """3/23/24/25. the read result carries RAW external state, never an outcome word."""
 
@@ -313,9 +313,9 @@ class TestAdapterReadResult:
         assert result2.observed_at == aware
 
 
-# ---------------------------------------------------------------------------
+#
 # 7 / 8 / 20 / 21 — Registry mechanics
-# ---------------------------------------------------------------------------
+#
 class TestRegistryMechanics:
     """7/8/20/21. registration, deterministic lookup, duplicate is an error."""
 
@@ -352,20 +352,20 @@ class TestRegistryMechanics:
         assert registry.is_supported("anything") is False
 
 
-# ---------------------------------------------------------------------------
+#
 # 9 / 10 / 11 / 12 / 13 / 14 — Evidence Gap: every adapter is unsupported today
-# ---------------------------------------------------------------------------
+#
 class TestEvidenceGap:
     """9-14. the production registry is EMPTY; every adapter rejects, no fact."""
 
     def test_default_registry_is_empty(self):
-        # 15/16 (design §15). NO concrete reader ships in A1.
+        # 15/16. NO concrete reader ships in A1.
         registry = default_read_adapter_registry()
         assert registry.registered_adapters() == ()
 
     @pytest.mark.parametrize("adapter", ["mock", "shuffle", "wazuh", "thehive"])
     def test_every_real_and_mock_adapter_is_unsupported(self, adapter):
-        # 10/11/12/13 (+ mock §14). Evidence Gap: no reader exists for any of
+        # 10/11/12/13. Evidence Gap: no reader exists for any of
         # them, so each rejects — the registry never fakes support.
         registry = default_read_adapter_registry()
         assert registry.is_supported(adapter) is False
@@ -374,7 +374,7 @@ class TestEvidenceGap:
         assert excinfo.value.adapter == adapter
 
     def test_mock_is_unsupported_and_has_no_reader(self, ):
-        # 10/14 (design §14). mock has no external system — never reconcilable,
+        # 10/14. mock has no external system — never reconcilable,
         # and there is NO MOCK read adapter.
         registry = default_read_adapter_registry()
         with pytest.raises(UnsupportedAdapterRead):
@@ -416,9 +416,9 @@ class TestEvidenceGap:
         assert "external_reference" not in message
 
 
-# ---------------------------------------------------------------------------
+#
 # 15 / 16 / 17 / 18 — import surface: no HTTP, no DB, no executor/write adapter
-# ---------------------------------------------------------------------------
+#
 class TestImportSurface:
     """15-18. static AST audit + clean-interpreter runtime proof of purity."""
 
@@ -430,7 +430,7 @@ class TestImportSurface:
         assert {"__init__.py", "exceptions.py", "base.py", "registry.py"} <= names
 
     def test_every_import_root_is_allowed(self):
-        # 15/16/17/18 (design §16). every import in the read layer is stdlib
+        # 15/16/17/18. every import in the read layer is stdlib
         # shape primitives or its own package — nothing else.
         offenders: dict[str, set[str]] = {}
         for path in _read_layer_sources():
@@ -499,9 +499,9 @@ class TestImportSurface:
         assert proc.returncode == 0, f"purity subprocess failed:\n{proc.stderr}"
 
 
-# ---------------------------------------------------------------------------
+#
 # 6 / 8 — ResponseExecutor is untouched (no read verb added to the write side)
-# ---------------------------------------------------------------------------
+#
 class TestWriteSideUntouched:
     """6/8. the write contract stays write-only — no read() was added to it."""
 

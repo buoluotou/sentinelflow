@@ -1,18 +1,18 @@
-"""Phase 3.4.1: execution_outcome data-model freeze tests.
+"""execution_outcome data-model freeze tests.
 
-Locks the frozen shape of ExecutionOutcome before Migration/Reconciliation/
+Locks the shape of ExecutionOutcome before Migration/Reconciliation/
 Webhook land (design doc docs/design/phase3.4-execution-outcome-lifecycle.md,
 adjudications O1-O5):
 
 - vocabulary: exactly five outcome words (O1) + exactly two ingress sources;
-  dispatch-layer words (succeeded/failed/...) are NOT legal outcome words —
-  the two vocabularies never cross-contaminate (D3.4-04)
+dispatch-layer words (succeeded/failed/...) are NOT legal outcome words —
+the two vocabularies never cross-contaminate (D3.4-04)
 - independent fact layer: plain execution_id column (no FK), no unique
-  index — multiple facts per execution form an append-only time series
-  (D3.4-06), derivation orders by observed_at (O2)
+index — multiple facts per execution form an append-only time series
+(D3.4-06), derivation orders by observed_at (O2)
 - O5 / D3.4-09: outcome facts coexist with ANY dispatch state and never
-  rewrite execution_log history (dispatch=failed + manual
-  confirmed_success is recordable; the dispatch rows stay untouched)
+rewrite execution_log history (dispatch=failed + manual
+confirmed_success is recordable; the dispatch rows stay untouched)
 - append-only audit fact: no updated_at, created_at is server-stamped
 - recorder identity + observed_at + detail are mandatory fact fields
 
@@ -256,7 +256,7 @@ class TestAppendOnlyTimeSeries:
 
     def test_derivation_orders_by_observed_at_not_insert_order(self, db_session):
         # O2: late facts are appended; the latest OBSERVATION wins even
-        # when it arrives out of order (insert order deliberately mixed).
+        # when it arrives out of order (insert order mixed).
         execution_id = uuid.uuid4()
         base = datetime.now(timezone.utc)
         for minutes, status in [(30, "confirmed_success"), (5, "pending"), (60, "confirmed_failure")]:
@@ -367,7 +367,7 @@ class TestLayerIndependence:
         assert [row.decision for row in dispatch_rows] == ["requested", "failed"]
 
     def test_dispatch_succeeded_plus_confirmed_failure_coexist(self, db_session):
-        # The canonical legal combination (§4 O5 table): command delivered,
+        # The canonical legal combination: command delivered,
         # effect not achieved — both facts stand side by side.
         approval = _seed_approved(db_session)
         execution_id = uuid.uuid4()
@@ -409,8 +409,8 @@ class TestLayerIndependence:
 
 class TestOutcomeMigration:
     """Static link + shape freeze of migration 0010 (runtime round-trip
-    base→0009→0010 and 0010→0009→0010 is verified at the 3.4.1 gate via
-    alembic on a temp SQLite DB, following the 3.1.2 precedent)."""
+base→0009→0010 and 0010→0009→0010 is verified at the 3.4.1 gate via
+alembic on a temp SQLite DB, following the 3.1.2 precedent)."""
 
     @staticmethod
     def _migration_source() -> str:

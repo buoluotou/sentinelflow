@@ -1,6 +1,6 @@
-/** Incident detail (Step 8.4): case record + explicit lifecycle actions.
+/* * Incident detail (): case record + explicit lifecycle actions.
  *
- * The buttons mirror the backend's frozen ALLOWED_TRANSITIONS matrix for
+ * The buttons mirror the backend's ALLOWED_TRANSITIONS matrix for
  * display purposes only — validity is still decided by the service-layer
  * state machine (an invalid move surfaces as a 409 banner, never silently).
  */

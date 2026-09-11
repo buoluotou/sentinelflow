@@ -1,17 +1,17 @@
-"""Phase 2 Step 14.2: IncidentAIContextService tests.
+"""IncidentAIContextService tests.
 
-The context service is a pure READ aggregation of the Step 14.1 viewonly
-traversals. Six blocks, mirroring the frozen plan:
+The context service is a pure READ aggregation of the viewonly
+traversals. Six blocks, mirroring the plan:
 
-  A. unknown incident -> the project's unified IncidentNotFound, and no AI
-     data of other cases leaks through the error path
-  B. an incident without any AI history -> a valid EMPTY context (not an error)
-  C. full context: complete histories, created_at ASC, approvals attached
-     to their recommendations, every row owned by the incident's AlertGroup
-  D. isolation: incident A never sees incident B's AI history
-  E. read-only boundary: zero writes — incident fields, AI row counts and
-     approval counts are unchanged and the session stays clean
-  F. an approved recommendation produces no business side effect at all
+A. unknown incident -> the project's unified IncidentNotFound, and no AI
+data of other cases leaks through the error path
+B. an incident without any AI history -> a valid EMPTY context (not an error)
+C. full context: complete histories, created_at ASC, approvals attached
+to their recommendations, every row owned by the incident's AlertGroup
+D. isolation: incident A never sees incident B's AI history
+E. read-only boundary: zero writes — incident fields, AI row counts and
+approval counts are unchanged and the session stays clean
+F. an approved recommendation produces no business side effect at all
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -129,9 +129,9 @@ def _ai_counts(db) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
+#
 # A. unknown incident -> unified NotFound, no leak
-# ---------------------------------------------------------------------------
+#
 
 
 def test_unknown_incident_raises_the_project_not_found(db_session):
@@ -143,7 +143,7 @@ def test_unknown_incident_raises_the_project_not_found(db_session):
 
 def test_unknown_incident_leaks_nothing_even_when_ai_data_exists(db_session):
     """The error path must raise BEFORE assembling anything — other cases'
-    AI history can never surface through an unknown id."""
+AI history can never surface through an unknown id."""
     incident = _seed_case(db_session, "a" * 64)
     _add_analysis(db_session, incident)
 
@@ -151,9 +151,9 @@ def test_unknown_incident_leaks_nothing_even_when_ai_data_exists(db_session):
         get_incident_ai_context(db_session, uuid.uuid4())
 
 
-# ---------------------------------------------------------------------------
+#
 # B. empty AI context is a valid state
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incident_without_ai_history_returns_an_empty_context(db_session):
@@ -171,9 +171,9 @@ def test_incident_without_ai_history_returns_an_empty_context(db_session):
     assert context.incident.risk_score_snapshot == SNAPSHOT_SCORE
 
 
-# ---------------------------------------------------------------------------
+#
 # C. full context: complete history, order, ownership, approval attachment
-# ---------------------------------------------------------------------------
+#
 
 
 def test_full_context_aggregates_every_history(db_session):
@@ -240,9 +240,9 @@ def test_pending_is_derived_and_never_persisted_by_the_service(db_session):
     assert all(row.status in {"approved", "rejected"} for row in rows)
 
 
-# ---------------------------------------------------------------------------
+#
 # D. isolation between incidents
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incident_a_never_sees_incident_b_history(db_session):
@@ -263,9 +263,9 @@ def test_incident_a_never_sees_incident_b_history(db_session):
     assert all(a.alert_group_id == incident_b.alert_group_id for a in context_b.analyses)
 
 
-# ---------------------------------------------------------------------------
+#
 # E. read-only boundary — zero writes
-# ---------------------------------------------------------------------------
+#
 
 
 def test_reading_the_context_writes_nothing(db_session):
@@ -295,9 +295,9 @@ def test_reading_the_context_writes_nothing(db_session):
     assert context.incident.risk_score_snapshot == before["risk_score"]
 
 
-# ---------------------------------------------------------------------------
+#
 # F. an approved recommendation has no side effects on read
-# ---------------------------------------------------------------------------
+#
 
 
 def test_approved_recommendation_causes_no_side_effect(db_session):
@@ -317,9 +317,9 @@ def test_approved_recommendation_causes_no_side_effect(db_session):
     assert context.response_recommendations[0].approval.status == "approved"
 
 
-# ---------------------------------------------------------------------------
-# DTO shape: frozen schemas, never raw ORM
-# ---------------------------------------------------------------------------
+#
+# DTO shape: schemas, never raw ORM
+#
 
 
 def test_context_is_composed_of_the_frozen_schemas(db_session):

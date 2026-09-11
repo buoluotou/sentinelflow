@@ -1,13 +1,13 @@
-"""Incident Management API (Phase 1 Step 7.3).
+"""Incident Management API.
 
 Thin HTTP layer: HTTP -> Schema -> services/incidents -> HTTP response.
-The lifecycle state machine lives ONLY in the service; this module maps
-business exceptions to status codes:
+The lifecycle state machine lives in the service, not here; this module
+maps business exceptions to status codes:
 
-    IncidentNotFound            -> 404
-    IncidentAlreadyExists       -> 409
-    IncidentRiskMissing         -> 409  (no silent score=0 case)
-    InvalidIncidentTransition   -> 409 Conflict
+IncidentNotFound            -> 404
+IncidentAlreadyExists       -> 409
+IncidentRiskMissing         -> 409  (a missing risk score is not defaulted to 0)
+InvalidIncidentTransition   -> 409 Conflict
 """
 import uuid
 from typing import Literal
@@ -38,15 +38,15 @@ from app.services.incidents import (
 
 router = APIRouter(prefix="/incidents", tags=["incidents"])
 
-#: ?status= filter vocabulary — invalid query values fail fast with 422,
-#: mirroring the events API ``?level=`` behaviour.
+# ?status= filter vocabulary — invalid query values fail fast with 422,
+# mirroring the events API ``?level=`` behaviour.
 StatusFilter = Literal["open", "in_progress", "resolved", "false_positive", "closed"]
 
 
 @router.post("", response_model=IncidentRead, status_code=201)
 def incident_create(payload: IncidentCreate, db: Session = Depends(get_db)) -> IncidentRead:
     """Open the SOC case of an event; the case record is auto-filled from
-    the event and its risk snapshot."""
+the event and its risk snapshot."""
     try:
         incident = create_incident(db, payload.alert_group_id)
     except IncidentNotFound as exc:
@@ -95,12 +95,12 @@ def incident_detail(incident_id: str, db: Session = Depends(get_db)) -> Incident
 def incident_ai_context(
     incident_id: str, db: Session = Depends(get_db)
 ) -> IncidentAIContext:
-    """The complete read-only AI history of one incident (Phase 2 Step 14.3).
+    """The complete read-only AI history of one incident.
 
-    Pure HTTP passthrough into ``get_incident_ai_context``: this route never
-    queries AI tables itself, never generates/refreshes AI data, never
-    recomputes risk and never touches approvals or the incident state.
-    """
+Pure HTTP passthrough into ``get_incident_ai_context``: this route never
+queries AI tables itself, never generates/refreshes AI data, never
+recomputes risk and never touches approvals or the incident state.
+"""
     incident = _load_incident(db, incident_id)
     return get_incident_ai_context(db, incident.id)
 
@@ -111,9 +111,9 @@ def incident_transition(
 ) -> IncidentRead:
     """Request a lifecycle move; the service state machine decides.
 
-    Invalid moves (e.g. closed -> open) answer 409 Conflict with
-    ``Invalid incident status transition: {from} -> {to}``.
-    """
+Invalid moves (e.g. closed -> open) answer 409 Conflict with
+``Invalid incident status transition: {from} -> {to}``.
+"""
     incident = _load_incident(db, incident_id)
     try:
         transition_status(db, incident.id, payload.status)

@@ -4,45 +4,46 @@ Revision ID: 0013
 Revises: 0012
 Create Date: 2026-09-10
 
-RC2 / C-1 production debt fix: durable pre-compensation attempt record.
+Durable pre-compensation attempt record.
 
-The forward dispatch path received its durable pre-dispatch reservation in
-M4-F §1 / M4-G §2 (migration 0011/0012): the immutable binding commits on its
-OWN transaction BEFORE the external request fires. The reverse (compensation)
-path never got the same protection — ``compensate_response`` flushed the
+The forward dispatch path already has its durable pre-dispatch reservation
+(migrations 0011 and 0012): the immutable binding commits on its own
+transaction before the external request fires. The reverse (compensation) path
+had no such protection — ``compensate_response`` flushed the
 ``compensation_requested`` row, called ``executor.compensate()`` and only then
-appended the terminal, all inside the caller's ONE business transaction. A
-caller rollback / terminal-write failure / process crash AFTER the external
-reverse request already fired could erase every durable trace of the attempt,
-and a later retry had no committed reservation to refuse it (the partial
-unique index on execution_log.compensates_execution_id only bites at caller
-COMMIT — AFTER the wire call).
+appended the terminal row, all inside the caller's single business
+transaction. A caller rollback, a terminal-write failure or a process crash
+after the external reverse request had fired could erase every durable trace
+of the attempt, and a later retry had no committed reservation to refuse it:
+the partial unique index on execution_log.compensates_execution_id only bites
+at caller COMMIT, after the wire call.
 
-This table is an INDEPENDENT, append-only durable record committed on its OWN
-transaction (a separate Session/connection) BEFORE the external compensation
+This table is an independent, append-only durable record committed on its own
+transaction (a separate Session/connection) before the external compensation
 request is sent, so it survives the caller's transaction outcome. The terminal
-compensation row still references the SAME compensation_attempt_id; recovery
-correlates a committed attempt with no terminal row -> a MANUAL reconciliation
-candidate (never an auto-retry).
+compensation row references the same compensation_attempt_id; recovery pairs a
+committed attempt with no terminal row into a manual reconciliation candidate,
+never an automatic retry.
 
 Constraints mirrored 1:1 from app/models/compensation_attempt.py:
-- Index ux_compensation_attempt_compensation_attempt_id (UNIQUE): the
-  correlation handle the terminal compensation row references
-  (detail["compensation_attempt_id"]).
-- Index ux_compensation_attempt_execution_id (UNIQUE): ONE durable attempt per
-  compensation-chain execution_id — the replay guard.
-- Index ux_compensation_attempt_original_execution_id (UNIQUE): ONE durable
-  compensation per ORIGINAL execution — the C-1 durable reservation, enforced
-  BEFORE the reverse adapter runs.
+- Index ux_compensation_attempt_compensation_attempt_id (unique): the
+correlation handle the terminal compensation row references
+(detail["compensation_attempt_id"]).
+- Index ux_compensation_attempt_execution_id (unique): one durable attempt per
+compensation-chain execution_id — the replay guard.
+- Index ux_compensation_attempt_original_execution_id (unique): one durable
+compensation per original execution — the durable form of the "at most one
+compensation per original" invariant, enforced before the reverse adapter
+runs.
 - Index ix_compensation_attempt_approval_id: the recovery /
-  manual-reconciliation lookup path.
+manual-reconciliation lookup path.
 
-No foreign keys, deliberately (same precedent as dispatch_attempt /
-execution_outcome / execution_log.compensates_execution_id): execution ids are
-caller-supplied chain keys, not primary keys; the durable attempt must NOT
-cascade away and is read-only evidence. Append-only: INSERT only, never UPDATE,
-never DELETE. This migration touches ONLY the new table — execution_log's shape
-and its decision words are NOT altered.
+No foreign keys, following the same precedent as dispatch_attempt,
+execution_outcome and execution_log.compensates_execution_id: execution ids are
+caller-supplied chain keys, not primary keys, and the durable attempt must not
+cascade away because it is read-only evidence. Append-only: INSERT only, never
+UPDATE, never DELETE. This migration touches only the new table —
+execution_log's shape and its decision words are unaltered.
 """
 from typing import Sequence, Union
 
@@ -62,7 +63,7 @@ def upgrade() -> None:
         "compensation_attempt",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("compensation_attempt_id", sa.Uuid(), nullable=False),
-        # The COMPENSATION chain's own execution_id (fresh identity).
+        # The compensation chain's own execution_id (fresh identity).
         sa.Column("execution_id", sa.Uuid(), nullable=False),
         # The compensated forward execution (the reservation key).
         sa.Column("original_execution_id", sa.Uuid(), nullable=False),
@@ -90,24 +91,24 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     # The unique compensation-attempt identifier the terminal compensation row
-    # references. UNIQUE: an attempt_id is never re-minted or reused.
+    # references. An attempt_id is never re-minted or reused.
     op.create_index(
         "ux_compensation_attempt_compensation_attempt_id",
         "compensation_attempt",
         ["compensation_attempt_id"],
         unique=True,
     )
-    # ONE durable attempt per compensation-chain execution_id — the replay
-    # guard, enforced BEFORE the reverse adapter runs.
+    # One durable attempt per compensation-chain execution_id — the replay
+    # guard, enforced before the reverse adapter runs.
     op.create_index(
         "ux_compensation_attempt_execution_id",
         "compensation_attempt",
         ["execution_id"],
         unique=True,
     )
-    # THE C-1 reservation: ONE durable compensation per ORIGINAL execution —
-    # the durable refill of the "at most one compensation per original"
-    # invariant, enforced BEFORE the reverse adapter runs.
+    # One durable compensation per original execution — the durable form of the
+    # "at most one compensation per original" invariant, enforced before the
+    # reverse adapter runs.
     op.create_index(
         "ux_compensation_attempt_original_execution_id",
         "compensation_attempt",

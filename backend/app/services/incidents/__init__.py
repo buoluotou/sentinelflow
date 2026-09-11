@@ -1,4 +1,4 @@
-"""Incident management services (Phase 1 Step 7).
+"""Incident management services.
 
 The SOC case layer on top of events: Alert -> AlertGroup -> EventRisk ->
 Incident. EventRisk is the automatic assessment, the Incident is the

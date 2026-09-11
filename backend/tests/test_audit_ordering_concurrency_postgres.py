@@ -1,23 +1,23 @@
-"""PostgreSQL-specific audit-ordering proofs (RC2 / H-2).
+"""PostgreSQL-specific audit-ordering proofs.
 
 SQLite-level behavior (uuid7 contract, second-precision ties, interleaved
 sessions, threaded writers) is proven in
-``test_audit_ordering_concurrency.py``. This module proves the PRODUCTION
+``test_audit_ordering_concurrency.py``. This module covers the production
 PostgreSQL path:
 
-  req A  the migration-0014 default (``clock_timestamp()``) stamps rapid
-         consecutive writes with the STATEMENT's real time — never the
-         transaction-start ``now()`` — and the (created_at, id) order is the
-         exact insertion order end to end;
-  req B  parallel writers (threads, independent sessions/engines) on REAL
-         PostgreSQL MVCC keep each chain's own ordering, with no loss and no
-         duplicates.
+- the migration-0014 default (``clock_timestamp()``) stamps rapid
+consecutive writes with the statement's time — never the
+transaction-start ``now()`` — and the (created_at, id) order is the
+exact insertion order end to end;
+- parallel writers (threads, independent sessions/engines) on real
+PostgreSQL MVCC keep each chain's own ordering, with no loss and no
+duplicates.
 
-STATUS — **PostgreSQL UNVERIFIED** until this module runs against a real
-PostgreSQL (``-m external`` + the dedicated-DB env var; a normal run skips).
+Not verified against a live PostgreSQL: it runs only with ``-m external`` plus
+the dedicated-DB env var, and a normal run skips it.
 
-SAFETY: ``SENTINELFLOW_PG_TEST_URL`` MUST point at a DEDICATED throwaway
-database. ``create_all`` is idempotent; ``_cleanup`` removes ONLY this test's
+Safety: ``SENTINELFLOW_PG_TEST_URL`` must point at a dedicated throwaway
+database. ``create_all`` is idempotent; ``_cleanup`` removes only this test's
 rows (scoped by execution_id, reusing the forward suite's helper so the FK
 graph order stays identical).
 """
@@ -78,9 +78,9 @@ def _append_row(session: Session, execution_id, approval_id, decision, marker):
 
 @pytest.mark.external
 def test_clock_timestamp_default_keeps_rapid_writes_ordered():
-    """req A — rapid consecutive writes on REAL PostgreSQL: the
-    (created_at, id) tuples strictly increase in insertion order and the
-    derived state is the last write."""
+    """Rapid consecutive writes on real PostgreSQL: the
+(created_at, id) tuples strictly increase in insertion order and the
+derived state is the last write."""
     engine = _pg_engine()
     approval_id, group_id = _seed_approval_chain(engine)
     execution_id = uuid.uuid4()
@@ -96,8 +96,8 @@ def test_clock_timestamp_default_keeps_rapid_writes_ordered():
         assert [r.detail["i"] for r in rows] == list(range(total - 1, -1, -1))
         ascending = list(reversed(rows))
         tuples = [(r.created_at, r.id) for r in ascending]
-        # THE H-2 property: the sanctioned (created_at, id) key reproduces the
-        # exact insertion order end to end.
+        # the (created_at, id) key reproduces the exact insertion order end to
+        # end.
         assert all(a < b for a, b in zip(tuples, tuples[1:]))
         assert derive_execution_state(rows) == "succeeded"
     finally:
@@ -108,9 +108,9 @@ def test_clock_timestamp_default_keeps_rapid_writes_ordered():
 
 @pytest.mark.external
 def test_parallel_writers_keep_each_chain_ordered_on_postgres():
-    """req B — parallel writers on distinct chains under real MVCC: each
-    chain reconstructs its OWN insertion order; nothing lost, nothing
-    duplicated, no writer errors."""
+    """Parallel writers on distinct chains under real MVCC: each
+chain reconstructs its own insertion order; nothing lost, nothing
+duplicated, no writer errors."""
     engine = _pg_engine()
     approval_id, group_id = _seed_approval_chain(engine)
     workers, per_worker = 4, 40

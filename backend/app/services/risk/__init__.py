@@ -1,4 +1,4 @@
-"""Explainable risk scoring services (Phase 1 Step 5).
+"""Explainable risk scoring services.
 
 Rule-based only: no AI, no GeoIP, no external threat intelligence. Every
 score is fully decomposable into named factors so SOC analysts (and future

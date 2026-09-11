@@ -1,4 +1,4 @@
-/** AI analysis API client (Step 10.7): explicit-trigger endpoints only. */
+/** AI analysis API client: explicit-trigger endpoints only. */
 import { api } from './client'
 import { ApiError } from './client'
 import type { AIAnalysis } from '../types/aiAnalysis'

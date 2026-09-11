@@ -1,16 +1,16 @@
-"""PostgreSQL-specific Risk <-> Incident atomicity + race proofs (RC2 / H-1).
+"""PostgreSQL-specific Risk <-> Incident atomicity + race proofs.
 
 SQLite serialises writers and the StaticPool harness cannot run two real
 transactions, so the TRUE concurrent threshold-crossing race and real MVCC
 rollback semantics are certified HERE or stay explicitly UNVERIFIED:
 
-  req A  TWO concurrent crossing alerts for the SAME event: both keep their
-         alert + risk update, EXACTLY ONE case is created (the one-case-per-
-         event unique constraint + the benign savepoint), and NO request
-         fails with an unhandled error.
-  req B  incident insert failure on a REAL PostgreSQL transaction: the whole
-         unit (group + alert + risk + case) rolls back together — never a
-         partial "risk updated / case missing" state.
+req A  TWO concurrent crossing alerts for the SAME event: both keep their
+alert + risk update, EXACTLY ONE case is created (the one-case-per-
+event unique constraint + the benign savepoint), and NO request
+fails with an unhandled error.
+req B  incident insert failure on a REAL PostgreSQL transaction: the whole
+unit (group + alert + risk + case) rolls back together — never a
+partial "risk updated / case missing" state.
 
 STATUS — **PostgreSQL UNVERIFIED** until this module runs against a real
 PostgreSQL. It is ``@pytest.mark.external`` AND guarded by the dedicated-DB
@@ -81,9 +81,9 @@ def _alert_create() -> AlertCreate:
 
 def _seed_below_then_crossing_group(engine) -> str:
     """Seed + COMMIT a group that is BELOW the threshold by one alert (severity
-    high 50 + frequency band (21..) +20 = 70 at the next alert), with its risk
-    snapshot — so the concurrent alerts race ONLY on the incident, never on
-    group/risk creation."""
+high 50 + frequency band (21..) +20 = 70 at the next alert), with its risk
+snapshot — so the concurrent alerts race ONLY on the incident, never on
+group/risk creation."""
     fingerprint = FingerprintGenerator.generate(_normalized())
     now = datetime.now(timezone.utc)
     with Session(engine) as session:
@@ -120,9 +120,9 @@ def _cleanup(engine, fingerprint: str) -> None:
 @pytest.mark.external
 def test_concurrent_crossing_alerts_create_exactly_one_case():
     """req A — TRUE parallel crossing alerts for one event under PostgreSQL
-    MVCC: both alerts land, the risk updates, and EXACTLY ONE case exists —
-    zero unhandled errors (the loser side of any incident race is a benign,
-    transaction-preserving no-op)."""
+MVCC: both alerts land, the risk updates, and EXACTLY ONE case exists —
+zero unhandled errors (the loser side of any incident race is a benign,
+transaction-preserving no-op)."""
     engine = _pg_engine()
     fingerprint = _seed_below_then_crossing_group(engine)
     errors: list[str] = []
@@ -171,8 +171,8 @@ def test_concurrent_crossing_alerts_create_exactly_one_case():
 @pytest.mark.external
 def test_incident_failure_rolls_back_the_whole_unit_on_postgres(monkeypatch):
     """req B — on a REAL PostgreSQL transaction, an incident-insert failure
-    rolls back the alert, the group and the risk update TOGETHER: no partial
-    "risk updated / case missing" state can survive."""
+rolls back the alert, the group and the risk update TOGETHER: no partial
+"risk updated / case missing" state can survive."""
     engine = _pg_engine()
     normalized = _normalized()
     fingerprint = FingerprintGenerator.generate(normalized)

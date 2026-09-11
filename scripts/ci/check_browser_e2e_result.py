@@ -7,16 +7,16 @@ running nothing. Skips are equally unacceptable: a missing browser, a busy port
 or a missing database must fail the job, not reduce it. This checker turns the
 acceptance facts into hard assertions:
 
-    collected > 0, passed == collected, skipped == 0, failed == 0, errors == 0
+collected > 0, passed == collected, skipped == 0, failed == 0, errors == 0
 
 It also requires every suite file to appear in the collection, so dropping a
 module (or breaking its import) cannot pass as a smaller green run.
 
 Usage (inside the CI job, after running pytest):
 
-    pytest tests/e2e -m browser -q --collect-only | tee /tmp/e2e-collect.txt
-    pytest tests/e2e -m browser -q                 | tee /tmp/e2e-run.txt
-    python scripts/ci/check_browser_e2e_result.py /tmp/e2e-collect.txt /tmp/e2e-run.txt
+pytest tests/e2e -m browser -q --collect-only | tee /tmp/e2e-collect.txt
+pytest tests/e2e -m browser -q                 | tee /tmp/e2e-run.txt
+python scripts/ci/check_browser_e2e_result.py /tmp/e2e-collect.txt /tmp/e2e-run.txt
 
 Exit code 0 only when every fact holds; any deviation fails the job.
 """
@@ -26,8 +26,8 @@ import pathlib
 import re
 import sys
 
-#: Every browser suite the job must collect. A missing entry means the module
-#: failed to import or was dropped, which is not a smaller green run.
+# Every browser suite the job must collect. A missing entry means the module
+# failed to import or was dropped, which is not a smaller green run.
 EXPECTED_MODULES = (
     "test_execution_browser.py",
     "test_approval_queue_browser.py",

@@ -1,14 +1,14 @@
-"""Phase 2 Step 10.6: AI analysis API tests.
+"""AI analysis API tests.
 
 HTTP contract over AIAnalysisService — still MockProvider only (CI runs
-without any model). Covers the frozen error mapping:
+without any model). Covers the fixed error mapping:
 
-    unknown event               -> 404
-    AIProviderConfigError       -> 503
-    AIProviderUnavailable       -> 503
-    AIResponseParseError        -> 502
+unknown event               -> 404
+AIProviderConfigError       -> 503
+AIProviderUnavailable       -> 503
+AIResponseParseError        -> 502
 
-and the hard rule: a failed analysis never persists a row.
+and the rule that a failed analysis never persists a row.
 """
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -81,7 +81,7 @@ def _seed(db_session: Session) -> AlertGroup:
     return group
 
 
-# ------------------------------------------------------------------ creation
+# creation
 
 
 def test_create_analysis_returns_201_with_frozen_fields(client, db_session):
@@ -106,7 +106,7 @@ def test_create_analysis_returns_201_with_frozen_fields(client, db_session):
     assert len(rows) == 1 and str(rows[0].id) == body["id"]
 
 
-# ------------------------------------------------------------------ latest
+# latest
 
 
 def test_get_returns_latest_of_history(client, db_session):
@@ -134,7 +134,7 @@ def test_get_without_any_analysis_is_404(client, db_session):
     assert "No AI analysis" in response.json()["detail"]
 
 
-# ------------------------------------------------------------------ 404s
+# 404s
 
 
 @pytest.mark.parametrize(
@@ -156,7 +156,7 @@ def test_get_unknown_event_is_404(client, db_session):
     assert response.json()["detail"] == "Event not found"
 
 
-# ------------------------------------------------------------------ 5xx
+# 5xx
 
 
 def test_provider_unavailable_maps_to_503_and_persists_nothing(client, db_session):

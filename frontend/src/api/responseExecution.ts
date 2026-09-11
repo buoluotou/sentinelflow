@@ -1,16 +1,16 @@
-/** Response-execution API client (Phase 3.1.8, frozen 3.1.7 contract).
+/** Response-execution API client.
  *
- * WRITE path: POST /executions sends the Execute Intent ONLY
+ * Write path: POST /executions sends the Execute Intent only
  * ({ execution_id, approval_id, operator, comment? }) with the Bearer
  * EXECUTION_TOKEN passed per-call — the token is a function argument, never
  * a module/global/persistent store, so it cannot outlive the modal state.
  *
  * The 201 body is authoritative: callers render derived_state / chain /
- * history straight from the response — NO follow-up GET after POST.
+ * history straight from the response — no follow-up GET after POST.
  *
  * GET endpoints are read-only audit views (no token). The compensate
- * endpoint is deliberately NOT wrapped here — 3.1.8 ships execute only;
- * compensation UI belongs to a later step.
+ * endpoint is not wrapped here: this client covers execute only, and
+ * compensation UI is not part of it.
  */
 import { api, queryString } from './client'
 import type {
@@ -20,7 +20,7 @@ import type {
   ExecutionRead,
 } from '../types/responseExecution'
 
-/** Paged audit list (3.1.9 query contract): Filter -> GET. All filtering,
+/** Paged audit list (filter params -> GET). All filtering,
  * ordering (most recent activity first) and state derivation stay
  * server-side — the caller renders the envelope as-is (no token). */
 export function getExecutions(
@@ -38,7 +38,7 @@ export function getExecution(executionId: string): Promise<ExecutionRead> {
 }
 
 /** Run one Execute Intent (201 = an execution fact exists; the verdict
- * lives in the body's derived_state). The token travels ONLY as the
+ * lives in the body's derived_state). The token travels only as the
  * Authorization header of this single request. */
 export function executeResponse(
   intent: ExecuteIntent,

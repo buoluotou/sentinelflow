@@ -1,6 +1,6 @@
-/** AI risk-summary API client (Step 11.6): explicit-trigger endpoints only.
+/** AI risk-summary API client: explicit-trigger endpoints only.
  *
- * Mirrors the Step 10 aiAnalysis client — same error passthrough contract:
+ * Mirrors the aiAnalysis client — same error passthrough contract:
  * backend `detail` strings (404/503/502) surface verbatim through ApiError.
  */
 import { api } from './client'

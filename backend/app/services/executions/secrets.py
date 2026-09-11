@@ -1,29 +1,29 @@
-"""Credential / Secret Boundary (Phase 3.2.2, frozen design §8).
+"""Credential / Secret Boundary.
 
 One independent, auditable boundary for every external-adapter
-credential. The ONLY legal life of a secret is this chain:
+credential. A secret may only travel this chain:
 
     .env -> Settings -> AdapterCredentials -> Authorization header
                                               -> external request
 
-Everywhere else the secret must appear as ``***`` and nowhere else:
+Anywhere else the secret must appear as ``***`` and nowhere else:
 
-    ❌ execution_log.detail     (redact gate in service._append)
-    ❌ API response             (static error details; 503 mapping)
-    ❌ exception string         (key names only; values never echoed)
-    ❌ repr / str               (masked Settings + AdapterCredentials)
-    ❌ URL / query string       (query strings & userinfo rejected)
-    ❌ browser storage          (no secret is ever serialized out)
-    ❌ audit detail             (redact gate, same as execution_log)
-    ❌ Python logging           (SecretRedactionFilter)
+    - execution_log.detail     (redact gate in service._append)
+    - API response             (static error details; 503 mapping)
+    - exception string         (key names only; values never echoed)
+    - repr / str               (masked Settings + AdapterCredentials)
+    - URL / query string       (query strings & userinfo rejected)
+    - browser storage          (no secret is ever serialized out)
+    - audit detail             (redact gate, same as execution_log)
+    - Python logging           (SecretRedactionFilter)
 
-Header-only discipline (frozen): credentials travel exclusively in the
-``Authorization`` request header — ``Bearer <key>`` for api-key
-adapters, ``Basic <b64>`` for the Wazuh user/password pair (3.2.4) —
-never in the URL, a query string or a request body.
+Credentials travel exclusively in the ``Authorization`` request header —
+``Bearer <key>`` for api-key adapters, ``Basic <b64>`` for the Wazuh
+user/password pair — never in the URL, a query string or a request
+body.
 
-This module knows NO adapter business semantics — 3.2.3/3.2.4/3.2.5
-build their HTTP calls ON this boundary, never around it.
+This module carries no adapter business semantics: the concrete adapters
+build their HTTP calls on this boundary, never around it.
 """
 from __future__ import annotations
 
@@ -38,9 +38,9 @@ from app.services.executions.exceptions import ExecutorConfigError
 
 MASK = "***"
 
-#: Detail keys (lowercased substring match) that are ALWAYS masked by
-#: redact_detail regardless of value — the audit gate never trusts the
-#: *name* a third party gave a field.
+# Detail keys (lowercased substring match) that redact_detail masks
+# unconditionally, whatever the value holds: the audit gate never
+# trusts the name a third party gave a field.
 _SENSITIVE_DETAIL_KEY_MARKERS = (
     "authorization",
     "token",
@@ -50,9 +50,9 @@ _SENSITIVE_DETAIL_KEY_MARKERS = (
     "credential",
 )
 
-#: Minimum length for value-based redaction: below this a "secret" is
-#: too likely to be ordinary text (e.g. "id") and blind replacement
-#: would corrupt legitimate detail.
+# Minimum length for value-based redaction: below this a "secret" is
+# too likely to be ordinary text (e.g. "id") and blind replacement
+# would corrupt legitimate detail.
 _MIN_REDACTABLE_LENGTH = 4
 
 
@@ -61,16 +61,16 @@ def _is_sensitive_key(name: object) -> bool:
     return any(marker in lowered for marker in _SENSITIVE_DETAIL_KEY_MARKERS)
 
 
-# --------------------------------------------------------------------------
+#
 # URL / key validation (no secret may ever ride inside a URL)
-# --------------------------------------------------------------------------
+#
 def validate_base_url(adapter: str, raw: str) -> str:
     """Validate and normalize an adapter BASE_URL.
 
     Accepted: http/https with a host. Rejected outright: query strings
     (``https://host/api?token=...`` is the classic secret-in-URL leak),
     fragments, userinfo (embedded ``user:pass@``), other schemes.
-    Error messages name the setting and the REASON — never the value.
+    Error messages name the setting and the reason — never the value.
     """
     candidate = (raw or "").strip()
     if not candidate:
@@ -109,8 +109,8 @@ def validate_api_key(adapter: str, raw: str) -> str:
 
 
 def validate_secret_field(setting_name: str, raw: str) -> str:
-    """Generic non-blank gate for any credential field (3.2.4: Wazuh
-    user/password). Error names the SETTING, never the value."""
+    """Generic non-blank gate for any credential field (the Wazuh
+    user/password pair). Error names the setting, never the value."""
     if not raw or not raw.strip():
         raise ExecutorConfigError(
             f"{setting_name} is empty (value is never reported)")
@@ -122,11 +122,11 @@ class AdapterCredentials:
     """One adapter's validated credential set.
 
     Immutable and repr-masked: str()/repr() can never surface a secret,
-    so accidental interpolation into logs/exceptions/audit stays safe.
-    Two shapes share the SAME lineage (.env -> Settings -> here ->
-    Authorization header):
+    so accidental interpolation into logs, exceptions or audit stays
+    safe. Both credential shapes follow the same chain (.env ->
+    Settings -> here -> Authorization header):
       * api_key adapters  -> ``Authorization: Bearer <key>``
-      * user/password (3.2.4 Wazuh) -> ``Authorization: Basic <b64>``
+      * Wazuh user/password -> ``Authorization: Basic <b64>``
     """
 
     adapter: str
@@ -146,7 +146,7 @@ class AdapterCredentials:
         return self.__repr__()
 
     def auth_headers(self) -> dict[str, str]:
-        """Header-only discipline: the secret rides exclusively here."""
+        """The secret rides exclusively in the returned header."""
         if self.username and self.password:
             token = base64.b64encode(
                 f"{self.username}:{self.password}".encode("utf-8")
@@ -158,9 +158,9 @@ class AdapterCredentials:
 def credentials_from_settings(adapter: str, settings_obj=None) -> AdapterCredentials:
     """Assemble validated credentials for one adapter from Settings.
 
-    Uses the registry's ADAPTER_REQUIRED_SETTINGS pairing, so each
-    adapter validates EXACTLY its own two settings. Raises
-    ExecutorConfigError with key names + reason only.
+    Each adapter validates exactly the settings that belong to it.
+    Raises ExecutorConfigError with key names and reason only — never a
+    value.
     """
     source = settings_obj if settings_obj is not None else settings
     pairs = {
@@ -168,8 +168,8 @@ def credentials_from_settings(adapter: str, settings_obj=None) -> AdapterCredent
         "thehive": ("THEHIVE_BASE_URL", "THEHIVE_API_KEY"),
     }
     if adapter == "wazuh":
-        # 3.2.4: user/password pair instead of an API key — same chain,
-        # same fail-closed validation, Basic Authorization header.
+        # Wazuh uses a user/password pair instead of an API key — same
+        # chain, same fail-closed validation, Basic Authorization header.
         base_url = validate_base_url(adapter, getattr(source, "WAZUH_BASE_URL"))
         username = validate_secret_field(
             "WAZUH_API_USER", getattr(source, "WAZUH_API_USER"))
@@ -187,14 +187,14 @@ def credentials_from_settings(adapter: str, settings_obj=None) -> AdapterCredent
     return AdapterCredentials(adapter=adapter, base_url=base_url, api_key=api_key)
 
 
-# --------------------------------------------------------------------------
-# Redaction (the platform-wide *** gate, frozen design §8)
-# --------------------------------------------------------------------------
+#
+# Redaction (the platform-wide *** gate)
+#
 def _operator_tokens(operators_json: str) -> tuple[str, ...]:
     """Every ``token`` inside ``OPERATORS_JSON`` (a malformed blob yields none).
 
-    The registry already REFUSES to boot on malformed JSON, so this is a purely
-    defensive path: a redaction helper must never raise."""
+    The registry already refuses to boot on malformed JSON, so this path is
+    purely defensive: a redaction helper must never raise."""
     raw = (operators_json or "").strip()
     if not raw:
         return ()
@@ -232,20 +232,20 @@ def current_secret_values(settings_obj=None) -> tuple[str, ...]:
     process-lifetime — the same exposure class as holding the settings
     themselves, never widened.
 
-    RC2: the set was INCOMPLETE. It covered the adapter keys and the legacy
-    execution token, but NOT the operator tokens, the per-adapter callback
-    tokens, the AI provider key, or the password inside ``DATABASE_URL`` — any
-    of which could have been interpolated into a log line unmasked."""
+    It covers the adapter keys, the legacy execution token, the operator
+    tokens, the per-adapter callback tokens, the AI provider key and the
+    password inside ``DATABASE_URL``: any of them can reach a log line
+    unmasked, so all of them must be substitution candidates."""
     source = settings_obj if settings_obj is not None else settings
     candidates = (
         source.SHUFFLE_API_KEY,
         source.WAZUH_API_PASSWORD,
         source.THEHIVE_API_KEY,
-        # M2-R §4: the INDEPENDENT TheHive read-only key is a secret too — it
-        # rides the same Authorization header, so it joins the redaction set.
+        # The separate TheHive read-only key is a secret too — it rides the
+        # same Authorization header, so it joins the redaction set.
         source.THEHIVE_READ_API_KEY,
         source.EXECUTION_TOKEN,
-        # RC2: every remaining credential-bearing setting.
+        # Every remaining credential-bearing setting.
         source.SHUFFLE_CALLBACK_TOKEN,
         source.WAZUH_CALLBACK_TOKEN,
         source.THEHIVE_CALLBACK_TOKEN,

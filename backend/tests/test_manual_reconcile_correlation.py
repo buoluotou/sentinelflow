@@ -7,7 +7,7 @@ adapter-specific external reference are lifted READ-ONLY from the historical
 (the registry-integration + FakeReadAdapter behaviour lives in
 ``test_manual_reconcile_reader.py``); this file keeps proving correlation +
 extraction, updated for the two A2-C shifts: the ADAPTER_NAMES vocabulary gate is
-GONE (§10 — an unknown adapter is extracted as-is and the registry rejects it), and
+GONE, and
 a seeded chain now rejects at the EMPTY production registry with
 ``UnsupportedAdapterRead`` -> 404 (not the A2-B ``NotImplementedError`` -> 501).
 A2-D then adds the read-FAILURE path (a real ``read()`` that fails in transit ->
@@ -16,9 +16,9 @@ A2-D then adds the read-FAILURE path (a real ``read()`` that fails in transit ->
 extraction and that the CAPABILITY-failure path (no reader) persists NOTHING — no
 real external read, no mapping, no execution, no fact on any path it exercises.
 
-The suite nails the properties that make B safe (spec §1-§19):
+The suite nails the properties that make B safe:
 
-1. THE RIGHT FACTS FROM THE RIGHT ROWS (spec §5-§7 — the crux). One execution_id
+1. THE RIGHT FACTS FROM THE RIGHT ROWS. One execution_id
    maps to MULTIPLE rows, so selection is by the platform's FROZEN ordering, not
    list/insert position: the adapter is ``detail["executor"]`` of the FIRST
    chronological row (the ``requested`` row — the ``metrics.py::_adapter_of``
@@ -26,27 +26,27 @@ The suite nails the properties that make B safe (spec §1-§19):
    (the latest by ``created_at, id`` — ``derive_execution_state``'s ordering, the
    only row ``_terminal_outcome_detail`` writes the executor's response onto).
    ``test_26_*`` decouples INSERT order / row id from ``created_at`` to prove it.
-2. NO FABRICATED HANDLE (spec §8-§11). A missing shuffle/wazuh/thehive reference,
+2. NO FABRICATED HANDLE. A missing shuffle/wazuh/thehive reference,
    a ``failed`` dispatch with no handle, a never-dispatched (``guard_rejected``)
    chain, or a Shuffle ``workflow_id`` / Wazuh ``command`` look-alike is
    ``MissingExternalReference`` -> rejected, never a substituted reference.
    ``mock`` alone yields ``external_reference=None`` (recognized, no read; A2-C's
-   registry then rejects it with UnsupportedAdapterRead — §11).
-3. HISTORY WINS, THE CLIENT LOSES (spec §6 / §14-§16 / §19). The adapter and the
+   registry then rejects it with UnsupportedAdapterRead — ).
+3. HISTORY WINS, THE CLIENT LOSES. The adapter and the
    reference come ONLY from ``execution_log``: ``extract_context`` structurally
    takes neither an adapter, nor an operator, nor a reference; a smuggled
    ``{"adapter": ..., "external_reference": ...}`` body is a 422 at the empty
    schema and never perturbs the historical facts.
-4. READ-ONLY (spec §16-§17). SELECT only: no INSERT/UPDATE/DELETE/COMMIT, nothing
+4. READ-ONLY. SELECT only: no INSERT/UPDATE/DELETE/COMMIT, nothing
    staged, ``execution_log`` byte-identical (INCLUDING ``detail``) before/after on
    the PASS, the FAIL and the ``UnsupportedAdapterRead`` path; zero Outcome Facts.
-5. A BOUNDED MODULE (spec §2 / §7 / §21). The AST import surface is an EXACT
+5. A BOUNDED MODULE. The AST import surface is an EXACT
    allowlist (docstring-immune — this module NAMES the forbidden things in prose):
    the ExecutionLog model + SQLAlchemy select + ``correlate_execution`` (3.4.4-C) +
    ``MissingExternalReference`` (3.4.3-B) + the A1 READ contract
    (``app.services.manual_reconcile.read``: AdapterReadRequest / AdapterReadResult /
    ReadAdapterRegistry / default_read_adapter_registry). The WRITE side
-   (``app.services.executions``) is STILL not imported at all (§10 / §21), and the
+   (``app.services.executions``) is STILL not imported at all, and the
    ``app.models.execution_outcome`` model is STILL not imported DIRECTLY. A2-D
    EXTENDS this allowlist with the read-FAILURE persistence + envelope surface
    (``datetime`` / ``sqlalchemy.exc`` / the ``webhook`` ``ExecutionOutcomeFact`` +
@@ -98,22 +98,22 @@ NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
 RECONCILE = "/api/v1/executions/{eid}/reconcile"
 
-#: The exact import surface D/E is allowed (spec §2 / §7 / §13 / §21, EXTENDED
-#: by A2-D + A2-E). ``__future__`` is the ``from __future__ import annotations`` line;
-#: ``app.services.manual_reconcile.read`` is the A1 READ contract (AdapterReadRequest
-#: / AdapterReadResult / ReadAdapterRegistry / default_read_adapter_registry) the
-#: pipeline integrates (§7), and ``app.services.manual_reconcile`` adds the A2-D
-#: ``ReadTransportError`` sibling. A2-D ADDS the read-FAILURE persistence + envelope
-#: surface: ``datetime`` (server observation time, §9), ``sqlalchemy.exc``
-#: (SQLAlchemyError -> rollback, §23), ``app.services.outcomes.webhook`` (the REUSED
-#: ``ExecutionOutcomeFact`` alias + ``OutcomePersistenceError``, §22 — NOT a second
-#: ORM writer), ``app.services.outcomes.derivation`` (``derive_outcome_state``, §13),
-#: and ``app.schemas.reconcile`` (the frozen ``ManualReconcileResponse`` envelope +
-#: ``MANUAL_RECONCILE_SOURCE``, §4.4). The WRITE side ``app.services.executions`` is
-#: STILL not imported at all (§21), and ``app.models.execution_outcome`` is STILL not
-#: imported DIRECTLY (reached only via the webhook alias, so it stays FORBIDDEN
-#: below). ``typing`` / ``NoReturn`` are GONE: reconcile_execution now RETURNS the
-#: envelope on the read-failure path instead of always raising.
+# The exact import surface D/E is allowed (/ / / , EXTENDED
+# by A2-D + A2-E). ``__future__`` is the ``from __future__ import annotations`` line;
+# ``app.services.manual_reconcile.read`` is the A1 READ contract (AdapterReadRequest
+# / AdapterReadResult / ReadAdapterRegistry / default_read_adapter_registry) the
+# pipeline integrates, and ``app.services.manual_reconcile`` adds the A2-D
+# ``ReadTransportError`` sibling. A2-D ADDS the read-FAILURE persistence + envelope
+# surface: ``datetime``, ``sqlalchemy.exc``
+# ``app.services.outcomes.webhook`` (the REUSED
+# ``ExecutionOutcomeFact`` alias + ``OutcomePersistenceError``, — NOT a second
+# ORM writer), ``app.services.outcomes.derivation``,
+# and ``app.schemas.reconcile`` (the ``ManualReconcileResponse`` envelope +
+# ``MANUAL_RECONCILE_SOURCE``, ). The WRITE side ``app.services.executions`` is
+# STILL not imported at all, and ``app.models.execution_outcome`` is STILL not
+# imported DIRECTLY (reached only via the webhook alias, so it stays FORBIDDEN
+# below). ``typing`` / ``NoReturn`` are GONE: reconcile_execution now RETURNS the
+# envelope on the read-failure path instead of always raising.
 ALLOWED_MODULES = {
     "__future__",
     "uuid",
@@ -166,51 +166,51 @@ ALLOWED_FUNCS = {
 }
 ALLOWED_CLASSES = {"CorrelatedExecutionContext"}
 
-#: Fragments C must NEVER import (spec §2 / §21). A2-C INVERTS two A2-B entries:
-#: the A1 read-contract package ``app.services.manual_reconcile.read`` is now the
-#: SANCTIONED integration (§7), while the WRITE side ``app.services.executions`` is
-#: now forbidden WHOLESALE (§21 — the A2-B ADAPTER_NAMES vocabulary import is gone,
-#: §10, so nothing under executions is reachable). Persistence / transport /
-#: dispatch submodules stay forbidden.
+# Fragments C must NEVER import. A2-C INVERTS two A2-B entries:
+# the A1 read-contract package ``app.services.manual_reconcile.read`` is now the
+# SANCTIONED integration, while the WRITE side ``app.services.executions`` is
+# now forbidden WHOLESALE (— the A2-B ADAPTER_NAMES vocabulary import is gone,
+# so nothing under executions is reachable). Persistence / transport /
+# dispatch submodules stay forbidden.
 FORBIDDEN_MODULE_FRAGMENTS = (
     "httpx",
     "requests",
     "urllib",
     "app.integrations",
-    "app.services.executions",  # the WRITE side — physically isolated (§21)
+    "app.services.executions",  # the WRITE side — physically isolated
     "app.models.execution_outcome",  # Outcome persistence (A2-E)
     "fastapi",
     "app.api",
     "retry",
     "compensat",
 )
-#: Imported NAMES C must never bind (docstring-immune; the module docstring NAMES
-#: several of these in its FORBIDDEN list, so only the AST is trustworthy). A2-C
-#: DROPS the A2-B prohibitions on ReadAdapterRegistry / AdapterReadRequest (now the
-#: sanctioned §7 integration) and ADDS ADAPTER_NAMES (the §10 vocabulary gate the
-#: registry replaces). FakeReadAdapter stays forbidden — it is test-only (§22), never
-#: imported by app code.
+# Imported NAMES C must never bind (docstring-immune; the module docstring NAMES
+# several of these in its FORBIDDEN list, so only the AST is trustworthy). A2-C
+# DROPS the A2-B prohibitions on ReadAdapterRegistry / AdapterReadRequest (now the
+# sanctioned integration) and ADDS ADAPTER_NAMES (the vocabulary gate the
+# registry replaces). FakeReadAdapter stays forbidden — it is test-only, never
+# imported by app code.
 FORBIDDEN_NAMES = (
     "execute_response",
     "compensate_response",
     "ResponseExecutor",
     "create_executor",
-    "ADAPTER_NAMES",  # §10: the registry is the capability boundary now, not a vocabulary gate
-    "FakeReadAdapter",  # test-only (§22) — never imported by app code
+    "ADAPTER_NAMES",  # the registry is the capability boundary now, not a vocabulary gate
+    "FakeReadAdapter",  # test-only — never imported by app code
     "normalize_external_state",
     "validate_observation",
     "ExecutionOutcome",
     "persist_callback_outcome",
-    "UnmappableExecutionId",  # C never raises it directly — 3.4.4-C does (spec §3)
+    "UnmappableExecutionId",  # C never raises it directly — 3.4.4-C does
     "HTTPException",
     "Operator",
 )
 
 
-# ---------------------------------------------------------------------------
+#
 # seeding + snapshot helpers (mirror tests/test_correlation.py, extended so each
 # row carries its OWN detail — B reads detail["executor"] + the reference key)
-# ---------------------------------------------------------------------------
+#
 def _seed_approval(db_session) -> AIResponseApproval:
     """One committed event + recommendation + approved decision (the FK-safe chain
     used across the execution suite). Each execute chain needs its OWN approval
@@ -277,9 +277,9 @@ def _seed_chain(db_session, execution_id, *, rows, operator="ops-1"):
 def _seed_chain_at(db_session, execution_id, *, rows, operator="ops-1"):
     """Seed one execute chain from ``[(decision, detail, created_at), ...]``,
     inserted in the GIVEN order with EXPLICIT ``created_at``. INSERT order (hence
-    row ``id``) is deliberately DECOUPLED from chronological order so a test can
+    row ``id``) is DECOUPLED from chronological order so a test can
     prove selection follows ``created_at`` — never the natural/insert order or the
-    row PK (spec §7 / §18 item 26). The DB does NOT enforce "requested first"
+    row PK. The DB does NOT enforce "requested first"
     (that is a Service invariant), so this seeding is valid."""
     approval = _seed_approval(db_session)
     for decision, detail, created_at in rows:
@@ -305,7 +305,7 @@ def _all_log_rows(db_session):
 
 
 def _log_snapshot(db_session):
-    """Full-table content snapshot of execution_log INCLUDING ``detail`` (spec §17:
+    """Full-table content snapshot of execution_log INCLUDING ``detail`` (:
     B must not mutate detail / status / reference). ``detail`` is JSON-canonicalized
     so dict key order is irrelevant; the tuple is keyed by the unique row ``id`` so
     dicts are never order-compared."""
@@ -334,14 +334,14 @@ def _outcome_count(db_session):
 
 
 def _assert_session_clean(db_session):
-    """Nothing staged to write anywhere in the session (spec §16)."""
+    """Nothing staged to write anywhere in the session."""
     assert not list(db_session.new)
     assert not list(db_session.dirty)
     assert not list(db_session.deleted)
 
 
 def _imported_reconcile():
-    """AST import surface of manual_reconcile.py — docstring-immune (spec §2)."""
+    """AST import surface of manual_reconcile.py — docstring-immune."""
     tree = ast.parse(inspect.getsource(reconcile_module))
     modules, names, funcs, classes = set(), set(), set(), set()
     for node in ast.walk(tree):
@@ -385,8 +385,8 @@ def operators(monkeypatch):
     )
 
 
-#: A canonical, reference-bearing shuffle chain (requested -> dispatched ->
-#: succeeded with the §6.2 external handle on the TERMINAL row).
+# A canonical, reference-bearing shuffle chain (requested -> dispatched ->
+# succeeded with the external handle on the TERMINAL row).
 def _shuffle_rows(reference="sf-exec-abc123"):
     return [
         ("requested", {"executor": "shuffle"}),
@@ -395,12 +395,12 @@ def _shuffle_rows(reference="sf-exec-abc123"):
     ]
 
 
-# ---------------------------------------------------------------------------
-# §18 items 1/2/5/6/7/8/13 — extract_context yields the right read-only context
-# ---------------------------------------------------------------------------
+#
+# items 1/2/5/6/7/8/13 — extract_context yields the right read-only context
+#
 class TestExtractContext:
     def test_01_existing_chain_yields_context(self, db_session):
-        # §18.1: an existing chain -> a pure CorrelatedExecutionContext.
+        # an existing chain -> a pure CorrelatedExecutionContext.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         ctx = extract_context(db_session, eid)
@@ -408,7 +408,7 @@ class TestExtractContext:
         assert ctx.execution_id == eid
 
     def test_02_missing_chain_raises_unmappable(self, db_session):
-        # §18.2 / §4: no chain -> UnmappableExecutionId (from 3.4.4-C), never a
+        # / : no chain -> UnmappableExecutionId (from 3.4.4-C), never a
         # fabricated context, never 'unknown' / 'reconciliation_failed'.
         _seed_chain(db_session, uuid.uuid4(), rows=_shuffle_rows())
         with pytest.raises(UnmappableExecutionId):
@@ -416,14 +416,14 @@ class TestExtractContext:
         assert _outcome_count(db_session) == 0
 
     def test_05_executor_extracted_from_requested_row(self, db_session):
-        # §18.5 / §6: the adapter is detail["executor"] of the FIRST chronological
+        # / : the adapter is detail["executor"] of the FIRST chronological
         # row (the requested row), read-only from history.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         assert extract_context(db_session, eid).adapter == "shuffle"
 
     def test_06_shuffle_reference_extracted(self, db_session):
-        # §18.6 / §5: Shuffle -> detail["external_execution_id"] on the TERMINAL row.
+        # / : Shuffle -> detail["external_execution_id"] on the TERMINAL row.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-exec-xyz"))
         ctx = extract_context(db_session, eid)
@@ -431,7 +431,7 @@ class TestExtractContext:
         assert ctx.external_reference == "sf-exec-xyz"
 
     def test_07_wazuh_reference_extracted(self, db_session):
-        # §18.7 / §5: Wazuh -> detail["command_id"] on the TERMINAL row.
+        # / : Wazuh -> detail["command_id"] on the TERMINAL row.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -447,7 +447,7 @@ class TestExtractContext:
         assert ctx.external_reference == "cmd-77"
 
     def test_08_thehive_reference_extracted(self, db_session):
-        # §18.8 / §5: TheHive -> detail["case_id"] on the TERMINAL row.
+        # / : TheHive -> detail["case_id"] on the TERMINAL row.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -463,7 +463,7 @@ class TestExtractContext:
         assert ctx.external_reference == "case-4242"
 
     def test_13_mock_recognized_reference_none(self, db_session):
-        # §18.13 / §14: executor=mock -> adapter="mock", external_reference=None,
+        # / : executor=mock -> adapter="mock", external_reference=None,
         # NOT MissingExternalReference (mock has no external object; A2-C decides
         # UnsupportedAdapterRead). dry_run.execution_id is the PLATFORM id, never a
         # reference, and is not read.
@@ -482,12 +482,12 @@ class TestExtractContext:
         assert ctx.external_reference is None
 
 
-# ---------------------------------------------------------------------------
-# §18 items 9/10/11/12 + §8-§11 — never fabricate a handle
-# ---------------------------------------------------------------------------
+#
+# items 9/10/11/12 + -— never fabricate a handle
+#
 class TestMissingReference:
     def test_09_missing_shuffle_reference_rejected(self, db_session):
-        # §18.9 / §11: Shuffle terminal row WITHOUT external_execution_id.
+        # / : Shuffle terminal row WITHOUT external_execution_id.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -502,7 +502,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_10_missing_wazuh_reference_rejected(self, db_session):
-        # §18.10 / §10: Wazuh terminal row WITHOUT command_id.
+        # / : Wazuh terminal row WITHOUT command_id.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -517,7 +517,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_11_missing_thehive_reference_rejected(self, db_session):
-        # §18.11 / §9: TheHive case_id is MANDATORY terminal evidence; absent ->
+        # / : TheHive case_id is MANDATORY terminal evidence; absent ->
         # MissingExternalReference.
         eid = uuid.uuid4()
         _seed_chain(
@@ -533,7 +533,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_12_failed_dispatch_without_reference_rejected(self, db_session):
-        # §18.12 / §8: a 'failed' TERMINAL row with no handle. The execution_id
+        # / : a 'failed' TERMINAL row with no handle. The execution_id
         # EXISTS and the adapter is KNOWN, but B never constructs a reference.
         eid = uuid.uuid4()
         _seed_chain(
@@ -549,7 +549,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_shuffle_workflow_id_is_not_substituted(self, db_session):
-        # §11 TRAP: a Shuffle terminal row carrying ONLY workflow_id (the workflow
+        # TRAP: a Shuffle terminal row carrying ONLY workflow_id (the workflow
         # TEMPLATE id) must NOT be laundered into external_execution_id.
         eid = uuid.uuid4()
         _seed_chain(
@@ -565,7 +565,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_wazuh_command_is_not_command_id(self, db_session):
-        # §10 TRAP: a Wazuh terminal row carrying 'command' (the command NAME) but
+        # TRAP: a Wazuh terminal row carrying 'command' (the command NAME) but
         # no 'command_id' must NOT be substituted.
         eid = uuid.uuid4()
         _seed_chain(
@@ -581,7 +581,7 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_guard_rejected_chain_has_no_reference(self, db_session):
-        # §8: a chain that never dispatched (requested -> guard_rejected) has NO
+        # a chain that never dispatched (requested -> guard_rejected) has NO
         # terminal executor response, hence NO reference -> MissingExternalReference.
         eid = uuid.uuid4()
         _seed_chain(
@@ -596,20 +596,20 @@ class TestMissingReference:
             extract_context(db_session, eid)
 
     def test_missing_reference_is_a_contract_validation_failure(self):
-        # §22: reuse the ONE frozen family — not a second exception system.
+        # reuse the ONE family — not a second exception system.
         assert issubclass(MissingExternalReference, ContractValidationFailure)
 
 
-# ---------------------------------------------------------------------------
-# §18 items 14/15/16/17 + §6 / §13 — adapter identity is history-driven
-# ---------------------------------------------------------------------------
+#
+# items 14/15/16/17 + / — adapter identity is history-driven
+#
 class TestAdapterIdentity:
     def test_17_unknown_adapter_is_not_gated_at_extraction(self, db_session):
-        # §10 / §17.13: A2-C REMOVED the A2-B ADAPTER_NAMES vocabulary gate. An
+        # / : A2-C REMOVED the A2-B ADAPTER_NAMES vocabulary gate. An
         # unknown executor is now extracted AS-IS (adapter="datadog"); the
         # ReadAdapterRegistry — not extraction — is the sole capability boundary, so
         # it rejects THERE with UnsupportedAdapterRead (proven in
-        # test_manual_reconcile_reader.py). datadog has no §6.2 reference key, so its
+        # test_manual_reconcile_reader.py). datadog has no reference key, so its
         # external_reference is None (like mock) — extraction NEVER guesses one.
         eid = uuid.uuid4()
         _seed_chain(
@@ -626,7 +626,7 @@ class TestAdapterIdentity:
         assert ctx.external_reference is None
 
     def test_absent_executor_rejected(self, db_session):
-        # §13: a requested row with no executor at all is not reconcilable.
+        # a requested row with no executor at all is not reconcilable.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -637,7 +637,7 @@ class TestAdapterIdentity:
             extract_context(db_session, eid)
 
     def test_non_string_executor_rejected(self, db_session):
-        # §13: a non-str executor (corrupt detail) is never coerced into an adapter.
+        # a non-str executor (corrupt detail) is never coerced into an adapter.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -648,29 +648,29 @@ class TestAdapterIdentity:
             extract_context(db_session, eid)
 
     def test_14_extract_context_takes_no_adapter_from_client(self):
-        # §18.14 / §6: STRUCTURAL — extract_context(session, execution_id) has NO
+        # / : STRUCTURAL — extract_context(session, execution_id) has NO
         # adapter parameter, so a client can never supply one.
         params = list(inspect.signature(extract_context).parameters)
         assert params == ["session", "execution_id"]
 
     def test_15_extract_context_takes_no_operator(self):
-        # §18.15 / §6: STRUCTURAL — the operator/recorder never reaches extraction,
+        # / : STRUCTURAL — the operator/recorder never reaches extraction,
         # so it can never influence the adapter or the reference.
         params = list(inspect.signature(extract_context).parameters)
         assert "operator" not in params
 
     def test_16_extract_context_takes_no_external_reference(self):
-        # §18.16 / §7: STRUCTURAL — no reference parameter; the reference is only
+        # / : STRUCTURAL — no reference parameter; the reference is only
         # ever read from execution_log.
         params = list(inspect.signature(extract_context).parameters)
         assert "external_reference" not in params
         assert "reference" not in params
 
     def test_operator_value_does_not_change_adapter(self, db_session):
-        # §18.15: reconcile_execution carries an operator, but the adapter is the
+        # reconcile_execution carries an operator, but the adapter is the
         # historical one regardless of the operator string passed. A2-C: the shuffle
         # chain now rejects at the EMPTY production registry (UnsupportedAdapterRead),
-        # still operator-blind — the operator never reaches the read (§12 / §18).
+        # still operator-blind — the operator never reaches the read.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         # extraction (what reconcile_execution runs before the registry) is operator-
@@ -681,7 +681,7 @@ class TestAdapterIdentity:
         assert extract_context(db_session, eid).adapter == "shuffle"
 
     def test_adapter_read_from_first_row_not_terminal(self, db_session):
-        # §7: the adapter is the FIRST chronological row's executor even when the
+        # the adapter is the FIRST chronological row's executor even when the
         # TERMINAL row carries a DECOY executor (a wrong impl reading the terminal
         # row would resolve to wazuh and then fail on shuffle's key).
         eid = uuid.uuid4()
@@ -699,7 +699,7 @@ class TestAdapterIdentity:
         assert ctx.external_reference == "sf-real"
 
     def test_adapter_capability_boundary_is_the_read_registry(self):
-        # §10: A2-C DROPPED the A2-B ADAPTER_NAMES vocabulary gate. The module no
+        # A2-C DROPPED the A2-B ADAPTER_NAMES vocabulary gate. The module no
         # longer binds ADAPTER_NAMES at all; the ReadAdapterRegistry is now the SOLE
         # adapter-capability boundary (an unknown/unsupported adapter rejects at
         # registry.get, never at a copied vocabulary list).
@@ -709,12 +709,12 @@ class TestAdapterIdentity:
         assert {"ReadAdapterRegistry", "default_read_adapter_registry"} <= names
 
 
-# ---------------------------------------------------------------------------
-# §18 items 25/26 + §7 — deterministic multi-row selection
-# ---------------------------------------------------------------------------
+#
+# items 25/26 + — deterministic multi-row selection
+#
 class TestDeterministicSelection:
     def test_26_shuffled_insert_selects_by_created_at(self, db_session):
-        # §18.26 / §7: INSERT order (hence row id) is DECOUPLED from chronological
+        # / : INSERT order (hence row id) is DECOUPLED from chronological
         # order. Insert succeeded FIRST (lowest id, latest created_at) and requested
         # LAST (highest id, earliest created_at). Only a created_at ASC sort yields
         # adapter from requested and reference from succeeded; an id/insert-order
@@ -735,7 +735,7 @@ class TestDeterministicSelection:
         assert ctx.external_reference == "sf-real"
 
     def test_reference_from_terminal_not_earliest_row(self, db_session):
-        # §7: the reference is the TERMINAL (latest created_at) row's handle even
+        # the reference is the TERMINAL (latest created_at) row's handle even
         # when an EARLIER row carries a decoy reference-shaped key.
         eid = uuid.uuid4()
         _seed_chain(
@@ -750,7 +750,7 @@ class TestDeterministicSelection:
         assert extract_context(db_session, eid).external_reference == "sf-terminal-real"
 
     def test_25_repeated_call_is_deterministic(self, db_session):
-        # §18.25: repeated extraction over an unchanged chain is identical, and
+        # repeated extraction over an unchanged chain is identical, and
         # leaves the chain byte-identical (no mutation between calls).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-stable"))
@@ -765,12 +765,12 @@ class TestDeterministicSelection:
         assert _log_snapshot(db_session) == before
 
 
-# ---------------------------------------------------------------------------
-# §18 item 4 + §16 / §17 — read-only discipline
-# ---------------------------------------------------------------------------
+#
+# item 4 + / — read-only discipline
+#
 class TestReadOnly:
     def test_04_execution_log_rows_unchanged(self, db_session):
-        # §18.4 / §17: execution_log (INCLUDING detail) is byte-identical after a
+        # / : execution_log (INCLUDING detail) is byte-identical after a
         # successful extraction.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -779,7 +779,7 @@ class TestReadOnly:
         assert _log_snapshot(db_session) == before
 
     def test_rows_unchanged_after_reconcile_rejected(self, db_session):
-        # §17 / §20: even the full pipeline entrypoint (which A2-C stops at the
+        # / : even the full pipeline entrypoint (which A2-C stops at the
         # EMPTY registry -> UnsupportedAdapterRead) leaves the chain untouched and
         # writes zero Outcome Facts.
         eid = uuid.uuid4()
@@ -791,7 +791,7 @@ class TestReadOnly:
         assert _outcome_count(db_session) == 0
 
     def test_rows_unchanged_on_missing_reference_path(self, db_session):
-        # §17: a rejected extraction (MissingExternalReference) mutates nothing.
+        # a rejected extraction (MissingExternalReference) mutates nothing.
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -804,7 +804,7 @@ class TestReadOnly:
         assert _log_snapshot(db_session) == before
 
     def test_rows_unchanged_on_unmappable_path(self, db_session):
-        # §17: a missing chain leaves OTHER chains intact.
+        # a missing chain leaves OTHER chains intact.
         other = uuid.uuid4()
         _seed_chain(db_session, other, rows=_shuffle_rows())
         before = _log_snapshot(db_session)
@@ -813,14 +813,14 @@ class TestReadOnly:
         assert _log_snapshot(db_session) == before
 
     def test_no_insert_update_delete(self, db_session):
-        # §16: nothing staged to write after extraction.
+        # nothing staged to write after extraction.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         extract_context(db_session, eid)
         _assert_session_clean(db_session)
 
     def test_extract_never_commits(self, db_session, monkeypatch):
-        # §16: read-only means NO COMMIT. Patch commit to explode; extraction must
+        # read-only means NO COMMIT. Patch commit to explode; extraction must
         # still return without triggering it.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -832,7 +832,7 @@ class TestReadOnly:
         assert extract_context(db_session, eid).adapter == "shuffle"
 
     def test_no_new_execution_log_row(self, db_session):
-        # §16 / §18.22: extraction never CREATES an execution_log row.
+        # / : extraction never CREATES an execution_log row.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         count_before = len(_all_log_rows(db_session))
@@ -840,12 +840,12 @@ class TestReadOnly:
         assert len(_all_log_rows(db_session)) == count_before
 
 
-# ---------------------------------------------------------------------------
-# §18 item 3 — correlation REUSES 3.4.4-C (no second existence query)
-# ---------------------------------------------------------------------------
+#
+# item 3 — correlation REUSES 3.4.4-C (no second existence query)
+#
 class TestCorrelationReuse:
     def test_03_correlation_reused_via_spy(self, db_session, monkeypatch):
-        # §18.3 / §3: extract_context delegates the existence gate to
+        # / : extract_context delegates the existence gate to
         # correlate_execution — called EXACTLY once with (session, execution_id).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -864,20 +864,20 @@ class TestCorrelationReuse:
         assert ctx.adapter == "shuffle"
 
     def test_unmappable_is_never_bound_by_b(self):
-        # §3 / §22: B does NOT import/raise UnmappableExecutionId itself — it can
+        # / : B does NOT import/raise UnmappableExecutionId itself — it can
         # only surface from 3.4.4-C. (Docstring-immune AST.)
         _, names, _, _ = _imported_reconcile()
         assert "UnmappableExecutionId" not in names
 
     def test_existence_gate_call_is_present_in_source(self):
-        # §3: the mandated reuse call is literally present.
+        # the mandated reuse call is literally present.
         source = inspect.getsource(reconcile_module)
         assert "correlate_execution(session, execution_id)" in source
 
 
-# ---------------------------------------------------------------------------
-# §2 / §13 — AST import boundary (exact allowlist == nothing forbidden)
-# ---------------------------------------------------------------------------
+#
+# / — AST import boundary (exact allowlist == nothing forbidden)
+#
 class TestImportBoundary:
     def test_modules_are_an_exact_allowlist(self):
         modules, _, _, _ = _imported_reconcile()
@@ -896,8 +896,8 @@ class TestImportBoundary:
         assert classes == ALLOWED_CLASSES
 
     def test_no_write_side_executions_import(self):
-        # §21: A2-C imports NOTHING under app.services.executions — the A2-B
-        # ADAPTER_NAMES vocabulary import is gone (§10), so the WRITE side is now
+        # A2-C imports NOTHING under app.services.executions — the A2-B
+        # ADAPTER_NAMES vocabulary import is gone, so the WRITE side is now
         # physically unreachable from the read pipeline (Read/Write isolation).
         modules, _, _, _ = _imported_reconcile()
         executions = {m for m in modules if m.startswith("app.services.executions")}
@@ -915,27 +915,27 @@ class TestImportBoundary:
             assert name not in FORBIDDEN_NAMES
 
     def test_no_fastapi_import(self):
-        # §15 / §2: the domain layer is transport-agnostic (HTTP lives in the router).
+        # / : the domain layer is transport-agnostic (HTTP lives in the router).
         modules, names, _, _ = _imported_reconcile()
         assert not any(m.startswith("fastapi") for m in modules)
         assert "HTTPException" not in names
 
 
-# ---------------------------------------------------------------------------
-# §18 items 18-24 — no external side-capabilities (AST + runtime proofs)
-# ---------------------------------------------------------------------------
+#
+# items 18-24 — no external side-capabilities (AST + runtime proofs)
+#
 class TestNoSideCapabilities:
     def test_18_no_http_transport(self):
-        # §18.18 / §2 / §15: no HTTP client in the import surface.
+        # / / : no HTTP client in the import surface.
         modules, _, _, _ = _imported_reconcile()
         assert not any(f in m for m in modules for f in ("httpx", "requests", "urllib"))
         assert not any("app.integrations" in m for m in modules)
 
     def test_19_read_integration_is_read_side_only(self):
-        # §7 / §21 / §22: A2-C INTEGRATES the A1 READ contract (the sanctioned
+        # / / : A2-C INTEGRATES the A1 READ contract (the sanctioned
         # read-side package) and DOES call reader.read(...) — but imports NOTHING
         # from the WRITE side (app.services.executions) and NEVER binds the test-only
-        # FakeReadAdapter in app code (§22: it lives only in tests).
+        # FakeReadAdapter in app code.
         modules, names, _, _ = _imported_reconcile()
         assert "app.services.manual_reconcile.read" in modules
         assert {
@@ -949,7 +949,7 @@ class TestNoSideCapabilities:
         assert ".read(" in inspect.getsource(reconcile_module)
 
     def test_20_no_mapping(self):
-        # §18.20 / §2: B never maps an external_state onto an outcome word.
+        # / : B never maps an external_state onto an outcome word.
         _, names, _, _ = _imported_reconcile()
         assert "normalize_external_state" not in names
         assert "validate_observation" not in names
@@ -957,7 +957,7 @@ class TestNoSideCapabilities:
         assert "normalize_external_state" not in source
 
     def test_21_no_outcome_persistence(self, db_session):
-        # §18.21 / §2: no Outcome Fact is imported, constructed, or written. A2-C:
+        # / : no Outcome Fact is imported, constructed, or written. A2-C:
         # the shuffle chain rejects at the EMPTY registry (UnsupportedAdapterRead),
         # still zero Outcome Facts.
         _, names, _, _ = _imported_reconcile()
@@ -971,7 +971,7 @@ class TestNoSideCapabilities:
         assert _outcome_count(db_session) == 0
 
     def test_22_no_execution_dispatch(self, db_session):
-        # §18.22 / §2: no executor/dispatch import; no new execution_log row.
+        # / : no executor/dispatch import; no new execution_log row.
         _, names, _, _ = _imported_reconcile()
         for forbidden in ("execute_response", "compensate_response", "ResponseExecutor", "create_executor"):
             assert forbidden not in names
@@ -982,21 +982,21 @@ class TestNoSideCapabilities:
         assert len(_all_log_rows(db_session)) == before
 
     def test_23_no_retry(self):
-        # §18.23 / §2: B never retries.
+        # / : B never retries.
         modules, names, funcs, _ = _imported_reconcile()
         assert not any("retry" in m.lower() for m in modules)
         assert not any("retry" in n.lower() for n in names)
         assert not any("retry" in f.lower() for f in funcs)
 
     def test_24_no_compensation(self):
-        # §18.24 / §2: B never compensates.
+        # / : B never compensates.
         modules, names, funcs, _ = _imported_reconcile()
         assert not any("compensat" in m.lower() for m in modules)
         assert not any("compensat" in n.lower() for n in names)
         assert not any("compensat" in f.lower() for f in funcs)
 
     def test_no_reconciliation_failed_produced(self, db_session):
-        # §9 / §25: a registry LOOKUP failure (no reader) is NOT a read attempt, so
+        # / : a registry LOOKUP failure (no reader) is NOT a read attempt, so
         # NO outcome word — least of all reconciliation_failed — is produced. The
         # shuffle chain rejects at the EMPTY registry with UnsupportedAdapterRead
         # (behavioural, docstring-immune); reconciliation_failed needs a real read()
@@ -1010,12 +1010,12 @@ class TestNoSideCapabilities:
         assert all(r.outcome_status not in OUTCOME_STATUSES for r in rows)
 
 
-# ---------------------------------------------------------------------------
-# §12 — CorrelatedExecutionContext is a pure read-only structure
-# ---------------------------------------------------------------------------
+#
+# CorrelatedExecutionContext is a pure read-only structure
+#
 class TestContextPurity:
     def test_context_fields_are_exact(self):
-        # §12: exactly execution_id / adapter / external_reference — nothing more.
+        # exactly execution_id / adapter / external_reference — nothing more.
         assert set(CorrelatedExecutionContext.__slots__) == {
             "execution_id",
             "adapter",
@@ -1023,7 +1023,7 @@ class TestContextPurity:
         }
 
     def test_context_is_frozen(self, db_session):
-        # §12: the extracted context is immutable evidence.
+        # the extracted context is immutable evidence.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         ctx = extract_context(db_session, eid)
@@ -1032,7 +1032,7 @@ class TestContextPurity:
         assert ctx.adapter == "shuffle"
 
     def test_context_carries_no_outcome_status(self, db_session):
-        # §12: no derived state / outcome word rides along.
+        # no derived state / outcome word rides along.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         ctx = extract_context(db_session, eid)
@@ -1042,7 +1042,7 @@ class TestContextPurity:
             assert not hasattr(ctx, word)
 
     def test_context_carries_no_credential(self, db_session):
-        # §12: no API credential / operator token / callback token.
+        # no API credential / operator token / callback token.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         ctx = extract_context(db_session, eid)
@@ -1050,14 +1050,14 @@ class TestContextPurity:
             assert not hasattr(ctx, attr)
 
 
-# ---------------------------------------------------------------------------
-# §19 / §20 / §21 — API mapping + the client-override security invariant
-# ---------------------------------------------------------------------------
+#
+# / / — API mapping + the client-override security invariant
+#
 class TestApiCorrelationMapping:
     def test_valid_reference_chain_is_404_unsupported(self, client, db_session, operators):
-        # §8 / §16: a correlated, reference-bearing shuffle chain reaches the
+        # / : a correlated, reference-bearing shuffle chain reaches the
         # ReadAdapterRegistry, which is EMPTY in production -> UnsupportedAdapterRead
-        # -> 404 (NOT the A2-B 501; this is a reader-lookup rejection, not "not
+        # > 404 (NOT the A2-B 501; this is a reader-lookup rejection, not "not
         # implemented") and NEVER a 200 accepted. Its detail is DISTINCT from the
         # correlation 404 ("execution correlation failed" == no chain at all).
         eid = uuid.uuid4()
@@ -1070,7 +1070,7 @@ class TestApiCorrelationMapping:
         assert _outcome_count(db_session) == 0
 
     def test_mock_chain_is_404_unsupported_not_422(self, client, db_session, operators):
-        # §11 / §14: mock (adapter recognized, reference None) is NOT a
+        # / : mock (adapter recognized, reference None) is NOT a
         # MissingExternalReference (422) — A2-C hands it to the registry, which has
         # no reader for "mock" (no FakeMockReader is EVER registered) ->
         # UnsupportedAdapterRead -> 404.
@@ -1086,7 +1086,7 @@ class TestApiCorrelationMapping:
         assert r.json()["detail"] == "adapter read unsupported"
 
     def test_missing_reference_chain_is_422(self, client, db_session, operators):
-        # §21: a chain with no reconcilable handle -> 422 (MissingExternalReference),
+        # a chain with no reconcilable handle -> 422 (MissingExternalReference),
         # static detail, no fact.
         eid = uuid.uuid4()
         _seed_chain(
@@ -1104,7 +1104,7 @@ class TestApiCorrelationMapping:
         assert _outcome_count(db_session) == 0
 
     def test_nonexistent_and_non_uuid_404_are_uniform(self, client, operators):
-        # §4 / §21: a well-formed UUID with no chain AND a malformed id both -> the
+        # / : a well-formed UUID with no chain AND a malformed id both -> the
         # SAME uniform static 404 (a caller cannot distinguish format from absence).
         absent = client.post(_url(str(uuid.uuid4())), json={}, headers=_auth("tok-exec"))
         malformed = client.post(_url("not-a-uuid"), json={}, headers=_auth("tok-exec"))
@@ -1113,7 +1113,7 @@ class TestApiCorrelationMapping:
         assert absent.json()["detail"] == malformed.json()["detail"] == "execution correlation failed"
 
     def test_rejections_write_nothing(self, client, db_session, operators):
-        # §16 / §24 / §25: neither the 404 (unsupported adapter, empty registry) nor
+        # / / : neither the 404 (unsupported adapter, empty registry) nor
         # the 422 (missing reference) writes an Outcome Fact or a new execution_log
         # row — C is read-only on EVERY rejection path.
         ok = uuid.uuid4()
@@ -1129,7 +1129,7 @@ class TestApiCorrelationMapping:
         assert _log_snapshot(db_session) == log_before
 
     def test_19_client_cannot_smuggle_adapter_or_reference(self, client, db_session, operators):
-        # §19 — THE security invariant: a body claiming {"adapter": "wazuh",
+        # THE security invariant: a body claiming {"adapter": "wazuh",
         # "external_reference": "attacker-controlled"} is a 422 at the EMPTY schema
         # (extra="forbid") and never perturbs history; the platform still extracts
         # the HISTORICAL shuffle adapter + handle.
@@ -1148,7 +1148,7 @@ class TestApiCorrelationMapping:
         assert ctx.external_reference == "sf-historical-real"  # never "attacker-controlled"
 
     def test_19_historical_adapter_wins_over_client(self, db_session):
-        # §19 (service layer): with a shuffle chain in history, extraction yields
+        # (service layer): with a shuffle chain in history, extraction yields
         # shuffle + the historical handle no matter what a caller might have wanted;
         # there is no parameter through which a client value could enter.
         eid = uuid.uuid4()

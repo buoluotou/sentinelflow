@@ -1,4 +1,4 @@
-"""Phase 1 Step 5.3: Risk pipeline integration tests.
+"""Risk pipeline integration tests.
 
 Every deduplication pass must leave the event with an up-to-date, single
 EventRisk snapshot (create on first scoring, update in place afterwards).
@@ -124,9 +124,9 @@ def test_updated_at_refreshed_on_recalculate(db_session):
 def test_no_valid_public_ip_means_no_public_bonus(db_session):
     """Only private sources in the group -> public factor stays 0.
 
-    (Invalid/unparsable IPs are covered at engine level in test_risk_engine;
-    here the pipeline simply must not invent a bonus.)
-    """
+(Invalid/unparsable IPs are covered at engine level in test_risk_engine;
+here the pipeline simply must not invent a bonus.)
+"""
     engine = DeduplicationEngine()
 
     _process(db_session, engine, _make_normalized(actor_ip="192.168.1.50"))
@@ -144,10 +144,10 @@ def test_no_valid_public_ip_means_no_public_bonus(db_session):
 def test_public_source_bonus_persists_and_applies_once_via_pipeline(db_session):
     """A public actor earns +20 exactly once, stable across recalculations.
 
-    Changing the actor IP opens a NEW group (actor is part of the
-    fingerprint), so the multi-public-IP "applied once" semantics are
-    covered at engine level (test_risk_engine::test_case3b).
-    """
+Changing the actor IP opens a NEW group (actor is part of the
+fingerprint), so the multi-public-IP "applied once" semantics are
+covered at engine level (test_risk_engine::test_case3b).
+"""
     engine = DeduplicationEngine()
 
     for i in range(5):

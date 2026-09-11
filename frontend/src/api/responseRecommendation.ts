@@ -1,7 +1,6 @@
-/** AI response-recommendation API client (Step 12.5): explicit-trigger
- * endpoints only.
+/** AI response-recommendation API client: explicit-trigger endpoints only.
  *
- * Mirrors the Step 11 aiRiskSummary client — same error passthrough contract:
+ * Mirrors the aiRiskSummary client — same error passthrough contract:
  * backend `detail` strings (404/503/502) surface verbatim through ApiError.
  */
 import { api } from './client'
@@ -13,7 +12,7 @@ import type { AIResponseRecommendation } from '../types/responseRecommendation'
  * The backend answers 404 both for an unknown event and for "no record yet";
  * on the event detail page the event is already loaded, so only the latter
  * is mapped to null — any other 404 surfaces as an error. Note: a record
- * with recommendations === [] is a SUCCESS (AI judged no action warranted),
+ * with recommendations === [] is a success (AI judged no action warranted),
  * never a null empty state.
  */
 export async function getResponseRecommendation(

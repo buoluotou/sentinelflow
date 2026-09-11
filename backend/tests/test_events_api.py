@@ -1,4 +1,4 @@
-"""Phase 1 Step 4.4: Events API tests.
+"""Events API tests.
 
 Covers GET /api/v1/events (list + pagination) and GET /api/v1/events/{id}
 (detail + evidence alerts), plus the unified dedup behaviour of
@@ -82,7 +82,7 @@ def test_events_list_pagination(client):
 
 def test_post_alerts_now_shares_dedup_with_normalize(client, db_session):
     """Both entry points aggregate into the SAME group when the identity
-    matches (same source/category/title/asset/actor)."""
+matches (same source/category/title/asset/actor)."""
     from app.models import AlertGroup
 
     # entry point A: unified payload (source matches the adapter identity)

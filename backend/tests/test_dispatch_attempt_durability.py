@@ -1,7 +1,7 @@
-"""M4-F §1/§2 — durable pre-dispatch attempt store: REAL independent-connection
+"""/— durable pre-dispatch attempt store: REAL independent-connection
 durability proofs (TDD Cycle 1, store unit level).
 
-The M4 review finding was "flush 不等于持久提交": M4-A persisted the binding with
+The review finding was "flush 不等于持久提交": A persisted the binding with
 ``session.flush()`` inside the caller's transaction, so a caller rollback /
 terminal-write failure / process crash AFTER the external request fired could
 erase it. These tests prove the FIX at the store unit level using a FILE-backed
@@ -178,9 +178,9 @@ class TestDurableStoreCommit:
         assert rows[0].attempt_id == uuid.UUID(first.attempt_id)
 
     def test_record_refuses_a_second_attempt_for_the_same_approval(self, durable_engine):
-        """M4-G §1: ONE execute dispatch attempt per approval_id. Two DIFFERENT
+        """ONE execute dispatch attempt per approval_id. Two DIFFERENT
         execution_ids sharing the SAME approval_id is the concurrent same-approval
-        race the M4-F review flagged — the durable reservation must refuse the
+        race the review flagged — the durable reservation must refuse the
         SECOND at its independent commit (IntegrityError) BEFORE any external
         request, and the FIRST committed attempt must SURVIVE. Without an approval
         slot reservation both would commit and both would fire the adapter, the
@@ -233,7 +233,7 @@ def _seed_execution_row(
     and a legal execute decision lands cleanly (a non-``requested`` row falls outside
     the ``requested``-only partial indexes).
 
-    M4-G §3: when ``attempt_id`` is supplied the row REFERENCES it under
+    when ``attempt_id`` is supplied the row REFERENCES it under
     ``TERMINAL_REFERENCE_KEY`` exactly as the REAL service does (the terminal
     ``detail["dispatch_attempt_id"] = binding.attempt_id``). Recovery correlates BY
     attempt_id, so a terminal that does not reference the attempt no longer settles it."""
@@ -256,7 +256,7 @@ def _seed_execution_row(
 
 def _seed_terminal(engine, execution_id, approval_id, decision="succeeded", attempt_id=None):
     """Commit a TERMINAL (``succeeded``/``failed``) execution_log row — the outcome
-    the caller writes AFTER the external request returns. M4-G §3: it SETTLES an
+    the caller writes AFTER the external request returns. it SETTLES an
     attempt ONLY when it REFERENCES that attempt's immutable id (``attempt_id``),
     mirroring the real service; a terminal with no / a wrong reference leaves the
     attempt unreconciled (correlation is BY attempt_id, never by execution_id alone)."""
@@ -266,7 +266,7 @@ def _seed_terminal(engine, execution_id, approval_id, decision="succeeded", atte
 
 
 class TestUnreconciledRecovery:
-    """M4-F §1/§2 recovery: a committed attempt with NO committed terminal row is a
+    """/recovery: a committed attempt with NO committed terminal row is a
     MANUAL reconciliation candidate — surfaced, never auto-retried (constraint 5).
     The store is the ONLY writer here, so the file-backed SQLite single-writer lock
     is not contended (the caller's overlapping write transaction is the PostgreSQL
@@ -319,7 +319,7 @@ class TestUnreconciledRecovery:
 
 
 class TestEmittedThenAbandoned:
-    """The M4 review's EXACT demanded scenario (constraint 1): "外部副作用发生后，
+    """The review's EXACT demanded scenario (constraint 1): "外部副作用发生后，
     数据库事务回滚仍保留绑定". The external request fires (the caller logs
     ``dispatched`` and the wire call goes out), THEN the caller's whole business
     transaction aborts — a process crash, a lost response, a terminal-write failure
@@ -341,8 +341,8 @@ class TestEmittedThenAbandoned:
         # 1. the durable pre-dispatch commit lands BEFORE the external request.
         store.record(binding)
         # 2. the external request goes out: the caller appends + flushes ``dispatched``
-        #    inside its business transaction, then the process crashes / the caller
-        #    rolls the WHOLE transaction back before any terminal commits.
+        # inside its business transaction, then the process crashes / the caller
+        # rolls the WHOLE transaction back before any terminal commits.
         caller = _independent_session(durable_engine)
         try:
             caller.add(
@@ -362,7 +362,7 @@ class TestEmittedThenAbandoned:
         finally:
             caller.close()
         # 3. the committed attempt SURVIVES the caller's rollback (independent txn),
-        #    and 4. recovery flags it: no terminal row -> MANUAL reconciliation.
+        # and 4. recovery flags it: no terminal row -> MANUAL reconciliation.
         with _independent_session(durable_engine) as session:
             rows = session.scalars(select(DispatchAttempt)).all()
             assert len(rows) == 1
@@ -391,10 +391,10 @@ class TestEmittedThenAbandoned:
 
 
 class TestAttemptIdCorrelation:
-    """M4-G §3: a terminal SETTLES an attempt ONLY by REFERENCING its immutable
+    """a terminal SETTLES an attempt ONLY by REFERENCING its immutable
     ``attempt_id`` — NEVER by ``execution_id`` alone. A terminal for a DIFFERENT /
     wrong attempt on the SAME execution_id (a stale or mis-attributed terminal) must
-    NOT mask the pending attempt (§4 requirement 7: a wrong-attempt_id terminal
+    NOT mask the pending attempt (requirement 7: a wrong-attempt_id terminal
     cannot cover an unreconciled attempt)."""
 
     def test_terminal_for_a_wrong_attempt_id_does_not_settle_the_attempt(self, durable_engine):
@@ -403,7 +403,7 @@ class TestAttemptIdCorrelation:
         store.record(binding)
         # A terminal on the SAME execution_id but referencing a DIFFERENT attempt_id
         # (never this attempt's). Under the OLD execution_id-only correlation it would
-        # wrongly settle; §3 requires the attempt_id reference, so it stays pending.
+        # wrongly settle; requires the attempt_id reference, so it stays pending.
         _seed_terminal(
             durable_engine,
             uuid.UUID(binding.execution_id),
@@ -432,7 +432,7 @@ class TestAttemptIdCorrelation:
 
 
 class TestRecoveryClassification:
-    """M4-G §3: the READ-ONLY three-state recovery classification. A TERMINAL AUDIT
+    """the READ-ONLY three-state recovery classification. A TERMINAL AUDIT
     (a terminal references the attempt) is KEPT DISTINCT from DISPATCH_STATUS_UNKNOWN
     (no terminal references it) and from EXTERNAL_EFFECT_CONFIRMED (an Outcome-layer
     state the recovery read NEVER produces). A FAILED terminal is an AUDIT fact about
@@ -538,11 +538,11 @@ class TestRecoveryClassification:
 
 
 class TestImmutableFactCorrelation:
-    """M4-GR: a terminal SETTLES an attempt ONLY when ALL THREE immutable durable facts
+    """a terminal SETTLES an attempt ONLY when ALL THREE immutable durable facts
     agree — ``execution_id`` AND the referenced ``attempt_id`` AND (because a committed
     ``execution_log`` row ALWAYS carries a non-null ``approval_id``) ``approval_id``.
 
-    M4-G correlated on ``attempt_id`` ALONE, so a terminal belonging to a DIFFERENT
+    correlated on ``attempt_id`` ALONE, so a terminal belonging to a DIFFERENT
     execution that merely referenced this attempt's ``attempt_id`` could wrongly erase a
     still-pending attempt from the recovery view (Final Review finding: "有跨 execution
     误关联缺口"). Recovery exists precisely to survive crashed / corrupted / mis-ordered /

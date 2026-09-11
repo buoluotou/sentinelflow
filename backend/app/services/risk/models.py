@@ -1,7 +1,7 @@
 """Service-layer result types of the risk engine.
 
 These are plain dataclasses used between the engine and its callers —
-NOT the ORM EventRisk model (which is what Step 5.3 persists).
+NOT the ORM EventRisk model (which is what persists).
 """
 from dataclasses import dataclass, field
 

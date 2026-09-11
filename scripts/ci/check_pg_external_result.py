@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""RC2-R §1 — anti-false-green gate for the PostgreSQL external suite.
+"""anti-false-green gate for the PostgreSQL external suite.
 
 WHY. The external suite is guarded by ``SENTINELFLOW_PG_TEST_URL``: without
 that env var every test SKIPS, pytest still exits 0, and a misconfigured CI job
 would report GREEN while testing nothing. This checker turns the acceptance
 facts into hard assertions:
 
-    collected = 22, passed = 22, skipped = 0, failed = 0, errors = 0
+collected = 22, passed = 22, skipped = 0, failed = 0, errors = 0
 
 Usage (inside the CI job, after running pytest):
 
-    python -m pytest -m external --collect-only -q <files> | tee /tmp/pg-collect.txt
-    python -m pytest -m external -q <files>                | tee /tmp/pg-run.txt
-    python scripts/ci/check_pg_external_result.py /tmp/pg-collect.txt /tmp/pg-run.txt
+python -m pytest -m external --collect-only -q <files> | tee /tmp/pg-collect.txt
+python -m pytest -m external -q <files>                | tee /tmp/pg-run.txt
+python scripts/ci/check_pg_external_result.py /tmp/pg-collect.txt /tmp/pg-run.txt
 
 Exit code 0 only when every fact holds; any deviation (including an
 unexpected skip) fails the job.
@@ -23,8 +23,8 @@ import pathlib
 import re
 import sys
 
-#: The frozen acceptance fact (RC2-R §1/§7): 9 dispatch + 9 compensation +
-#: 2 audit-ordering + 2 risk/incident.
+# The acceptance fact: 9 dispatch + 9 compensation +
+# 2 audit-ordering + 2 risk/incident.
 EXPECTED_COLLECTED = 22
 
 

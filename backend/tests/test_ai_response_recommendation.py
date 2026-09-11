@@ -1,10 +1,10 @@
-"""Step 12.1: response_recommendation protocol + data-model freeze.
+"""response_recommendation protocol + data-model freeze.
 
 No real model and no network: provider tests run against an injected fake
 transport, mock tests against MockProvider. Frozen semantics under test:
 
 - strict schema (extra=forbid) on the envelope AND on every item
-- the frozen response-action vocabulary (unknown actions rejected)
+- the response-action vocabulary (unknown actions rejected)
 - an EMPTY recommendations list is a first-class "no action" answer
 - recommendations bounded 0..5, non-empty rationales, confidence in [0, 1]
 - advisory-only: no field can carry an executable payload
@@ -74,7 +74,7 @@ def _recommendation_dict(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------- protocol
+# protocol
 
 
 class TestResponseRecommendationProtocol:
@@ -159,7 +159,7 @@ class TestResponseRecommendationProtocol:
         assert isinstance(recommendation, ResponseRecommendation)
 
 
-# ------------------------------------------------------------------- prompts
+# prompts
 
 
 class TestResponseRecommendationPrompts:
@@ -169,7 +169,7 @@ class TestResponseRecommendationPrompts:
         # The model can only comply if the vocabulary is enumerated inline.
         for action in RESPONSE_ACTIONS:
             assert action in prompt
-        # Advisory-only boundary baked into the frozen prompt.
+        # Advisory-only boundary baked into the prompt.
         assert "never" in prompt and "approve" in prompt
 
     def test_prior_summary_included_only_when_present(self):
@@ -184,7 +184,7 @@ class TestResponseRecommendationPrompts:
         assert "prior_summary" not in build_user_prompt(_request(task="risk_summary"))
 
 
-# ------------------------------------------------------------- mock provider
+# mock provider
 
 
 class TestMockProviderResponseRecommendation:
@@ -223,12 +223,12 @@ class TestMockProviderResponseRecommendation:
             provider.generate(_request())
 
 
-# ----------------------------------------------------------- ollama provider
+# ollama provider
 
 
 class FakeTransport:
     """Injected stand-in for the HTTP layer: captures the request, returns
-    a canned body. Contract: (url, payload, headers, **kwargs) -> body str."""
+a canned body. Contract: (url, payload, headers, **kwargs) -> body str."""
 
     def __init__(self, body: str):
         self.body = body
@@ -260,7 +260,7 @@ class TestOllamaProviderResponseRecommendation:
             provider.generate(_request())
 
 
-# ------------------------------------------------------------- request builder
+# request builder
 
 
 class _Group:
@@ -336,7 +336,7 @@ class TestBuildResponseRecommendationRequest:
         }
 
 
-# --------------------------------------------------------------- orm model
+# orm model
 
 
 class TestAIResponseRecommendationModel:

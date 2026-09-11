@@ -14,9 +14,9 @@ from app.models.types import JSONVariant  # noqa: F401
 class Alert(Base):
     """Aggregated, normalized security alert.
 
-    Multiple raw security events may be deduplicated / aggregated into one
-    Alert (Phase 1 Step 4). Each contributing event is stored as AlertEvent.
-    """
+Multiple raw security events may be deduplicated / aggregated into one
+Alert. Each contributing event is stored as AlertEvent.
+"""
 
     __tablename__ = "alerts"
 
@@ -48,8 +48,8 @@ class Alert(Base):
     )
     event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
-    # Deduplication group (Phase 1 Step 4). Nullable: legacy alerts have no
-    # group, and the link is only enforced from Step 4.4 onward.
+    # Deduplication group. Nullable because alerts created before grouping
+    # existed carry no link.
     alert_group_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("alert_groups.id"), nullable=True, index=True
     )

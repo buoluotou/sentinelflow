@@ -1,4 +1,4 @@
-"""Step 11.1: risk_summary protocol + task-unified provider contract.
+"""risk_summary protocol + task-unified provider contract.
 
 No real model and no network: provider tests run against an injected fake
 transport, mock tests against MockProvider. Frozen semantics under test:
@@ -63,7 +63,7 @@ def _summary_dict(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------- protocol
+# protocol
 
 
 class TestRiskSummaryProtocol:
@@ -131,7 +131,7 @@ class TestRiskSummaryProtocol:
             parse_analysis(json.dumps(_summary_dict()))
 
 
-# ------------------------------------------------------------------- prompts
+# prompts
 
 
 class TestTaskPrompts:
@@ -160,7 +160,7 @@ class TestTaskPrompts:
         assert "reverse shell activity" in text
 
 
-# ------------------------------------------------------------- mock provider
+# mock provider
 
 
 class TestMockProviderRiskSummary:
@@ -202,12 +202,12 @@ class TestMockProviderRiskSummary:
         assert isinstance(analysis, AIAnalysis)
 
 
-# ----------------------------------------------------------- ollama provider
+# ollama provider
 
 
 class FakeTransport:
     """Injected stand-in for the HTTP layer: captures the request, returns
-    a canned body. Contract: (url, payload, headers, **kwargs) -> body str."""
+a canned body. Contract: (url, payload, headers, **kwargs) -> body str."""
 
     def __init__(self, body: str):
         self.body = body
@@ -252,7 +252,7 @@ class TestOllamaProviderRiskSummary:
         assert payload["messages"][0]["content"] == SYSTEM_PROMPT
 
 
-# --------------------------------------------------------------- orm model
+# orm model
 
 
 class TestAIRiskSummaryModel:

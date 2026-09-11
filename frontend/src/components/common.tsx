@@ -1,4 +1,4 @@
-/** Shared presentational atoms used across console pages (Step 8.1). */
+/** Shared presentational atoms used across console pages. */
 import type { ReactNode } from 'react'
 
 /** Severity / risk-level chip; unknown values render a neutral chip. */

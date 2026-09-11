@@ -1,19 +1,19 @@
-"""AI response-recommendation orchestration (Phase 2 Step 12.2).
+"""AI response-recommendation orchestration.
 
-    Event -> EventRisk + evidence + optional Step 11 risk summary
-          -> build_response_recommendation_request -> provider.generate()
-          -> ResponseRecommendation (validated)
-          -> persisted ai_response_recommendations row
+Event -> EventRisk + evidence + optional prior risk summary
+-> build_response_recommendation_request -> provider.generate()
+-> ResponseRecommendation (validated)
+-> persisted ai_response_recommendations row
 
-Mirrors the Step 10/11 service contract: flushes, never commits (the API
-layer owns the transaction boundary). Advisory only end-to-end: actions
-like block_source_ip / escalate_to_incident are RECORDED SUGGESTIONS here
-— nothing is executed, no Incident is created and no EventRisk field is
-touched; human approval lands in Step 13.
+Same service contract as the other AI services: flushes, never commits (the
+API layer owns the transaction boundary). Advisory only end-to-end: actions
+like block_source_ip / escalate_to_incident are recorded suggestions here —
+nothing is executed, no Incident is created and no EventRisk field is
+touched; a human approval is required before anything follows from them.
 
-Error taxonomy is identical to Step 10/11: AIEventNotFound (404), typed
-provider errors (503) and AIResponseParseError (502). A broken answer is
-never faked into a persisted row — validation happens strictly before
+Error taxonomy is the same as the other AI services: AIEventNotFound (404),
+typed provider errors (503) and AIResponseParseError (502). A broken answer
+is never recorded as a persisted row — validation happens strictly before
 any ORM object is constructed.
 """
 import uuid
@@ -49,11 +49,11 @@ class AIResponseRecommendationService:
     ) -> AIResponseRecommendation:
         """Generate response advice for one event and append it to the history.
 
-        Neither the Step 10 explanation nor the Step 11 risk summary is a
-        hard dependency — each layer stays independently generatable.
-        Repeated calls append records (ai_response_recommendations is a
-        history, not a snapshot): the service never updates the latest row.
-        """
+Neither the alert explanation nor the prior risk summary is a
+hard dependency — each layer stays independently generatable.
+Repeated calls append records (ai_response_recommendations is a
+history, not a snapshot): the service never updates the latest row.
+"""
         group = db.execute(
             select(AlertGroup)
             .options(
@@ -83,7 +83,7 @@ class AIResponseRecommendationService:
                 f"Provider returned {type(result).__name__} for task response_recommendation"
             )
         # Defense in depth: typed-object providers bypass the raw-output
-        # parser, so the frozen action vocabulary is re-enforced here.
+        # parser, so the action vocabulary is re-enforced here.
         unknown = sorted({item.action for item in result.recommendations} - RESPONSE_ACTIONS)
         if unknown:
             raise AIResponseParseError(

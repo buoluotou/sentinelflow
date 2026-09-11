@@ -1,4 +1,4 @@
-"""Phase 1 Step 5.1: EventRisk data model tests."""
+"""EventRisk data model tests."""
 
 from datetime import datetime, timezone
 
@@ -84,7 +84,7 @@ def test_group_without_risk_still_works(db_session):
 
 def test_one_current_risk_per_event(db_session):
     """Rescoring must UPDATE the existing row, never insert a second one —
-    alert_group_id is unique so "current risk" stays a cheap O(1) join."""
+alert_group_id is unique so "current risk" stays a cheap O(1) join."""
     group = _make_group()
     db_session.add_all([group, EventRisk(alert_group=group, score=40, level="medium")])
     db_session.commit()

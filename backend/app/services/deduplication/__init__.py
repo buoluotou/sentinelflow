@@ -1,4 +1,4 @@
-"""Deduplication & aggregation services (Phase 1 Step 4)."""
+"""Deduplication & aggregation services."""
 
 from app.services.deduplication.engine import DeduplicationEngine, engine
 from app.services.deduplication.fingerprint import FingerprintGenerator

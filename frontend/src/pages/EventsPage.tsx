@@ -1,4 +1,4 @@
-/** Events queue (Step 8.3): list with risk-level filter + pagination. */
+/* * Events queue (): list with risk-level filter + pagination. */
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listEvents } from '../api/events'

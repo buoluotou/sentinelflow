@@ -1,10 +1,9 @@
-"""RC2 §7/§20 — the production startup gate is fail-closed.
+"""The production startup gate is fail-closed.
 
-Every unsafe production setting refuses to boot with ONE sanitized error
-naming KEYS only (never values); demo mode keeps the simple UX and accepts
-the same settings unchanged. ``_settings`` is hermetic in the same pattern as
-``test_compensation_experimental_gate`` (explicit keyword construction, no
-ambient .env dependency).
+Every unsafe production setting refuses to boot, with one sanitized error that
+names keys only (never values); demo mode keeps the simple UX and accepts the
+same settings unchanged. ``_settings`` builds each configuration explicitly, as
+``test_compensation_experimental_gate`` does, so no ambient .env leaks in.
 """
 import pytest
 
@@ -23,7 +22,7 @@ _SAFE_OPERATORS = (
 _REVIEWER_ONLY = '[{"token": "tok-r-01", "name": "rev-1", "role": "reviewer"}]'
 _EXECUTOR_ONLY = '[{"token": "tok-e-01", "name": "exe-1", "role": "executor"}]'
 
-#: A fully production-safe configuration.
+# A fully production-safe configuration.
 _SAFE = {
     "DEPLOYMENT_MODE": "production",
     "OPERATORS_JSON": _SAFE_OPERATORS,

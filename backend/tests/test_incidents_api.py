@@ -1,4 +1,4 @@
-"""Phase 1 Step 7.3: Incident Management API tests.
+"""Incident Management API tests.
 
 The API is a thin HTTP layer over services/incidents (no state machine
 code here): POST /incidents (201), GET list (paged, created_at DESC),
@@ -35,7 +35,7 @@ def _open_incident(client, db_session, fingerprint: str) -> dict:
     return response.json()
 
 
-# ---------------------------------------------------------------- creation
+# creation
 
 
 def test_create_incident_returns_201_with_case_record(client, db_session):
@@ -77,7 +77,7 @@ def test_create_incident_unknown_group_returns_404(client):
 
 def test_create_incident_without_risk_returns_409(client, db_session):
     """A missing risk assessment is a pipeline conflict, not a 404 case —
-    and the API must never fall back to a silent score=0 incident."""
+and the API must never fall back to a silent score=0 incident."""
     now = datetime.now(timezone.utc)
     group = AlertGroup(
         fingerprint="b" * 64,
@@ -96,7 +96,7 @@ def test_create_incident_without_risk_returns_409(client, db_session):
     assert response.status_code == 409
 
 
-# ------------------------------------------------------------------- list
+# list
 
 
 def test_list_incidents_paginated_newest_first(client, db_session):
@@ -129,7 +129,7 @@ def test_list_incidents_invalid_status_filter_returns_422(client):
     assert response.status_code == 422
 
 
-# ----------------------------------------------------------------- detail
+# detail
 
 
 def test_get_incident_detail_returns_full_record(client, db_session):
@@ -164,7 +164,7 @@ def test_get_incident_invalid_uuid_returns_404(client):
     assert client.get("/api/v1/incidents/not-a-uuid").status_code == 404
 
 
-# -------------------------------------------------------- status endpoint
+# status endpoint
 
 
 def test_transition_open_to_in_progress_returns_200(client, db_session):

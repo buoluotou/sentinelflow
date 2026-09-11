@@ -1,14 +1,14 @@
-/** Response-execution types — field-level mirror of backend Phase 3.1.7
+/** Response-execution types — field-level mirror of the backend
  * schemas (response_execution.py).
  *
- * The client expresses Intent ONLY: identity keys + operator. action /
+ * The client expresses intent only: identity keys + operator. action /
  * target / direction / decisions / audit clock are server-side facts —
- * the request interfaces deliberately lack those fields, and the write
+ * the request interfaces lack those fields, and the write
  * endpoints reject unknown fields (extra="forbid").
  */
 
 /** Body of POST /api/v1/executions — the Execute Intent, nothing more.
- * Deliberately NO action / target / direction / status / detail /
+ * No action / target / direction / status / detail /
  * created_at: the server resolves the approved snapshot itself. */
 export interface ExecuteIntent {
   execution_id: string
@@ -27,15 +27,15 @@ export interface ExecutionLogRowRead {
   action: string
   target: string
   operator: string
-  /** Guard reasons / dispatch echo / adapter details. NEVER contains the
-   * execution token (frozen security discipline). */
+  /** Guard reasons / dispatch echo / adapter details. Never contains the
+   * execution token. */
   detail: Record<string, unknown>
   compensates_execution_id: string | null
   created_at: string
 }
 
 /** The 201 body of POST /executions and the GET detail body. 201 means
- * the Intent formed an execution FACT — derived_state carries the verdict
+ * the Intent formed an execution fact — derived_state carries the verdict
  * (succeeded / failed / guard_rejected), never an HTTP-status semantics. */
 export interface ExecutionRead {
   execution_id: string
@@ -62,7 +62,7 @@ export interface ExecutionSummaryRead {
   last_decision_at: string
 }
 
-/** Every derivable state — the backend StateFilter vocabulary (3.1.9).
+/** Every derivable state — the backend StateFilter vocabulary.
  * The server derives these via derive_execution_state(); the UI only
  * displays and filters by them, never recomputes. */
 export type ExecutionDerivedState =
@@ -75,7 +75,7 @@ export type ExecutionDerivedState =
   | 'compensation_succeeded'
   | 'compensation_failed'
 
-/** GET /executions query contract (3.1.9, design §10): Filter -> GET.
+/** GET /executions query contract: filter params -> GET.
  * Omitted fields stay server defaults. */
 export interface ExecutionListParams {
   page?: number

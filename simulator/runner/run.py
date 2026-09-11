@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""SentinelFlow Scenario Simulator Runner (Phase 1 Step 6).
+"""SentinelFlow Scenario Simulator Runner.
 
 Loads scenario definitions from ``simulator/scenarios/*/events.json`` and
 replays them against a running SentinelFlow backend:
 
-    scan scenarios -> local validation -> POST /api/v1/alerts
-    -> real-time feedback -> GET /api/v1/events summary
+scan scenarios -> local validation -> POST /api/v1/alerts
+-> real-time feedback -> GET /api/v1/events summary
 
-Design constraints (frozen in the Step 6 plan):
+Design constraints (in the Step 6 plan):
 - stdlib only (no third-party dependencies)
 - events are sent AS-IS to POST /api/v1/alerts (the unified entry point);
-  the /normalize route is reserved for raw third-party feeds (e.g. Wazuh),
-  because fingerprint identity includes ``source`` and must not split
+the /normalize route is reserved for raw third-party feeds (e.g. Wazuh),
+because fingerprint identity includes ``source`` and must not split
 - sequential sending only, no concurrency, no daemon mode
 - exit code is non-zero if any send fails
 
 Usage::
 
-    python simulator/runner/run.py --repeat 30 --timestamps now
+python simulator/runner/run.py --repeat 30 --timestamps now
 """
 from __future__ import annotations
 
@@ -95,10 +95,10 @@ def validate_event(event: dict, scenario_name: str) -> None:
 def prepare_event(event: dict, timestamps: str) -> dict:
     """Return a send-ready copy of the event.
 
-    ``timestamps == "now"`` rewrites the event timestamp to the current UTC
-    time on every call so repeated sends climb the dedup frequency bands;
-    ``"file"`` replays the stored timestamp for deterministic reruns.
-    """
+``timestamps == "now"`` rewrites the event timestamp to the current UTC
+time on every call so repeated sends climb the dedup frequency bands;
+``"file"`` replays the stored timestamp for deterministic reruns.
+"""
     prepared = dict(event)
     if timestamps == "now":
         prepared["timestamp"] = datetime.now(timezone.utc).isoformat()

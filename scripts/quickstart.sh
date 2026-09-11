@@ -2,25 +2,25 @@
 # SentinelFlow Docker Compose quickstart (Linux/macOS) - the recommended install path.
 #
 # Mirrors scripts/quickstart.ps1. One command from a fresh clone to a running Demo:
-#   1. checks Docker + Docker Compose (v2) and that the daemon is reachable,
-#   2. checks the ports SentinelFlow binds (5432 / 8000 / 5173 by default),
-#   3. creates .env from .env.example and fills RANDOM local secrets
-#      (POSTGRES_PASSWORD, EXECUTION_TOKEN) - never a fixed/committed secret,
-#   4. validates the compose file (docker compose config),
-#   5. brings up the stack in the enforced order
-#      postgres(healthy) -> migrate(one-shot) -> backend -> frontend,
-#   6. waits for the backend to become healthy,
-#   7. runs the demo smoke test INSIDE the backend container (so the host
-#      needs no Python/Node), and
-#   8. prints the access URLs.
+# 1. checks Docker + Docker Compose (v2) and that the daemon is reachable,
+# 2. checks the ports SentinelFlow binds (5432 / 8000 / 5173 by default),
+# 3. creates .env from .env.example and fills RANDOM local secrets
+# (POSTGRES_PASSWORD, EXECUTION_TOKEN) - never a fixed/committed secret,
+# 4. validates the compose file (docker compose config),
+# 5. brings up the stack in the enforced order
+# postgres(healthy) -> migrate(one-shot) -> backend -> frontend,
+# 6. waits for the backend to become healthy,
+# 7. runs the demo smoke test INSIDE the backend container (so the host
+# needs no Python/Node), and
+# 8. prints the access URLs.
 #
 # DEFAULT = Demo Mode: AI_PROVIDER=mock, EXECUTION_ADAPTER=mock, every external
 # system (Wazuh/Shuffle/TheHive) disabled. No real SOAR is contacted.
 #
 # Usage:
-#   ./scripts/quickstart.sh
-#   ./scripts/quickstart.sh --with-ollama   # AI Local Mode (adds Ollama)
-#   ./scripts/quickstart.sh --down          # stop and remove the stack
+# ./scripts/quickstart.sh
+# ./scripts/quickstart.sh --with-ollama # AI Local Mode (adds Ollama)
+# ./scripts/quickstart.sh --down # stop and remove the stack
 set -euo pipefail
 
 WITH_OLLAMA=0

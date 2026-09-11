@@ -1,4 +1,4 @@
-/** Dashboard home page (Step 8.2): binds ONLY /dashboard/summary. */
+/* * Dashboard home page (): binds ONLY /dashboard/summary. */
 import { useCallback, useEffect, useState } from 'react'
 import { getDashboardSummary } from '../api/dashboard'
 import type { DashboardSummary, RiskLevel } from '../types/dashboard'

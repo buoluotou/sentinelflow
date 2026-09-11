@@ -1,6 +1,6 @@
-"""Service-layer vocabulary of the incident lifecycle (Phase 1 Step 7.2).
+"""Service-layer vocabulary of the incident lifecycle.
 
-Plain enums + the frozen transition matrix — ORM strings never scatter
+Plain enums + the transition matrix — ORM strings never scatter
 through business code. The Incident model only stores the current status;
 the state machine lives here and is enforced by ``service.py``.
 """
@@ -19,14 +19,14 @@ class IncidentStatus(str, Enum):
 
 class IncidentDisposition(str, Enum):
     """Analyst's call on the case; always kept consistent with the status
-    (a transition is the only way to set it — never independently)."""
+(a transition is the only way to set it — never independently)."""
 
     RESOLVED = "resolved"
     FALSE_POSITIVE = "false_positive"
 
 
-#: Frozen transition matrix (Phase 1 Step 7). CLOSED is terminal — reopening
-#: (closed -> open) is intentionally NOT allowed in v1.0.
+# Frozen transition matrix. CLOSED is terminal — reopening
+# (closed -> open) is intentionally NOT allowed in v1.0.
 ALLOWED_TRANSITIONS: dict[IncidentStatus, frozenset[IncidentStatus]] = {
     IncidentStatus.OPEN: frozenset(
         {IncidentStatus.IN_PROGRESS, IncidentStatus.FALSE_POSITIVE, IncidentStatus.CLOSED}
@@ -54,16 +54,16 @@ class IncidentAlreadyExists(IncidentError):
 
 class IncidentRiskMissing(IncidentError):
     """The event has no EventRisk snapshot — creating a score=0 case would
-    hide a risk-pipeline problem, so creation is refused."""
+hide a risk-pipeline problem, so creation is refused."""
 
 
 class InvalidIncidentTransition(IncidentError):
     """The requested status change violates the lifecycle matrix.
 
-    Carries ``current`` / ``target`` so the API layer can render a stable
-    message ("Invalid incident status transition: closed -> open") without
-    re-parsing text.
-    """
+Carries ``current`` / ``target`` so the API layer can render a stable
+message ("Invalid incident status transition: closed -> open") without
+re-parsing text.
+"""
 
     def __init__(
         self,

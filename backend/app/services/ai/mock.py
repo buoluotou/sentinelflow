@@ -1,9 +1,9 @@
-"""Deterministic mock provider (Phase 2 Step 9; task-aware since Step 11).
+"""Deterministic mock provider.
 
 Default provider for tests, demos and air-gapped development: it satisfies
-every frozen protocol with zero external dependencies and reproducible
-output (same input -> identical result). It never pretends to be a model
-— the name stays "mock" everywhere it surfaces.
+every protocol with no external dependency and reproducible output (same
+input -> identical result). It returns canned strings and never calls an
+external model; the name stays "mock" everywhere it surfaces.
 """
 import json
 
@@ -19,7 +19,7 @@ from app.services.ai.models import (
     RiskSummary,
 )
 
-#: Frozen Risk Engine factor name -> risk-driver vocabulary (Step 11).
+# Risk Engine factor name -> risk-driver vocabulary.
 _FACTOR_TO_DRIVER = {
     "severity": "severity",
     "frequency": "high_frequency",
@@ -78,12 +78,12 @@ class MockProvider(AIProvider):
         )
 
     def _response_recommendation(self, request: AIRequest) -> ResponseRecommendation:
-        """Frozen deterministic advice (Step 12): advisory only, never executed.
+        """Deterministic canned advice: advisory only, never executed.
 
-        Score-banded actions so every protocol shape is reachable from tests:
-        score >= 70 -> contain + escalate; 40..69 -> investigate; < 40 -> the
-        first-class "no action warranted" answer (empty recommendations).
-        """
+Score-banded actions so every protocol shape is reachable from tests:
+score >= 70 -> contain + escalate; 40..69 -> investigate; < 40 -> the
+first-class "no action warranted" answer (empty recommendations).
+"""
         target = self._first_source_ip(request)
         items: list[RecommendationItem] = []
         if request.risk_score >= 70:

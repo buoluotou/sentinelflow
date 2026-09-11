@@ -1,14 +1,14 @@
-/** Approval Queue page (Step 13.5): review AI response recommendations.
+/* * Approval Queue page (): review AI response recommendations.
  *
- * Consumes the frozen Step 13.3 contract:
+ * Consumes the contract:
  * - GET /approvals is the ONLY queue source — pending is a backend
- *   projection, never computed, joined or re-sorted here (backend order:
- *   created_at ASC, id ASC)
+ * projection, never computed, joined or re-sorted here (backend order:
+ * created_at ASC, id ASC)
  * - Approve/Reject POST { reviewer, review_comment } only; reviewed_at is
- *   never sent (server-stamped)
+ * never sent (server-stamped)
  * - 201 -> the item leaves the queue locally (no follow-up GET);
- *   409 -> another reviewer won the race, so the server queue is fetched
- *   again as the source of truth
+ * 409 -> another reviewer won the race, so the server queue is fetched
+ * again as the source of truth
  *
  * Approve != Execute: the recommendations render READ-ONLY (the analyst
  * reviews the AI's original advice, never an edited copy) and the page has

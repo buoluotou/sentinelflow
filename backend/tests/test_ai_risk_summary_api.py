@@ -1,13 +1,13 @@
-"""Step 11.4: AI risk-summary API tests.
+"""AI risk-summary API tests.
 
 HTTP contract over AIRiskSummaryService — still MockProvider only (CI runs
-without any model). Covers the frozen error mapping (identical to Step 10):
+without any model). Covers the error mapping (identical to Step 10):
 
-    unknown event               -> 404
-    AIProviderConfigError       -> 503
-    AIProviderUnavailable       -> 503
-    AIResponseParseError        -> 502
-    wrong protocol object       -> 502 (service guard, mapped at the API)
+unknown event               -> 404
+AIProviderConfigError       -> 503
+AIProviderUnavailable       -> 503
+AIResponseParseError        -> 502
+wrong protocol object       -> 502 (service guard, mapped at the API)
 
 and the hard rule: a failed summary never persists a row.
 """
@@ -32,7 +32,7 @@ from app.services.ai import (
 
 class WrongProtocolProvider(MockProvider):
     """Answers the risk_summary task with the Step 10 protocol — the service
-    guard must turn this into AIResponseParseError, the API into 502."""
+guard must turn this into AIResponseParseError, the API into 502."""
 
     def generate(self, request):
         return self._explanation(request)
@@ -90,7 +90,7 @@ def _seed(db_session: Session) -> AlertGroup:
     return group
 
 
-# ------------------------------------------------------------------ creation
+# creation
 
 
 def test_create_summary_returns_201_with_frozen_fields(client, db_session):
@@ -103,7 +103,7 @@ def test_create_summary_returns_201_with_frozen_fields(client, db_session):
     assert body["provider"] == "mock"
     assert body["model"] == "mock-deterministic"
     assert body["alert_group_id"] == str(group.id)
-    # The five frozen protocol outputs.
+    # The five protocol outputs.
     assert "Suspicious process execution detected" in body["summary"]
     assert body["key_findings"] == ["Alert severity is high", "30 alerts observed"]
     assert body["risk_drivers"] == ["severity", "high_frequency", "high_risk_score"]
@@ -121,7 +121,7 @@ def test_create_summary_returns_201_with_frozen_fields(client, db_session):
     assert len(rows) == 1 and str(rows[0].id) == body["id"]
 
 
-# ------------------------------------------------------------------ latest
+# latest
 
 
 def test_get_returns_latest_of_history(client, db_session):
@@ -149,7 +149,7 @@ def test_get_without_any_summary_is_404(client, db_session):
     assert "No AI risk summary" in response.json()["detail"]
 
 
-# ------------------------------------------------------------------ 404s
+# 404s
 
 
 @pytest.mark.parametrize(
@@ -171,7 +171,7 @@ def test_get_unknown_event_is_404(client, db_session):
     assert response.json()["detail"] == "Event not found"
 
 
-# ------------------------------------------------------------------ 5xx
+# 5xx
 
 
 def test_provider_unavailable_maps_to_503_and_persists_nothing(client, db_session):
@@ -209,7 +209,7 @@ def test_parse_error_maps_to_502_and_persists_nothing(client, db_session):
 
 def test_wrong_protocol_maps_to_502_and_persists_nothing(client, db_session):
     """Service guard + API mapping: an alert_explanation answer must never
-    land in ai_risk_summaries."""
+land in ai_risk_summaries."""
     group = _seed(db_session)
     _override_service(WrongProtocolProvider())
 
@@ -220,7 +220,7 @@ def test_wrong_protocol_maps_to_502_and_persists_nothing(client, db_session):
     assert db_session.query(AIRiskSummary).count() == 0
 
 
-# ------------------------------------------------------------------ history
+# history
 
 
 def test_repeated_posts_append_history(client, db_session):

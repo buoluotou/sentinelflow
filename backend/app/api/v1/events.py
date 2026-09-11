@@ -31,9 +31,9 @@ def events_list(
 ) -> EventListResponse:
     """List aggregated security events, most recently seen first.
 
-    Each item carries the pre-computed risk snapshot (risk_score/risk_level);
-    use ``level`` to keep only events at a given risk level.
-    """
+Each item carries the pre-computed risk snapshot (risk_score/risk_level);
+use ``level`` to keep only events at a given risk level.
+"""
     total, groups = list_events(db, page=page, size=size, level=level)
     items = [
         EventListItem.model_validate(g).model_copy(

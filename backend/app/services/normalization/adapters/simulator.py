@@ -4,7 +4,7 @@ Accepts both the full unified simulator event shape (as stored in
 simulator/scenarios/*/events.json) and the minimal shape used by the
 normalization test endpoint, e.g.::
 
-    {"type": "ssh_failed_login", "src_ip": "10.10.10.5"}
+{"type": "ssh_failed_login", "src_ip": "10.10.10.5"}
 """
 from app.schemas.alert import Severity
 from app.services.normalization.base import BaseAdapter, MalformedRawEventError
@@ -53,7 +53,7 @@ class SimulatorAdapter(BaseAdapter):
 
         category, severity, title = EVENT_TYPE_MAP.get(event_type, _FALLBACK)
 
-        # --- asset (host the event happened on) ---
+        # asset (host the event happened on) ---
         host_block = raw_data.get("host")
         hostname = _first(raw_data, "hostname")
         host_ip = _first(raw_data, "host_ip")
@@ -62,7 +62,7 @@ class SimulatorAdapter(BaseAdapter):
             host_ip = host_ip or host_block.get("ip")
         asset = AssetInfo(hostname=hostname, ip=host_ip) if (hostname or host_ip) else None
 
-        # --- actor (who/where the event came from) ---
+        # actor (who/where the event came from) ---
         actor_ip = _first(raw_data, "src_ip", "source_ip")
         actor_user = _first(raw_data, "user", "user_name")
         actor = ActorInfo(ip=actor_ip, user=actor_user) if (actor_ip or actor_user) else None

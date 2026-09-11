@@ -1,23 +1,22 @@
-"""M4-F §1/§2 — the durable pre-dispatch store is LIVE in the real dispatch API.
+"""/— the durable pre-dispatch store is LIVE in the real dispatch API.
 
 Cycle 1 proved the STORE commits durably on an independent connection; Cycle 2a
 proved the SERVICE calls ``store.record()`` before ``executor.execute()``. This
 cycle closes the loop at the HTTP boundary: ``POST /api/v1/executions`` must
 actually INJECT a durable store, so the pre-dispatch guarantee is operative in the
-live path (an unused parameter would be an inert fix — the reviewer's exact
-concern that M4-A "cannot pass by only adding test names").
+live path.
 
 Three proofs:
 - the endpoint resolves ``get_dispatch_attempt_store`` and passes it to the Service
-  (a recorder store sees ``record()`` BEFORE the executor's ``execute()``);
+(a recorder store sees ``record()`` BEFORE the executor's ``execute()``);
 - the DEFAULT provider binds a real ``DurableDispatchAttemptStore`` (production wires
-  durability, not ``None``);
+durability, not ``None``);
 - a REAL file-backed store, injected through the endpoint, leaves a COMMITTED
-  ``dispatch_attempt`` row readable on an independent connection after the request.
+``dispatch_attempt`` row readable on an independent connection after the request.
 
 SQLite honesty (constraint 2): the caller's chain rides the in-memory ``StaticPool``
 ``db_session``; the durable store rides a SEPARATE file-backed engine, so its
-independent commit is genuinely isolated (no shared-connection artifact). True
+independent commit is isolated (no shared-connection artifact). True
 same-engine caller/store interleaving under a crash is PostgreSQL-MVCC semantics,
 covered by an ``external``-marked test that stays DESELECTED — never faked green.
 """
@@ -53,7 +52,7 @@ def auth(monkeypatch):
 @pytest.fixture()
 def file_engine(tmp_path):
     """A FILE-backed engine (real, non-shared pool) for the durable store, so its
-    independent commit is genuinely isolated from the in-memory caller session."""
+independent commit is isolated from the in-memory caller session."""
     db_path = tmp_path / "endpoint_durable.db"
     engine = create_engine(
         f"sqlite:///{db_path.as_posix()}",

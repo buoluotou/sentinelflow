@@ -1,30 +1,29 @@
-"""Phase 2 Step 14.4: Incident AI Integration cross-layer regression.
+"""Incident AI Integration cross-layer regression.
 
-Proves that Steps 14.1–14.3 keep the WHOLE frozen chain intact once the
+Proves that Steps 14.1–14.3 keep the WHOLE chain intact once the
 layers are COMBINED:
 
-    AlertGroup -> EventRisk -> Incident -> AI Context
-        ├── AI Explanation        (Step 10)
-        ├── Risk Summary          (Step 11)
-        ├── Response Recommendation (Step 12)
-        └── Approval              (Step 13)
+AlertGroup -> EventRisk -> Incident -> AI Context
+├── AI Explanation        (Step 10)
+├── Risk Summary          (Step 11)
+├── Response Recommendation (Step 12)
+└── Approval              (Step 13)
 
 Unlike the per-step unit tests, every AI row here is produced by the REAL
 production endpoints (POST /events/{id}/ai-analysis | ai-risk-summary |
 response-recommendation with the mock provider, POST .../approve|reject)
-and then observed through ALL three layers — ORM traversal, Step 14.2
-service and the Step 14.3 HTTP API. Frozen guarantees under test:
+and then observed through ALL three layers — ORM traversal, service and the HTTP API. Frozen guarantees under test:
 
-  A. full-lifecycle read: API body matches the database rows exactly
-     (no copies, no lost history, no foreign data)
-  B. history completeness: many rows per kind, approved + rejected +
-     pending coexist — context is HISTORY, never "latest overwrites"
-  C. risk snapshot frozen across layers: AI activity and context reads
-     never touch Incident.risk_score or EventRisk.score
-  D. incident isolation at ORM / service / API simultaneously
-  E. approve != execute: a fully-read approved chain leaves zero side
-     effects — no status move, no execution row, no new recommendation
-  F. empty / partial AI pipelines are legal context states
+A. full-lifecycle read: API body matches the database rows exactly
+(no copies, no lost history, no foreign data)
+B. history completeness: many rows per kind, approved + rejected +
+pending coexist — context is HISTORY, never "latest overwrites"
+C. risk snapshot across layers: AI activity and context reads
+never touch Incident.risk_score or EventRisk.score
+D. incident isolation at ORM / service / API simultaneously
+E. approve != execute: a fully-read approved chain leaves zero side
+effects — no status move, no execution row, no new recommendation
+F. empty / partial AI pipelines are legal context states
 """
 import uuid
 from datetime import datetime, timezone
@@ -95,9 +94,9 @@ def _uuid_of(value: str) -> uuid.UUID:
     return uuid.UUID(value)
 
 
-# ---------------------------------------------------------------------------
+#
 # A. full lifecycle: API read matches the database exactly
-# ---------------------------------------------------------------------------
+#
 
 
 def test_full_lifecycle_context_matches_the_database_rows(client, db_session):
@@ -143,9 +142,9 @@ def test_full_lifecycle_context_matches_the_database_rows(client, db_session):
     assert body["incident"]["risk_score_snapshot"] == SNAPSHOT_SCORE
 
 
-# ---------------------------------------------------------------------------
+#
 # B. history completeness: never "latest overwrites previous"
-# ---------------------------------------------------------------------------
+#
 
 
 def test_context_keeps_every_history_row_and_every_approval_state(client, db_session):
@@ -201,9 +200,9 @@ def test_context_keeps_every_history_row_and_every_approval_state(client, db_ses
     assert set(stored) == {"approved", "rejected"}
 
 
-# ---------------------------------------------------------------------------
-# C. risk snapshot frozen across layers
-# ---------------------------------------------------------------------------
+#
+# C. risk snapshot across layers
+#
 
 
 def test_risk_snapshot_survives_ai_activity_and_context_reads(client, db_session):
@@ -239,9 +238,9 @@ def test_risk_snapshot_survives_ai_activity_and_context_reads(client, db_session
     assert detail["risk_score"] == SNAPSHOT_SCORE
 
 
-# ---------------------------------------------------------------------------
+#
 # D. isolation, observed at ORM / service / API simultaneously
-# ---------------------------------------------------------------------------
+#
 
 
 def test_isolation_holds_at_every_observation_layer(client, db_session):
@@ -281,9 +280,9 @@ def test_isolation_holds_at_every_observation_layer(client, db_session):
         assert foreign not in text_a
 
 
-# ---------------------------------------------------------------------------
+#
 # E. approve != execute: full read-through with zero side effects
-# ---------------------------------------------------------------------------
+#
 
 
 def test_approved_chain_read_end_to_end_creates_no_execution_side_effect(client, db_session):
@@ -329,9 +328,9 @@ def test_approved_chain_read_end_to_end_creates_no_execution_side_effect(client,
     assert str(rec_id) not in pending_ids
 
 
-# ---------------------------------------------------------------------------
+#
 # F. empty / partial AI pipelines are legal context states
-# ---------------------------------------------------------------------------
+#
 
 
 def test_incident_without_any_ai_history_is_a_legal_empty_context(client, db_session):
@@ -349,7 +348,7 @@ def test_incident_without_any_ai_history_is_a_legal_empty_context(client, db_ses
 
 def test_analysis_only_pipeline_never_assumes_later_stages(client, db_session):
     """Production reality: a case may be viewed mid-pipeline — an event that
-    was only explained (no summary, no recommendation) is a valid context."""
+was only explained (no summary, no recommendation) is a valid context."""
     group = _seed_event(db_session, "1" * 64)
     incident = _open_incident_via_api(client, group)
     assert client.post(f"/api/v1/events/{group.id}/ai-analysis").status_code == 201

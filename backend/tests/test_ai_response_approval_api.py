@@ -1,8 +1,8 @@
-"""Step 13.3: Approval-queue API tests.
+"""Approval-queue API tests.
 
 HTTP contract over AIResponseApprovalService: the queue returns pending
-RECOMMENDATIONS (derived absence, never a stored status), approve/reject
-record one decision row each (201), the frozen error mapping holds
+recommendations (derived absence, never a stored status), approve/reject
+record one decision row each (201), the fixed error mapping holds
 (404 Recommendation/Approval not found, 409 already reviewed) and the
 advisory-only boundary survives at the API layer — a decision never
 touches EventRisk, Incident or the recommendation body.
@@ -71,7 +71,7 @@ def _reject_url(record) -> str:
     return f"/api/v1/response-recommendations/{record.id}/reject"
 
 
-# ------------------------------------------------------------ approval queue
+# approval queue
 
 
 def test_queue_lists_pending_recommendations(client, db_session):
@@ -82,7 +82,7 @@ def test_queue_lists_pending_recommendations(client, db_session):
     body = response.json()
     assert isinstance(body, list) and len(body) == 1
     entry = body[0]
-    # The queue entry IS the recommendation plus event context — no
+    # The queue entry is the recommendation plus event context — no
     # approval fields and no invented "status: pending" key.
     assert entry["id"] == str(record.id)
     assert entry["event_id"] == str(record.alert_group_id)
@@ -118,7 +118,7 @@ def test_rejected_recommendation_leaves_queue(client, db_session):
 
 
 def test_queue_keeps_first_in_first_reviewed_order(client, db_session):
-    """API never re-sorts: the frozen service order (created_at ASC) wins."""
+    """API never re-sorts: the service order (created_at ASC) wins."""
     oldest = _seed(db_session, minutes_ago=10)
     middle = _seed(db_session, minutes_ago=5)
     newest = _seed(db_session)
@@ -127,7 +127,7 @@ def test_queue_keeps_first_in_first_reviewed_order(client, db_session):
     assert ids == [str(oldest.id), str(middle.id), str(newest.id)]
 
 
-# ------------------------------------------------------------ query budget
+# query budget
 
 
 def _queue_call_cost(client, db_session) -> tuple[list[dict], int]:
@@ -174,7 +174,7 @@ def test_queue_query_count_does_not_grow_with_rows(client, db_session):
     assert large <= 4
 
 
-# ---------------------------------------------------------- approval detail
+# approval detail
 
 
 def test_approval_detail_round_trips(client, db_session):
@@ -207,7 +207,7 @@ def test_approval_detail_malformed_id_is_404(client):
     assert response.json()["detail"] == "Approval not found"
 
 
-# --------------------------------------------------------------- decisions
+# decisions
 
 
 def test_approve_creates_approved_decision(client, db_session):
@@ -294,7 +294,7 @@ def test_decision_is_committed_and_readable_via_detail(client, db_session):
     assert fresh.json()["status"] == "approved"
 
 
-# ------------------------------------------------------------ error mapping
+# error mapping
 
 
 def test_unknown_recommendation_is_404(client, db_session):
@@ -345,13 +345,13 @@ def test_second_decision_is_409_and_original_stands(
     assert approvals[0].reviewer == "analyst-1"
 
 
-# ----------------------------------------------------------- safety boundary
+# safety boundary
 
 
 @pytest.mark.parametrize("path", ["approve", "reject"])
 def test_decision_executes_nothing_via_api(client, db_session, path):
-    """Approve/Reject != Execute at the HTTP edge: EventRisk unchanged, no
-    Incident created, the recommendation body never rewritten."""
+    """Approving or rejecting is not executing at the HTTP edge: EventRisk
+    unchanged, no Incident created, the recommendation body never rewritten."""
     record = _seed(db_session)
     before = dict(record.recommendations[0])
 
@@ -371,7 +371,7 @@ def test_decision_executes_nothing_via_api(client, db_session, path):
 
 
 def test_response_never_leaks_orm_or_execution_fields(client, db_session):
-    """Schema discipline: the approval JSON carries exactly the frozen read
+    """Schema discipline: the approval JSON carries exactly the declared read
     fields — no ORM repr, no executed/attempts/payload style keys."""
     record = _seed(db_session)
     body = client.post(_approve_url(record), json={"reviewer": "analyst-1"}).json()

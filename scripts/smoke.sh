@@ -6,13 +6,13 @@
 # picks the best available Python (backend venv first), forwards every argument
 # to smoke.py and propagates its exit code.
 #
-#   On PostgreSQL (Demo Mode) it asserts the complete chain incl. the durable
-#   dispatch execution; on SQLite it proves the business chain through human
-#   approval and asserts the execution step fails CLOSED. See smoke.py.
+# On PostgreSQL (Demo Mode) it asserts the complete chain incl. the durable
+# dispatch execution; on SQLite it proves the business chain through human
+# approval and asserts the execution step fails CLOSED. See smoke.py.
 #
 # Usage:
-#   ./scripts/smoke.sh
-#   ./scripts/smoke.sh --base-url http://127.0.0.1:8000 --token "$EXECUTION_TOKEN"
+# ./scripts/smoke.sh
+# ./scripts/smoke.sh --base-url http://127.0.0.1:8000 --token "$EXECUTION_TOKEN"
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

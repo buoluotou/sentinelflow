@@ -1,52 +1,51 @@
-"""TheHiveReadAdapter isolation tests (Phase 3.4.5-M2 §5 / §6; M2-R §2/§3/§4/§5).
+"""TheHiveReadAdapter isolation tests.
 
-WHAT THIS PROVES — and what it deliberately does NOT. The TheHive read contract is
-SOURCE-certified (TheHive 4.1.24-1 = git ``b6649bb`` / ScalliGraph ``2c2a7a4``),
-but there is NO real TheHive runtime on this host (LAB BLOCKED — no container
-runtime / virtualization / sufficient memory). So this file proves the reader with
-an INJECTED stub transport (no network) at FOUR levels, and marks the real read as
-a deselected, env-gated SKIP:
+Scope: what this file establishes, and what it does not. The TheHive read contract
+is certified against the read semantics of TheHive 4.1.24-1, but no TheHive
+runtime exists on this host (no container runtime / virtualization / sufficient
+memory). The reader is therefore exercised through an injected stub transport (no
+network) at four levels, with the live read left as a deselected, env-gated skip:
 
   1. UNIT — ``TheHiveReadAdapter.read()`` against a ``StubTransport``: the verified
      creation conjunction (``case_created``), every unverified refusal
      (``case_unverified``), the 401/403/404/timeout/connection/5xx discrimination
-     (each a ``ReadTransportError`` with a SAFE STATIC category, NEVER
+     (each a ``ReadTransportError`` with a static safe category, never
      ``confirmed_failure``), URL / reference safety, and secret hygiene.
-  2. MAPPING — M2-R §2 EMPTIED the thehive vocabulary (fail-closed), so BOTH reader
-     words now tie into the single path-agnostic 3.4.3-B map as REFUSED
-     (``UnrecognizedExternalState``): ``case_created`` (which the reader still EMITS
-     on a verified read) AND ``case_unverified`` are refused alike, because the
-     frozen 2-param contract cannot tell a trusted-reader signal from a webhook-
-     forged string. The synthesis word is held at the mapping gate pending a
-     source-isolation Amendment (M2-R), so NO path launders a string into success.
-  3. SERVICE — the REAL pipeline (correlate -> read -> validate 3.4.3-A -> map
-     3.4.3-B) driven by an EXPLICITLY INJECTED reader (the sanctioned constructor-
-     injection seam, spec §22). Under M2-R §2 fail-closed the map REFUSES the
-     reader's ``case_created`` -> ZERO Outcome Fact (the read-FAILURE
-     ``reconciliation_failed`` path is unchanged). This injection-based isolation
-     chain is NOT a complete HTTP E2E and does NOT claim a confirmed closure.
-  4. FACTORY — ``create_read_adapter_registry`` registers the reader ONLY when the
-     M2-R §4 THREE gates ALL pass (a well-formed base URL + an INDEPENDENT
-     read-only key, never the create-capable write key + an EXACT certified-version
-     match), fails CLOSED on any missing / mismatched gate, is TOLERANT of a
-     malformed URL, issues NO HTTP at build time, and NEVER mutates the sealed
-     empty ``default_read_adapter_registry()``. The reader's production transport is
-     a NO-REDIRECT opener, so a cross-host 3xx can never carry the ``Authorization``
-     header (M2-R §4).
+  2. MAPPING — the thehive vocabulary is empty (fail-closed), so both reader words
+     tie into the single path-agnostic ``normalize_external_state`` map as refused
+     (``UnrecognizedExternalState``): ``case_created`` (which the reader still emits
+     on a verified read) and ``case_unverified`` are refused alike, because the
+     fixed two-parameter contract cannot tell a trusted-reader signal from a
+     webhook-forged string. The synthesis word stays unmapped, so no path launders
+     a single-source string into success.
+  3. SERVICE — the real pipeline (correlate -> read -> validate -> map) driven by an
+     explicitly injected reader (the registry constructor takes the reader). With
+     the empty vocabulary the map refuses the reader's ``case_created`` -> zero
+     Outcome Fact (the read-failure ``reconciliation_failed`` path is unchanged).
+     This injection-based isolation chain is not a complete HTTP E2E and does not
+     claim a confirmed outcome.
+  4. FACTORY — ``create_read_adapter_registry`` registers the reader only when the
+     three authorization gates all pass (a well-formed base URL + an independent
+     read-only key, never the create-capable write key + an exact certified-version
+     match), fails closed on any missing / mismatched gate, tolerates a
+     malformed URL, issues no HTTP at build time, and never mutates the empty
+     ``default_read_adapter_registry()``. The reader's production transport is
+     a no-redirect opener, so a cross-host 3xx can never carry the ``Authorization``
+     header.
 
-The REAL ``GET`` is ``TestRealLabRead`` — behind ``@pytest.mark.external``
-(deselected unless ``-m external``) AND a live-Lab env guard, so it SKIPS rather
+The live ``GET`` is ``TestRealLabRead`` — behind ``@pytest.mark.external``
+(deselected unless ``-m external``) and a live-Lab env guard, so it skips rather
 than faking a result. No default ``pytest`` run here touches a real system.
 
-Design invariants honored (M2 §5 + M2-R §2/§3): ``read`` is the SOLE verb (no
-execute / compensate / dispatch / create / close); ONE read attempt, no retry / poll
-/ compensation; the numeric ``caseId`` is NEVER the reference; identity + correlation
-+ creation (a valid ``createdAt``) must ALL hold for the reader to EMIT
-``case_created`` — M2-R §3 makes the creation gate MANDATORY (a missing/invalid
-``createdAt`` -> ``case_unverified``); M2-R §2 then REFUSES ``case_created`` at the
-fail-closed mapping (zero fact); a failed READ is ``reconciliation_failed``, never
-``confirmed_failure``; credentials ride ONLY in the ``Authorization`` header and never
-surface in a message, a fact, or ``raw_evidence``.
+Invariants: ``read`` is the sole verb (no execute / compensate / dispatch / create
+/ close); one read attempt, no retry / poll / compensation; the numeric ``caseId``
+is never the reference; identity + correlation + creation (a valid ``createdAt``)
+must all hold for the reader to emit ``case_created`` — the creation-time gate is
+mandatory, so a missing/invalid ``createdAt`` yields ``case_unverified`` — and the
+empty vocabulary then refuses ``case_created`` at the fail-closed mapping (zero
+fact); a failed read is ``reconciliation_failed``, never ``confirmed_failure``;
+credentials ride only in the ``Authorization`` header and never surface in a
+message, a fact, or ``raw_evidence``.
 """
 import io
 import json
@@ -95,26 +94,26 @@ from app.services.read_adapters.thehive import (
     _NoRedirectHandler,
 )
 
-# ---------------------------------------------------------------------------
-# constants + stub transport (the isolation seam — NO network, ever)
-# ---------------------------------------------------------------------------
-#: An obviously-fake loopback-style Lab base URL + key. NEVER a real secret; used
-#: only so the hygiene tests can assert these exact values never leak.
+#
+# constants + stub transport (the isolation seam — no network, ever)
+#
+# An obviously-fake loopback-style Lab base URL + key, never a real secret; used
+# only so the hygiene tests can assert these exact values never leak.
 LAB_BASE_URL = "https://thehive.lab.local"
 LAB_API_KEY = "LAB_THEHIVE_KEY_DO_NOT_USE"
 
-#: A secret that only ever lives inside a stubbed HTTP error BODY — the reader must
-#: never read an error body, so this must never surface in a raised message.
+# A secret that only ever lives inside a stubbed HTTP error body — the reader must
+# never read an error body, so this must never surface in a raised message.
 SECRET_BODY = b'{"message":"SUPER_SECRET_BODY","x":"AKIAIOSFODNN7EXAMPLE"}'
 
-#: Fixed clock for seeding the dispatch chain (execution_log.created_at).
+# Fixed clock for seeding the dispatch chain (execution_log.created_at).
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
-#: A realistic EntityIdOrName string reference (OutputCase ``_id`` == ``id``); the
-#: ``~`` id-prefix is in urllib's always-safe set, so it survives URL-encoding.
+# A realistic EntityIdOrName string reference (OutputCase ``_id`` == ``id``); the
+# ``~`` id-prefix is in urllib's always-safe set, so it survives URL-encoding.
 REFERENCE = "~42"
 
-#: The authenticated human recorder identity for service-level calls.
+# The authenticated human recorder identity for service-level calls.
 OPERATOR = "recon-op"
 
 
@@ -135,8 +134,8 @@ class _StubResponse:
 
 class StubTransport:
     """Mimics ``urllib.request.urlopen``: records every ``(request, timeout)``,
-    then returns a canned response OR raises a canned exception. This is the ONLY
-    way the reader is exercised here — no socket is ever opened."""
+    then returns a canned response or raises a canned exception. Every offline test
+    drives the reader through it — no socket is ever opened."""
 
     def __init__(self, *, status=200, body=None, exc=None):
         self._status = status
@@ -192,10 +191,10 @@ def _case_body(
     extra_tags=None,
     include_id=True,
 ):
-    """A realistic OutputCase v0 body (TheHive 4.1.24-1 = ``b6649bb``): ``_id`` ==
+    """A realistic OutputCase v0 body (TheHive 4.1.24-1): ``_id`` ==
     ``id`` (String), ``createdAt`` (epoch millis), ``tags`` (the ``Set[String]``
-    ``CaseSrv.create`` persists + echoes), ``caseId`` (the human case NUMBER,
-    audit-only — NEVER the reference)."""
+    ``CaseSrv.create`` persists + echoes), ``caseId`` (the human case number,
+    audit-only — never the reference)."""
     tags = [sentinelflow_execution_tag(execution_id), "sentinelflow"]
     if extra_tags:
         tags.extend(extra_tags)
@@ -215,7 +214,7 @@ def _case_body(
 
 def _http_error(code, body=SECRET_BODY):
     """A ``urllib.error.HTTPError`` carrying a secret-laden body the reader must
-    NEVER read (it uses only ``exc.code``)."""
+    never read (it uses only ``exc.code``)."""
     return urllib.error.HTTPError(
         f"{LAB_BASE_URL}/api/case/{REFERENCE}", code, "err", {}, io.BytesIO(body)
     )
@@ -231,7 +230,7 @@ class TestReaderContract:
         assert reader.name == "thehive"
 
     def test_read_is_the_sole_verb_no_write_verbs_exist(self):
-        # design §21 / A1: a ReadAdapter structurally CANNOT execute / compensate /
+        # / A1: a ReadAdapter structurally CANNOT execute / compensate /
         # dispatch / create / close / delete — those verbs do not exist on it.
         reader = _reader(StubTransport())
         for forbidden in (
@@ -286,7 +285,7 @@ class TestVerifiedCreationEffect:
         assert result.external_state == CASE_CREATED
 
     def test_absent_created_at_is_unverified(self):
-        # M2-R §3 (design §5.2 gate 3, MANDATORY): a missing createdAt FAILS the
+        # M2-R : a missing createdAt FAILS the
         # creation gate -> case_unverified (reason=missing_created_at), NOT
         # case_created. Identity + a re-attachable correlation tag are NOT enough to
         # prove "this execution created this case" without an authenticated creation
@@ -308,8 +307,8 @@ class TestVerifiedCreationEffect:
         assert result.external_state == CASE_CREATED
 
     def test_case_created_is_refused_by_the_fail_closed_map(self):
-        # M2-R §2: the reader still EMITS case_created, but the path-agnostic 3.4.3-B
-        # map now REFUSES it (fail-closed) — the frozen 2-param contract cannot tell
+        # M2-R : the reader still EMITS case_created, but the path-agnostic 3.4.3-B
+        # map now REFUSES it (fail-closed) — the 2-param contract cannot tell
         # this trusted-reader word from a webhook-forged string, so it maps to NOTHING
         # on ANY path until the source-isolation Amendment lands.
         with pytest.raises(UnrecognizedExternalState):
@@ -361,7 +360,7 @@ class TestUnverifiedRefusals:
         assert result.raw_evidence["reason"] == "no_string_resource_id"
 
     def test_numeric_case_number_is_never_the_reference(self):
-        # the human caseId (number) can NEVER substitute for the string _id (M1 §4).
+        # the human caseId (number) can NEVER substitute for the string _id.
         eid = uuid.uuid4()
         body = {
             "caseId": 42,
@@ -464,7 +463,7 @@ class TestErrorDiscrimination:
         assert exc.value.category == "transport_error"
 
     def test_no_error_category_is_ever_a_mapped_failure_state(self):
-        # §5: 401/403/404/timeout are READ failures -> reconciliation_failed, NEVER
+        # 401/403/404/timeout are READ failures -> reconciliation_failed, NEVER
         # confirmed_failure. The thehive vocabulary evidences NO failure word.
         assert ADAPTER_STATE_VOCABULARIES["thehive"].terminal_failure_states == frozenset()
 
@@ -549,8 +548,8 @@ class TestSecretHygiene:
 
 
 # ===========================================================================
-# 7. FACTORY — settings-driven registry, fail-closed (M2-R §4 THREE gates),
-#    never mutates the seal
+# 7. FACTORY — settings-driven registry, fail-closed,
+# never mutates the seal
 # ===========================================================================
 def _authorize_thehive_reader(
     monkeypatch,
@@ -559,7 +558,7 @@ def _authorize_thehive_reader(
     read_api_key=LAB_API_KEY,
     expected_version=CERTIFIED_THEHIVE_VERSION,
 ):
-    """M2-R §4: set the THREE settings that authorize a TheHive reader — base URL
+    """M2-R : set the THREE settings that authorize a TheHive reader — base URL
     + an INDEPENDENT read-only key + an EXACT certified version. The WRITE key
     (THEHIVE_API_KEY) is left untouched on purpose: authorization must never
     depend on it."""
@@ -570,7 +569,7 @@ def _authorize_thehive_reader(
 
 class TestRegistryFactory:
     def test_unconfigured_settings_register_no_thehive_reader(self, monkeypatch):
-        # M2-R §4: with NONE of the three authorization settings present, no reader.
+        # M2-R : with NONE of the three authorization settings present, no reader.
         monkeypatch.setattr(settings, "THEHIVE_BASE_URL", "")
         monkeypatch.setattr(settings, "THEHIVE_READ_API_KEY", "")
         monkeypatch.setattr(settings, "THEHIVE_EXPECTED_VERSION", "")
@@ -580,7 +579,7 @@ class TestRegistryFactory:
             registry.get("thehive")
 
     def test_fully_authorized_settings_register_the_thehive_reader(self, monkeypatch):
-        # M2-R §4: base URL + INDEPENDENT read-only key + EXACT certified version.
+        # M2-R : base URL + INDEPENDENT read-only key + EXACT certified version.
         _authorize_thehive_reader(monkeypatch)
         registry = create_read_adapter_registry()
         assert registry.is_supported("thehive") is True
@@ -589,7 +588,7 @@ class TestRegistryFactory:
         assert reader.name == "thehive"
 
     def test_the_write_key_alone_never_authorizes_a_reader(self, monkeypatch):
-        # M2-R §4 LEAST PRIVILEGE (reviewer修正项 A): THEHIVE_API_KEY (the
+        # M2-R LEAST PRIVILEGE (reviewer修正项 A): THEHIVE_API_KEY (the
         # create-capable WRITE key) set + version asserted, but NO independent read
         # key -> NO reader. The factory NEVER falls back to the write key, so a
         # reader can never inherit create privilege it does not need.
@@ -603,7 +602,7 @@ class TestRegistryFactory:
         assert registry.is_supported("thehive") is False
 
     def test_the_reader_rides_the_read_key_not_the_write_key(self, monkeypatch):
-        # M2-R §4: when BOTH keys are set, the Authorization header the reader
+        # M2-R : when BOTH keys are set, the Authorization header the reader
         # actually sends carries the INDEPENDENT read-only key, NEVER the
         # create-capable write key. Behavior-level: inspect the real request.
         write_key = "WRITE_KEY_MUST_NOT_RIDE_THE_READER"
@@ -622,14 +621,14 @@ class TestRegistryFactory:
         assert write_key not in (auth or "")
 
     def test_missing_expected_version_fails_closed(self, monkeypatch):
-        # M2-R §4: URL + read key present but NO asserted version -> fail-closed.
+        # M2-R : URL + read key present but NO asserted version -> fail-closed.
         # Mere URL + key presence never auto-authorizes the reader.
         _authorize_thehive_reader(monkeypatch, expected_version="")
         registry = create_read_adapter_registry()
         assert registry.is_supported("thehive") is False
 
     def test_version_mismatch_fails_closed(self, monkeypatch):
-        # M2-R §4: a DIFFERENT asserted version refuses — 4.1.24-1 read semantics
+        # M2-R : a DIFFERENT asserted version refuses — 4.1.24-1 read semantics
         # are never applied to a non-certified server version by a one-line wiring.
         _authorize_thehive_reader(monkeypatch, expected_version="4.1.25-1")
         registry = create_read_adapter_registry()
@@ -663,8 +662,8 @@ class TestRegistryFactory:
 
 
 # ===========================================================================
-# 7b. NO-REDIRECT CREDENTIAL LEAK (M2-R §4) — a cross-host 3xx must NEVER carry
-#     the Authorization header. Network-free: the property lives in the handler.
+# 7b. NO-REDIRECT CREDENTIAL LEAK — a cross-host 3xx must NEVER carry
+# the Authorization header. Network-free: the property lives in the handler.
 # ===========================================================================
 class TestNoRedirectCredentialLeak:
     def test_redirect_request_returns_none_so_auth_is_never_forwarded(self):
@@ -702,7 +701,7 @@ class TestNoRedirectCredentialLeak:
 
 
 # ===========================================================================
-# 8. SERVICE LEVEL — the REAL pipeline via explicit reader injection (spec §22)
+# 8. SERVICE LEVEL — the REAL pipeline via explicit reader injection
 # ===========================================================================
 def _seed_approval(db_session):
     group = AlertGroup(
@@ -788,14 +787,14 @@ def _outcome_count(db_session):
 
 class TestServiceLevelClosure:
     """correlate -> read -> validate 3.4.3-A -> map 3.4.3-B, driven by an EXPLICITLY
-    INJECTED ``TheHiveReadAdapter``. Under M2-R §2 fail-closed the map REFUSES the
+    INJECTED ``TheHiveReadAdapter``. Under M2-R fail-closed the map REFUSES the
     reader's verified ``case_created`` -> ZERO Outcome Fact (the read-FAILURE
     ``reconciliation_failed`` path is unchanged). This injection-based isolation
     chain is NOT a complete HTTP E2E and does NOT claim a confirmed closure — it
     proves the fail-closed gate holds end-to-end at the service layer."""
 
     def test_verified_creation_is_refused_by_fail_closed_map_zero_facts(self, db_session):
-        # M2-R §2: the reader VERIFIES the creation (identity + correlation + a valid
+        # M2-R : the reader VERIFIES the creation (identity + correlation + a valid
         # createdAt) and EMITS case_created, but the fail-closed path-agnostic map
         # REFUSES it -> UnrecognizedExternalState -> ZERO Outcome Fact. Proves the
         # synthesis signal cannot reach a confirmed_success fact from ANY path until
@@ -842,7 +841,7 @@ class TestServiceLevelClosure:
         assert fact.detail["reason"] == "read_transport_failure"
 
     def test_repeat_reconcile_stays_fail_closed_zero_facts(self, db_session):
-        # M2-R §2: reconciling TWICE over a verified creation still REFUSES both times
+        # M2-R : reconciling TWICE over a verified creation still REFUSES both times
         # (fail-closed) -> ZERO facts, never an overwrite and never a laundered
         # success. (The append-only TWO-fact property is proven on the read-FAILURE
         # reconciliation_failed path, which the vocabulary fix does not touch.)
@@ -872,12 +871,12 @@ class TestRealLabRead:
     """
 
     def test_real_get_case_verifies_creation(self):
-        # M2-R §5: a REAL success test must assert the VERIFIED creation effect
+        # M2-R : a REAL success test must assert the VERIFIED creation effect
         # through the trusted evidence gate — it must NOT accept case_unverified as
         # success (the M2 disjunction ``in (CASE_CREATED, CASE_UNVERIFIED)`` let an
         # unverified read pass). So this asserts CASE_CREATED STRICTLY. NOTE: the
         # platform-level confirmed_success + persisted Outcome is FAIL-CLOSED under
-        # M2-R §2 (the empty vocabulary refuses case_created on every path), so this
+        # M2-R (the empty vocabulary refuses case_created on every path), so this
         # real-Lab test proves the READER half only; the persisted-Outcome closure is
         # deferred to the source-isolation Amendment and stays LAB BLOCKED here.
         base_url = os.environ.get("THEHIVE_LAB_BASE_URL", "")

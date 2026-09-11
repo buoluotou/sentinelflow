@@ -1,21 +1,21 @@
-/** ExecutionObservabilityPage unit tests (Phase 3.3.3.4.2, jsdom, fetch
+/* * ExecutionObservabilityPage unit tests (, jsdom, fetch
  * mocked).
  *
  * Locks the pure read-only observability contract:
- *   A. metrics render the six frozen cards from the server body
- *   B. adapter health renders the observed verdict + recent window facts
- *   C. null -> N/A (never 0%)
- *   D. all four observed statuses reachable, always labelled "Observed"
- *   E. multi-adapter rendering (deterministic sorted order)
- *   F. empty data -> N/A cards + "No adapter observations" (never "failing")
- *   G. any GET failure surfaces through the shared ErrorBanner
- *   H. page load issues GETs ONLY (exactly the two frozen endpoints)
- *   I. zero Authorization header on every request (no token)
- *   J. zero buttons / action affordances on the page
- *   K. zero write verbs anywhere in the page source
- *   L. both read models load together (two GETs on mount)
- *   M. server rates render verbatim — the UI never recomputes a rate
- *      from sibling numbers (0.8 -> 80% even when counts say otherwise)
+ * A. metrics render the six cards from the server body
+ * B. adapter health renders the observed verdict + recent window facts
+ * C. null -> N/A (never 0%)
+ * D. all four observed statuses reachable, always labelled "Observed"
+ * E. multi-adapter rendering (deterministic sorted order)
+ * F. empty data -> N/A cards + "No adapter observations" (never "failing")
+ * G. any GET failure surfaces through the shared ErrorBanner
+ * H. page load issues GETs ONLY (exactly the two endpoints)
+ * I. zero Authorization header on every request (no token)
+ * J. zero buttons / action affordances on the page
+ * K. zero write verbs anywhere in the page source
+ * L. both read models load together (two GETs on mount)
+ * M. server rates render verbatim — the UI never recomputes a rate
+ * from sibling numbers (0.8 -> 80% even when counts say otherwise)
  */
 import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
@@ -88,7 +88,7 @@ function healthBody(overrides: Record<string, unknown> = {}) {
 
 type FetchHandler = (url: string, init?: RequestInit) => Response
 
-/** Routes the two frozen GET endpoints; anything else 404s loudly. */
+/* * Routes the two GET endpoints; anything else 404s loudly. */
 function routeFetch(
   handler: FetchHandler,
 ): ReturnType<typeof vi.fn> & { mock: { calls: unknown[][] } } {
@@ -351,7 +351,7 @@ describe('ExecutionObservabilityPage', () => {
   it('M. server rates render verbatim — the UI never recomputes them', async () => {
     // Deliberately inconsistent-looking companions: if the UI recomputed
     // success_rate from succeeded/(succeeded+failed) it would show 40%,
-    // not the server's frozen 0.8.
+    // not the server's 0.8.
     observabilityFetch(
       json(
         200,

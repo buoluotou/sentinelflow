@@ -1,12 +1,12 @@
-/** Execution detail (Phase 3.1.9): one execution's complete append-only
+/* * Execution detail: one execution's complete append-only
  * timeline + compensation relation. Strictly read-only:
  *
  *  - zero action affordances (no Execute / Approve / Reject / Retry /
- *    Compensate) — the only interactive element is the detail expander;
+ * Compensate) — the only interactive element is the detail expander;
  *  - zero token: GET-only traffic through the shared client;
  *  - detail payloads (adapter errors / raw responses / guard reasons) are
- *    rendered as escaped JSON text — NEVER as HTML (untrusted upstream data
- *    from real Shuffle/Wazuh/TheHive adapters must not be injectable).
+ * rendered as escaped JSON text — NEVER as HTML (untrusted upstream data
+ * from real Shuffle/Wazuh/TheHive adapters must not be injectable).
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'

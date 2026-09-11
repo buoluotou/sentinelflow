@@ -1,7 +1,7 @@
-"""Phase 3.3.3.3.1: Observed-Health read model tests — health is what
+"""Observed-Health read model tests — health is what
 the execution facts SHOW, never a live probe.
 
-Locks the frozen adjudications:
+Locks the adjudications:
 
 - vocabulary OBSERVED_STATUSES = {healthy, degraded, failing, unknown};
   NO boolean ``healthy`` field (would be misread as a live probe)
@@ -95,9 +95,9 @@ def add_in_flight_chain(db_session):
     db_session.flush()
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Frozen vocabulary + field discipline
-# --------------------------------------------------------------------------
+#
 class TestFrozenVocabulary:
     def test_vocabulary_is_exactly_the_four_frozen_words(self):
         assert OBSERVED_STATUSES == {"healthy", "degraded", "failing", "unknown"}
@@ -119,9 +119,9 @@ class TestFrozenVocabulary:
         assert "status" not in fields  # only observed_status
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Empty / single / multi adapter shapes
-# --------------------------------------------------------------------------
+#
 class TestAdapterShapes:
     def test_empty_log_has_no_adapters_and_keeps_config(self, db_session):
         snapshot = health(db_session)
@@ -153,9 +153,9 @@ class TestAdapterShapes:
         assert snapshot.adapters["probe-a"].observed_status == "failing"
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Recent-N window + judgement bands
-# --------------------------------------------------------------------------
+#
 class TestWindowAndJudgement:
     def test_recent_n_window_only_counts_newest_terminal_chains(self, db_session):
         # 2 failures, then 3 successes (SAME adapter): with a 2-wide
@@ -212,9 +212,9 @@ class TestWindowAndJudgement:
         assert view.observed_status == "failing"  # 55.6% < 0.95
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Failure classifications inside the window
-# --------------------------------------------------------------------------
+#
 class TestFailureClassification:
     def test_timeout_unavailable_protocol_counts(self, db_session):
         run_chain(db_session, FailingStub("timeout", name="probe-a"))
@@ -241,9 +241,9 @@ class TestFailureClassification:
         assert stamps == sorted(stamps, reverse=True)
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Governance never poisons adapter health (the attribution lock)
-# --------------------------------------------------------------------------
+#
 class TestGovernanceAttributionLock:
     def test_many_guard_rejections_never_make_adapter_unhealthy(self, db_session):
         # One success, then a flood of governance refusals: the adapter
@@ -270,9 +270,9 @@ class TestGovernanceAttributionLock:
         assert view.all_time_in_flight == 3
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Last execution facts
-# --------------------------------------------------------------------------
+#
 class TestLastExecution:
     def test_last_execution_reflects_the_newest_chain_any_outcome(self, db_session):
         run_chain(db_session, SuccessStub("mock"))
@@ -288,9 +288,9 @@ class TestLastExecution:
         assert view.last_execution_state == "guard_rejected"
 
 
-# --------------------------------------------------------------------------
+#
 # 7. Read-only / deterministic / immutable nails
-# --------------------------------------------------------------------------
+#
 class TestPurityNails:
     def test_row_count_and_content_unchanged(self, db_session):
         run_chain(db_session)
@@ -320,9 +320,9 @@ class TestPurityNails:
         assert a.adapters == b.adapters
 
 
-# --------------------------------------------------------------------------
+#
 # 8. Structural locks (source level)
-# --------------------------------------------------------------------------
+#
 class TestStructuralLocks:
     def test_no_db_write_calls_in_source(self):
         source = HEALTH_SOURCE.read_text(encoding="utf-8")

@@ -1,4 +1,4 @@
-"""Dashboard API (Phase 1 Step 7.5).
+"""Dashboard API.
 
 One aggregated snapshot for the Web Console home page: the frontend
 binds this single endpoint instead of calling /events, /incidents and
@@ -17,5 +17,5 @@ router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 @router.get("/summary", response_model=DashboardSummary)
 def dashboard_summary(db: Session = Depends(get_db)) -> DashboardSummary:
     """Real-time aggregated snapshot: active incidents (with severity
-    breakdown), today's alerts/events and the event risk distribution."""
+breakdown), today's alerts/events and the event risk distribution."""
     return DashboardSummary.model_validate(get_summary(db))

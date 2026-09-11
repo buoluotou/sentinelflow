@@ -1,4 +1,4 @@
-"""PostgreSQL-specific durable-compensation integration (RC2 / C-1).
+"""PostgreSQL-specific durable-compensation integration.
 
 WHY THIS FILE EXISTS. SQLite's lock is DATABASE-level (an open write on ANY
 table blocks a write on ANY other: "database is locked"), it SERIALISES
@@ -7,33 +7,33 @@ SQLite runs with FOREIGN KEYS OFF. PostgreSQL MVCC + its unique indexes +
 enforced FKs are the production semantics — so the C-1 capabilities are
 certified HERE or stay explicitly UNVERIFIED:
 
-  req A  SAME original_execution_id concurrent compensation — the C-1
-         reservation (``ux_compensation_attempt_original_execution_id``)
-         adjudicates a TRUE parallel race to EXACTLY ONE winner BEFORE any
-         external reverse call. -> TestPostgresCompensationReservation
-  req B  SAME compensation execution_id concurrent replay —
-         ``ux_compensation_attempt_execution_id`` commits EXACTLY ONE; the
-         loser raises IntegrityError (-> typed 409, ZERO external calls).
-         -> TestPostgresCompensationInterleaving
-  req C  caller's OPEN (uncommitted) write transaction vs the store's
-         INDEPENDENT commit on a SECOND connection — MVCC lets them overlap;
-         the independent commit SURVIVES the caller's rollback.
-         -> TestPostgresCompensationInterleaving
-  req D  commit SUCCEEDED but the client confirmation was LOST — the read-only
-         recovery check FINDS the durable attempt, KEEPS the uncertainty
-         (never auto-retries), and a naive re-compensation on the SAME
-         original is REJECTED before the adapter.
-         -> TestPostgresCompensationCommitConfirmationLost
-  req E  terminal-write failure / caller rollback — the committed compensation
-         attempt SURVIVES, the caller's rows vanish, recovery flags the orphan;
-         a committed agreeing terminal SETTLES it (audit only).
-         -> TestPostgresCompensationTerminalSurvival
-  req F  orphan recovery AFTER a restart (engine disposed, fresh engine
-         reopened) — durability lives in the DATABASE, not the process.
-         -> TestPostgresCompensationRestartRecovery
-  req G  a wrong-attempt-reference / cross-execution terminal does NOT settle a
-         pending compensation attempt (correlation by all immutable facts).
-         -> TestPostgresCompensationCorrelation
+req A  SAME original_execution_id concurrent compensation — the C-1
+reservation (``ux_compensation_attempt_original_execution_id``)
+adjudicates a TRUE parallel race to EXACTLY ONE winner BEFORE any
+external reverse call. -> TestPostgresCompensationReservation
+req B  SAME compensation execution_id concurrent replay —
+``ux_compensation_attempt_execution_id`` commits EXACTLY ONE; the
+loser raises IntegrityError (-> typed 409, ZERO external calls).
+-> TestPostgresCompensationInterleaving
+req C  caller's OPEN (uncommitted) write transaction vs the store's
+INDEPENDENT commit on a SECOND connection — MVCC lets them overlap;
+the independent commit SURVIVES the caller's rollback.
+-> TestPostgresCompensationInterleaving
+req D  commit SUCCEEDED but the client confirmation was LOST — the read-only
+recovery check FINDS the durable attempt, KEEPS the uncertainty
+(never auto-retries), and a naive re-compensation on the SAME
+original is REJECTED before the adapter.
+-> TestPostgresCompensationCommitConfirmationLost
+req E  terminal-write failure / caller rollback — the committed compensation
+attempt SURVIVES, the caller's rows vanish, recovery flags the orphan;
+a committed agreeing terminal SETTLES it (audit only).
+-> TestPostgresCompensationTerminalSurvival
+req F  orphan recovery AFTER a restart (engine disposed, fresh engine
+reopened) — durability lives in the DATABASE, not the process.
+-> TestPostgresCompensationRestartRecovery
+req G  a wrong-attempt-reference / cross-execution terminal does NOT settle a
+pending compensation attempt (correlation by all immutable facts).
+-> TestPostgresCompensationCorrelation
 
 STATUS — **PostgreSQL UNVERIFIED** until this module runs against a real
 PostgreSQL. It is ``@pytest.mark.external`` (conftest DESELECTS it unless
@@ -74,17 +74,17 @@ from app.services.executions.durable_compensation import (
     find_unreconciled_compensations,
 )
 
-#: The dedicated-DB env var. Unset -> SKIP (LAB BLOCKED), never a fabricated pass.
+# The dedicated-DB env var. Unset -> SKIP (LAB BLOCKED), never a fabricated pass.
 PG_URL_ENV = "SENTINELFLOW_PG_TEST_URL"
 
 
 def _pg_engine():
     """A REAL PostgreSQL engine on the DEDICATED throwaway DB, or SKIP.
 
-    Module-level so every test class shares ONE guard + ``create_all``.
-    ``create_all`` is idempotent (``checkfirst=True``) and NEVER drops; each
-    test cleans up ONLY its own rows (``_cleanup``).
-    """
+Module-level so every test class shares ONE guard + ``create_all``.
+``create_all`` is idempotent (``checkfirst=True``) and NEVER drops; each
+test cleans up ONLY its own rows (``_cleanup``).
+"""
     url = os.environ.get(PG_URL_ENV, "")
     if not url:
         pytest.skip(
@@ -106,11 +106,11 @@ def _pg_comp_binding(
 ):
     """A deterministic pre-compensation binding (server-side facts only).
 
-    ``original_execution_id`` is injectable so the suite can race the SAME
-    original execution across DIFFERENT compensation execution_ids (the C-1
-    reservation); ``approval_id`` is injectable so terminal rows can use a REAL
-    seeded approval (the PostgreSQL FK on ``execution_log.approval_id``).
-    """
+``original_execution_id`` is injectable so the suite can race the SAME
+original execution across DIFFERENT compensation execution_ids (the C-1
+reservation); ``approval_id`` is injectable so terminal rows can use a REAL
+seeded approval (the PostgreSQL FK on ``execution_log.approval_id``).
+"""
     now = datetime.now(timezone.utc)
     return build_compensation_binding(
         execution_id=execution_id or uuid.uuid4(),
@@ -158,13 +158,13 @@ def _comp_row(binding):
 
 def _seed_approval_chain(engine):
     """Seed + COMMIT a REAL ``alert_group -> recommendation -> approval`` chain;
-    return ``(approval_id, group_id)``.
+return ``(approval_id, group_id)``.
 
-    PostgreSQL ENFORCES ``execution_log.approval_id`` as a FK (checked at
-    flush), so any scenario that writes/flushes a terminal ExecutionLog row
-    MUST first have a real approval. ``group_id`` is returned so ``_cleanup``
-    can remove the chain (alert_group CASCADEs to recommendation -> approval).
-    """
+PostgreSQL ENFORCES ``execution_log.approval_id`` as a FK (checked at
+flush), so any scenario that writes/flushes a terminal ExecutionLog row
+MUST first have a real approval. ``group_id`` is returned so ``_cleanup``
+can remove the chain (alert_group CASCADEs to recommendation -> approval).
+"""
     now = datetime.now(timezone.utc)
     with Session(engine) as session:
         group = AlertGroup(
@@ -204,14 +204,14 @@ def _seed_approval_chain(engine):
 
 def _comp_terminal_row(engine, binding, approval_id, decision, reference=None):
     """Append + COMMIT a terminal compensation ``execution_log`` row
-    (``compensation_succeeded`` / ``compensation_failed``) that REFERENCES the
-    attempt via ``COMPENSATION_REFERENCE_KEY`` (``None`` -> the attempt's own id;
-    a different value -> a wrong reference).
+(``compensation_succeeded`` / ``compensation_failed``) that REFERENCES the
+attempt via ``COMPENSATION_REFERENCE_KEY`` (``None`` -> the attempt's own id;
+a different value -> a wrong reference).
 
-    Mirrors the real service's terminal write
-    (``detail[COMPENSATION_REFERENCE_KEY] = binding.compensation_attempt_id``).
-    ``approval_id`` MUST be a REAL seeded approval (PostgreSQL FK).
-    """
+Mirrors the real service's terminal write
+(``detail[COMPENSATION_REFERENCE_KEY] = binding.compensation_attempt_id``).
+``approval_id`` MUST be a REAL seeded approval (PostgreSQL FK).
+"""
     ref = reference if reference is not None else binding.compensation_attempt_id
     with Session(engine) as session:
         session.add(
@@ -233,11 +233,11 @@ def _comp_terminal_row(engine, binding, approval_id, decision, reference=None):
 def _cleanup(engine, *, execution_ids=(), approval_group_ids=()):
     """TARGETED, FK-safe deletion of ONLY the rows a test created.
 
-    NEVER ``drop_all`` / truncate / blanket delete. Order respects the FK graph:
-    ``execution_log`` (NO ACTION -> approvals) and the FK-free
-    ``compensation_attempt`` FIRST (by execution_id), THEN the approval chain
-    via ``alert_group``.
-    """
+NEVER ``drop_all`` / truncate / blanket delete. Order respects the FK graph:
+``execution_log`` (NO ACTION -> approvals) and the FK-free
+``compensation_attempt`` FIRST (by execution_id), THEN the approval chain
+via ``alert_group``.
+"""
     exec_ids = [uuid.UUID(str(e)) for e in execution_ids]
     with Session(engine) as session:
         if exec_ids:
@@ -262,9 +262,9 @@ class TestPostgresCompensationInterleaving:
 
     def test_open_caller_write_transaction_does_not_block_the_independent_commit(self):
         """req C — the caller holds an OPEN write transaction WHILE the store commits
-        the compensation attempt on a SECOND connection, then the caller rolls its
-        WHOLE transaction back. PostgreSQL MVCC: the independent commit SUCCEEDS and
-        SURVIVES; the rolled-back caller row vanishes."""
+the compensation attempt on a SECOND connection, then the caller rolls its
+WHOLE transaction back. PostgreSQL MVCC: the independent commit SUCCEEDS and
+SURVIVES; the rolled-back caller row vanishes."""
         engine = _pg_engine()
         caller_binding = _pg_comp_binding()  # execution_id A — the caller's open write
         store_binding = _pg_comp_binding()  # execution_id B — the durable reverse
@@ -298,8 +298,8 @@ class TestPostgresCompensationInterleaving:
 
     def test_concurrent_replay_commits_exactly_one_attempt(self):
         """req B — two threads race ``store.record()`` on the SAME compensation
-        execution_id: the unique index commits EXACTLY ONE; the loser raises
-        IntegrityError (-> typed 409, ZERO external reverse calls)."""
+execution_id: the unique index commits EXACTLY ONE; the loser raises
+IntegrityError (-> typed 409, ZERO external reverse calls)."""
         engine = _pg_engine()
         execution_id = uuid.uuid4()
         try:
@@ -341,11 +341,11 @@ class TestPostgresCompensationInterleaving:
 @pytest.mark.external
 class TestPostgresCompensationReservation:
     """req A — the C-1 reservation under TRUE PostgreSQL concurrency: SAME
-    original_execution_id, DIFFERENT compensation execution_ids. The unique
-    index must adjudicate to EXACTLY ONE winner BEFORE any external call — the
-    durable refill of "at most one compensation per original" that the
-    execution_log partial index only enforces at caller-commit (AFTER the wire
-    call)."""
+original_execution_id, DIFFERENT compensation execution_ids. The unique
+index must adjudicate to EXACTLY ONE winner BEFORE any external call — the
+durable refill of "at most one compensation per original" that the
+execution_log partial index only enforces at caller-commit (AFTER the wire
+call)."""
 
     def test_same_original_execution_commits_exactly_one_compensation(self):
         engine = _pg_engine()
@@ -397,10 +397,10 @@ class TestPostgresCompensationReservation:
 class TestPostgresCompensationCommitConfirmationLost:
     """req D — commit SUCCEEDED but the client confirmation was LOST.
 
-    Recovery FINDS the committed attempt and KEEPS the uncertainty
-    (DISPATCH_STATUS_UNKNOWN, never a fabricated terminal); a naive
-    re-compensation on the SAME original (new compensation execution_id) is
-    REJECTED by the reservation BEFORE any second external reverse call."""
+Recovery FINDS the committed attempt and KEEPS the uncertainty
+(DISPATCH_STATUS_UNKNOWN, never a fabricated terminal); a naive
+re-compensation on the SAME original (new compensation execution_id) is
+REJECTED by the reservation BEFORE any second external reverse call."""
 
     def test_lost_confirmation_is_recovered_and_naive_retry_is_rejected(self):
         engine = _pg_engine()
@@ -456,7 +456,7 @@ class TestPostgresCompensationCommitConfirmationLost:
 @pytest.mark.external
 class TestPostgresCompensationTerminalSurvival:
     """req E — terminal-write failure / caller rollback survival + the positive
-    control (a committed agreeing terminal SETTLES the attempt as an AUDIT)."""
+control (a committed agreeing terminal SETTLES the attempt as an AUDIT)."""
 
     def test_attempt_survives_caller_rollback_and_is_flagged(self):
         engine = _pg_engine()
@@ -544,8 +544,8 @@ class TestPostgresCompensationTerminalSurvival:
 @pytest.mark.external
 class TestPostgresCompensationRestartRecovery:
     """req F — durability lives in the DATABASE, not the process: dispose the
-    engine, reopen a fresh one, and the committed compensation attempt is still
-    there and still unreconciled."""
+engine, reopen a fresh one, and the committed compensation attempt is still
+there and still unreconciled."""
 
     def test_orphan_attempt_survives_restart_and_is_recovered(self):
         engine = _pg_engine()
@@ -584,8 +584,8 @@ class TestPostgresCompensationRestartRecovery:
 @pytest.mark.external
 class TestPostgresCompensationCorrelation:
     """req G — a WRONG-attempt-reference / cross-execution terminal does NOT
-    settle the pending compensation attempt (correlation requires ALL immutable
-    facts to agree)."""
+settle the pending compensation attempt (correlation requires ALL immutable
+facts to agree)."""
 
     def test_wrong_reference_does_not_mask_the_pending_attempt(self):
         engine = _pg_engine()
@@ -627,7 +627,7 @@ class TestPostgresCompensationCorrelation:
             store = DurableCompensationAttemptStore(engine)
             store.record(binding)
             # a terminal in a DIFFERENT execution that merely references this
-            # attempt's id cannot settle it (the M4-GR lesson, reverse-applied).
+            # attempt's id cannot settle it.
             with Session(engine) as session:
                 session.add(
                     ExecutionLog(

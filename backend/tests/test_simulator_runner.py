@@ -1,4 +1,4 @@
-"""Phase 1 Step 6: Scenario Simulator Runner tests.
+"""Step 6: Scenario Simulator Runner tests.
 
 The runner is stdlib-only and lives in simulator/runner/; it is imported via
 sys.path so its pure logic (discovery, validation, timestamp rewrite, HTTP
@@ -21,7 +21,7 @@ sys.path.insert(0, str(RUNNER_DIR))
 import run as runner  # noqa: E402
 
 
-# ---------------------------------------------------------------- discovery
+# discovery
 
 
 def test_discover_finds_all_five_scenarios():
@@ -46,7 +46,7 @@ def test_discover_unknown_scenario_raises():
         runner.discover_scenarios(SCENARIOS_DIR, "does_not_exist")
 
 
-# --------------------------------------------------------------- validation
+# validation
 
 
 def test_load_scenario_requires_events_list(tmp_path):
@@ -72,7 +72,7 @@ def test_all_shipped_scenarios_pass_validation():
             runner.validate_event(event, data["scenario"])
 
 
-# ---------------------------------------------------------------- timestamps
+# timestamps
 
 
 def test_prepare_event_now_rewrites_timestamp_and_keeps_original():
@@ -89,7 +89,7 @@ def test_prepare_event_file_replays_stored_timestamp():
     assert prepared["timestamp"] == "2026-08-24T10:30:00Z"
 
 
-# --------------------------------------------------------------- HTTP layer
+# HTTP layer
 
 
 class _FakeBackend(BaseHTTPRequestHandler):
@@ -169,7 +169,7 @@ def test_send_event_connection_failure_returns_zero():
     assert "error" in body
 
 
-# --------------------------------------------------------------------- CLI
+# CLI
 
 
 def _run_cli(base_url: str, extra: list[str]) -> int:

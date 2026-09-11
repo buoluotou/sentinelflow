@@ -1,34 +1,32 @@
-"""Explicit deployment modes + the production startup gate (RC2 §7 / §20).
+"""Explicit deployment modes and the production startup gate.
 
-TWO MODES, ONE SWITCH. ``DEPLOYMENT_MODE`` (``demo`` | ``production``) makes
-the deployment posture EXPLICIT instead of implied:
+``DEPLOYMENT_MODE`` (``demo`` | ``production``) makes the deployment posture an
+explicit setting instead of an implied one:
 
-* **demo** (default) — the simple local UX: loopback binding is the exposure
-  control, approval stays tokenless-but-display-only, the offline mock adapter
-  is allowed. Nothing changes for evaluation users.
-* **production** — FAIL-CLOSED at startup: ``validate_production_mode``
-  collects EVERY unsafe setting and refuses to boot with ONE sanitized error
-  naming the offending KEYS (never values). The checks cover the RC2 §7/§20
-  production prohibitions:
+* **demo** (default) — the simple local setup: loopback binding is the exposure
+control, approval stays tokenless-but-display-only, the offline mock adapter
+is allowed.
+* **production** — fails closed at startup: ``validate_production_mode``
+collects every unsafe setting and refuses to boot with one sanitized error
+naming the offending keys, never their values. The checks are:
 
-  1. ``OPERATORS_JSON`` authentication is required (the legacy
-     ``EXECUTION_TOKEN``-only path is demo folklore, not an identity source);
-     the registry must contain at least one approval-capable and one
-     execution-capable operator.
-  2. PostgreSQL only — SQLite is demo/native-only (its single-writer lock
-     cannot carry production concurrency semantics).
-  3. A real execution adapter is required — mock execution outcomes must
-     never be presented as real.
-  4. Compensation / reverse workflows are REFUSED — the C-1 durable
-     reservation is implemented but the reverse path is not yet
-     production-certified (``EXECUTION_COMPENSATION_EXPERIMENTAL`` and
-     ``SHUFFLE_WORKFLOW_REVERSE_*`` must stay off/empty).
-  5. ``BIND_HOST`` must stay loopback — TLS + authentication terminate at a
-     reverse proxy (see docs/operations/PRODUCTION-EDGE.md); the API port is
-     never exposed directly.
+1. ``OPERATORS_JSON`` authentication is required (an
+``EXECUTION_TOKEN``-only deployment is a demo convenience, not an identity
+source); the registry must contain at least one approval-capable and one
+execution-capable operator.
+2. PostgreSQL only — SQLite is limited to demo and native runs, since its
+single-writer lock cannot carry production concurrency semantics.
+3. A real execution adapter is required, because mock execution outcomes must
+not be presented as real.
+4. Compensation / reverse workflows are refused — the reverse path is not
+production-certified, so ``EXECUTION_COMPENSATION_EXPERIMENTAL`` and
+``SHUFFLE_WORKFLOW_REVERSE_*`` must stay off and empty.
+5. ``BIND_HOST`` must stay loopback — TLS and authentication terminate at a
+reverse proxy (see docs/operations/PRODUCTION-EDGE.md), and the API port
+is not exposed directly.
 
-The gate runs in the API lifespan BEFORE any adapter validation, so a
-production misconfiguration can never half-boot and fail at the first write.
+The gate runs in the API lifespan before any adapter validation, so a
+production misconfiguration cannot half-boot and fail at the first write.
 """
 from __future__ import annotations
 
@@ -37,12 +35,12 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.core.config import Settings
 
-#: The two accepted ``DEPLOYMENT_MODE`` values.
+# The two accepted ``DEPLOYMENT_MODE`` values.
 DEMO = "demo"
 PRODUCTION = "production"
 VALID_DEPLOYMENT_MODES = frozenset({DEMO, PRODUCTION})
 
-#: BIND_HOST values that count as loopback for the production gate.
+# BIND_HOST values that count as loopback for the production gate.
 _LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
@@ -62,18 +60,17 @@ def deployment_mode(settings: Settings) -> str:
 
 
 def is_production(settings: Settings) -> bool:
-    """True when the deployment runs in the fail-closed production mode."""
+    """True when the deployment runs in production mode."""
     return deployment_mode(settings) == PRODUCTION
 
 
 def validate_production_mode(settings: Settings) -> None:
-    """Fail-closed startup gate: refuse production on ANY unsafe setting.
+    """Fail-closed startup gate: refuse production on any unsafe setting.
 
-    DEMO mode returns immediately (the simple local UX is unchanged). In
-    production the problems are COLLECTED and raised as ONE error naming the
-    offending settings KEYS only — values (tokens, URLs, credentials) never
-    enter the message.
-    """
+Demo mode returns immediately. In production every problem is collected and
+raised as a single error naming the offending settings keys only; values
+(tokens, URLs, credentials) never enter the message.
+"""
     if not is_production(settings):
         return
 

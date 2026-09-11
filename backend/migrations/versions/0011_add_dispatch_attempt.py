@@ -4,39 +4,39 @@ Revision ID: 0011
 Revises: 0010
 Create Date: 2026-09-09
 
-M4-F §1: durable pre-dispatch attempt record. The M4 review found
-"flush 不等于持久提交" — M4-A persisted the forward dispatch binding inside
-the ``dispatched`` execution_log row with ``session.flush()`` BEFORE the
-external request, but the Execution Service NEVER commits (the API caller
-owns the ONE business transaction and commits AFTER the external request
-returns). A flush is not a durable commit: a caller rollback / terminal-write
-failure / process crash AFTER the external request already fired could erase
-the binding exactly when the proof of "what was dispatched, where, when, under
-which approval" is most needed.
+Durable pre-dispatch attempt record. The forward dispatch binding was
+persisted inside the ``dispatched`` execution_log row with
+``session.flush()`` before the external request, but the Execution Service
+never commits: the API caller owns the single business transaction and
+commits only after the external request returns. A flush is not a durable
+commit, so a caller rollback, a terminal-write failure or a process crash
+after the request had already fired could erase the binding exactly when
+the proof of what was dispatched, where, when and under which approval
+matters most.
 
-This table is an INDEPENDENT, append-only durable record committed on its OWN
-transaction (a separate Session/connection) BEFORE the external request is
-sent, so it survives the caller's transaction outcome. The terminal
-execution_log row still references the SAME attempt_id; recovery correlates a
-committed attempt with no terminal row -> a MANUAL reconciliation candidate
-(never an auto-retry).
+This table is an independent, append-only durable record committed on its
+own transaction (a separate Session/connection) before the external
+request is sent, so it survives the caller's transaction outcome. The
+terminal execution_log row references the same attempt_id; recovery pairs
+a committed attempt with no terminal row into a manual reconciliation
+candidate, never an automatic retry.
 
 Constraints mirrored 1:1 from app/models/dispatch_attempt.py:
-- Index ux_dispatch_attempt_attempt_id (UNIQUE): the correlation handle the
-  terminal execution_log row references (detail["dispatch_attempt_id"]).
-- Index ux_dispatch_attempt_execution_id (UNIQUE): ONE durable attempt per
-  execution_id — the race/idempotency guard that refuses a second committed
-  attempt for a duplicate/concurrent replay BEFORE any external request
-  (mirrors execution_log's D14 last line).
+- Index ux_dispatch_attempt_attempt_id (unique): the correlation handle the
+terminal execution_log row references (detail["dispatch_attempt_id"]).
+- Index ux_dispatch_attempt_execution_id (unique): one durable attempt per
+execution_id — the race and idempotency guard that refuses a second
+committed attempt for a duplicate or concurrent replay before any
+external request, matching execution_log's own last-line guard.
 - Index ix_dispatch_attempt_approval_id: the recovery / manual-reconciliation
-  lookup path.
+lookup path.
 
-No foreign keys, deliberately (same precedent as execution_outcome and
-execution_log.compensates_execution_id): execution_id / approval_id are
-caller-supplied chain keys, not primary keys; the durable attempt must NOT
-cascade away and is read-only evidence. Append-only: INSERT only, never UPDATE,
-never DELETE. This migration touches ONLY the new table — execution_log's shape
-and its eight decision words are NOT altered (D3.4-05).
+No foreign keys, following the same precedent as execution_outcome and
+execution_log.compensates_execution_id: execution_id and approval_id are
+caller-supplied chain keys, not primary keys, and the durable attempt must
+not cascade away because it is read-only evidence. Append-only: INSERT
+only, never UPDATE, never DELETE. This migration touches only the new
+table — execution_log's shape and its eight decision words are unaltered.
 """
 from typing import Sequence, Union
 
@@ -73,15 +73,16 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     # The unique dispatch-attempt identifier the terminal execution_log row
-    # references. UNIQUE: an attempt_id is never re-minted or reused.
+    # references. An attempt_id is never re-minted or reused.
     op.create_index(
         "ux_dispatch_attempt_attempt_id",
         "dispatch_attempt",
         ["attempt_id"],
         unique=True,
     )
-    # ONE durable attempt per execution_id — the last line against a
-    # duplicate/concurrent external request, enforced BEFORE the adapter runs.
+    # One durable attempt per execution_id — the last line against a
+    # duplicate or concurrent external request, enforced before the adapter
+    # runs.
     op.create_index(
         "ux_dispatch_attempt_execution_id",
         "dispatch_attempt",

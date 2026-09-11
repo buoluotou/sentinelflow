@@ -1,30 +1,29 @@
-"""RC2-R §3.2/§3.3/§3.5/§3.6 — compensation TARGET BINDING (Shuffle + Wazuh).
+"""///— compensation TARGET BINDING (Shuffle + Wazuh).
 
 WHAT THIS PROVES. The C-1 durable reservation guaranteed "commit before the
-external reverse call". RC2-R closes the remaining gap: the durable binding
+external reverse call". closes the remaining gap: the durable binding
 must also name the REAL reverse operation + the exact endpoint the wire call
 will use, and the SEND must CONSUME that committed binding — never re-resolve
 a different target from mutable configuration after the commit.
 
 Layers:
 - ``TestCompensationBindingSchema`` — v2 shape, the new
-  ``reverse_operation_ref``, and the fail-closed legacy rule (a v1 detail is
-  NEVER parsed as v2 / back-filled).
+``reverse_operation_ref``, and the fail-closed legacy rule (a v1 detail is
+NEVER parsed as v2 / back-filled).
 - ``TestShuffleCompensationBinding`` — bind-time facts, "actual call ==
-  durable binding", and every drift gate (mapping drift, endpoint drift,
-  missing ref, target mismatch) -> ExecutorConfigError with ZERO outbound.
-- ``TestWazuhCompensationBinding`` — same matrix for the frozen
-  action->command table (the bound ref is the REAL reverse command, never the
-  original action).
+durable binding", and every drift gate (mapping drift, endpoint drift,
+missing ref, target mismatch) -> ExecutorConfigError with ZERO outbound.
+- ``TestWazuhCompensationBinding`` — same matrix for the action->command table (the bound ref is the REAL reverse command, never the
+original action).
 - ``TestServiceBindingDiscipline`` — through ``compensate_response``:
-  binding committed BEFORE outbound, commit failure -> zero outbound, drift
-  -> terminal ``compensation_failed``/``binding_mismatch`` with zero outbound,
-  missing facts -> terminal ``compensation_failed``/``binding_missing``,
-  timeout -> exactly ONE call, no automatic retry, binding carries no secret.
+binding committed BEFORE outbound, commit failure -> zero outbound, drift
+-> terminal ``compensation_failed``/``binding_mismatch`` with zero outbound,
+missing facts -> terminal ``compensation_failed``/``binding_missing``,
+timeout -> exactly ONE call, no automatic retry, binding carries no secret.
 - ``TestNoRedirectTransport`` — real local HTTP servers: a 3xx is refused,
-  the redirect target receives NOTHING (Authorization never forwarded),
-  exactly one request hits the first server, and the default transport is
-  not bare ``urlopen`` (both adapters).
+the redirect target receives NOTHING (Authorization never forwarded),
+exactly one request hits the first server, and the default transport is
+not bare ``urlopen`` (both adapters).
 
 The pre-existing generic C-1 guarantees (caller rollback / crash survival,
 duplicate reservation, real-PostgreSQL concurrency 9/9) stay covered by
@@ -82,9 +81,9 @@ _ALL_WORKFLOWS = {
 _REVERSE_WORKFLOWS = {"block_source_ip": "wf-reverse-block"}
 
 
-# --------------------------------------------------------------------------
+#
 # Helpers
-# --------------------------------------------------------------------------
+#
 class _StubResponse:
     def __init__(self, status=200, body=b""):
         self.status = status
@@ -96,8 +95,8 @@ class _StubResponse:
 
 class StubTransport:
     """Injected transport double: records every outbound request (and an
-    optional shared event marker for ordering proofs) — plays back a scripted
-    response or raises a scripted exception."""
+optional shared event marker for ordering proofs) — plays back a scripted
+response or raises a scripted exception."""
 
     def __init__(self, *, status=200, payload=None, exc=None, events=None):
         self._status = status
@@ -173,7 +172,7 @@ def _binding_from_facts(
     executor, dispatch, *, ref=None, endpoint=None, target=None, adapter=None
 ) -> CompensationBinding:
     """Build a binding the way the SERVICE would, with optional overrides used
-    to simulate drift / tampering / legacy shapes."""
+to simulate drift / tampering / legacy shapes."""
     facts = executor.compensation_binding_facts(dispatch)
     if ref is not None:
         facts["reverse_operation_ref"] = ref
@@ -198,7 +197,7 @@ def _binding_from_facts(
 
 class _AlwaysFailingExecutor(ResponseExecutor):
     """A contributor whose send boundary refuses (config drift simulation) —
-    used to prove the Service maps it to ONE terminal row with zero outbound."""
+used to prove the Service maps it to ONE terminal row with zero outbound."""
 
     def __init__(self, events=None):
         self._events = events
@@ -245,9 +244,9 @@ def _seed_and_forward(db_session, executor, *, action="block_source_ip",
     )
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Binding schema (v2) + legacy rule
-# --------------------------------------------------------------------------
+#
 class TestCompensationBindingSchema:
     def test_schema_is_v2(self):
         assert COMPENSATION_BINDING_SCHEMA == "sentinelflow.compensation_binding.v2"
@@ -282,9 +281,9 @@ class TestCompensationBindingSchema:
         assert parse_compensation_binding(v1_detail) is None
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Shuffle target binding
-# --------------------------------------------------------------------------
+#
 class TestShuffleCompensationBinding:
     def test_bind_facts_name_the_real_reverse_workflow_and_endpoint(self):
         executor = _shuffle_executor(StubTransport())
@@ -363,9 +362,9 @@ class TestShuffleCompensationBinding:
         assert FAKE_SECRET not in json.dumps(binding.to_detail())
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Wazuh target binding
-# --------------------------------------------------------------------------
+#
 class TestWazuhCompensationBinding:
     def test_bind_facts_name_the_real_reverse_command_and_endpoint(self):
         executor = _wazuh_executor(StubTransport())
@@ -402,7 +401,7 @@ class TestWazuhCompensationBinding:
 
     def test_mapping_drift_refuses_with_zero_outbound(self):
         # Binding says command:release-host but the dispatch action is
-        # block_source_ip (whose frozen reverse is unblock-source-ip).
+        # block_source_ip (whose reverse is unblock-source-ip).
         stub = StubTransport(payload={"success": True})
         executor = _wazuh_executor(stub)
         dispatch = _dispatch(action="block_source_ip")
@@ -437,9 +436,9 @@ class TestWazuhCompensationBinding:
         assert FAKE_SECRET not in json.dumps(binding.to_detail())
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Service discipline (through compensate_response)
-# --------------------------------------------------------------------------
+#
 class TestServiceBindingDiscipline:
     def test_binding_committed_before_outbound(self, db_session):
         events: list[str] = []
@@ -600,12 +599,12 @@ class TestServiceBindingDiscipline:
         )
 
 
-# --------------------------------------------------------------------------
+#
 # 5. No-redirect transport (real local HTTP servers)
-# --------------------------------------------------------------------------
+#
 class _RecordingHandler(http.server.BaseHTTPRequestHandler):
     """POST stub: records the request, answers with a scripted status +
-    optional Location header."""
+optional Location header."""
 
     def do_POST(self):  # noqa: N802 (http.server API)
         length = int(self.headers.get("Content-Length") or 0)

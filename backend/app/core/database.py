@@ -10,7 +10,7 @@ from app.core.config import settings
 # from any thread other than the one that opened it. Uvicorn runs our sync (def)
 # route handlers in an AnyIO worker threadpool, so a pooled SQLite connection is
 # routinely reused from a different thread than it was created on. The pool still
-# checks a connection out to only ONE thread at a time, so disabling the check is
+# checks a connection out to only one thread at a time, so disabling the check is
 # the standard, safe FastAPI+SQLite recipe; it makes file-based SQLite viable for
 # native dev / demo mode (no PostgreSQL required). The PostgreSQL path is left
 # completely untouched — connect_args/pool_kwargs stay empty for non-sqlite URLs.

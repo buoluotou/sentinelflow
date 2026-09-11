@@ -9,25 +9,25 @@ from app.models.types import JSONVariant
 
 
 class AIAnalysis(Base):
-    """One AI alert-explanation of an event (Phase 2 Step 10).
+    """One AI alert-explanation of an event.
 
-    Deliberately separate from EventRisk and Incident — the three never
-    overwrite each other:
+Separate from EventRisk and Incident; the three do not overwrite each
+other:
 
-        EventRisk   = the rule engine's objective score
-        AIAnalysis  = the AI's explanation of the event
-        Incident    = the SOC's human case
+EventRisk   = the rule engine's objective score
+AIAnalysis  = the AI's explanation of the event
+Incident    = the SOC's human case
 
-    History, not a snapshot: alert_group_id is indexed but NOT unique, so
-    every analysis run (model changes, re-analysis) appends a record.
-    AI output is advisory only — nothing here ever alters risk or status.
-    """
+History, not a snapshot: alert_group_id is indexed but not unique, so
+every analysis run (model changes, re-analysis) appends a record. AI
+output is advisory only: nothing here alters risk or status.
+"""
 
     __tablename__ = "ai_analyses"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 
-    # The "event_id" of the analysis — an event IS an AlertGroup. No unique
+    # The "event_id" of the analysis — an event is an AlertGroup. No unique
     # constraint: repeated analyses are kept as an analysis history.
     alert_group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -40,8 +40,8 @@ class AIAnalysis(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
 
-    # Frozen structured-output protocol (Step 9): summary / attack_type /
-    # why_risky / confidence — exactly what AIAnalysis validated.
+    # Structured-output protocol: summary / attack_type / why_risky /
+    # confidence — the fields the AIAnalysis schema validates.
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     attack_type: Mapped[str] = mapped_column(String(128), nullable=False)
     why_risky: Mapped[list] = mapped_column(JSONVariant, nullable=False)

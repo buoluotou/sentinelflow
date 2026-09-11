@@ -1,4 +1,4 @@
-"""Step 12.2: AIResponseRecommendationService tests.
+"""AIResponseRecommendationService tests.
 
 Event -> EventRisk + evidence (+ optional Step 11 risk summary) -> Mock
 provider -> persisted ai_response_recommendations row. CI-stable: only the
@@ -57,7 +57,7 @@ class WrongProtocolProvider(MockProvider):
 
 class UnknownActionProvider(MockProvider):
     """Returns a typed ResponseRecommendation carrying an out-of-vocabulary
-    action — the service must re-enforce the frozen vocabulary."""
+    action — the service must re-enforce the vocabulary."""
 
     def generate(self, request):
         return ResponseRecommendation(
@@ -131,7 +131,7 @@ def _add_summary(db_session, group: AlertGroup, summary: str, minutes_ago: int) 
     return record
 
 
-# --------------------------------------------------------------- Case 1: happy
+# Case 1: happy
 
 
 def test_generate_persists_full_recommendation_from_mock(db_session):
@@ -154,7 +154,7 @@ def test_generate_persists_full_recommendation_from_mock(db_session):
     assert record.confidence == pytest.approx(0.85)
 
 
-# ---------------------------------------------------- Case 2: mock bands reach the service
+# Case 2: mock bands reach the service
 
 
 def test_high_score_contains_and_escalates(db_session):
@@ -186,7 +186,7 @@ def test_low_score_returns_first_class_no_action(db_session):
     assert "No response action warranted" in record.overall_rationale
 
 
-# ----------------------------------------- Case 3: three-layer chain independence
+# Case 3: three-layer chain independence
 
 
 def test_succeeds_without_prior_risk_summary(db_session):
@@ -242,7 +242,7 @@ def test_latest_risk_summary_is_injected(db_session):
     ).id == latest.id
 
 
-# ------------------------------------------------------- Case 4: history append
+# Case 4: history append
 
 
 def test_repeated_generation_appends_history(db_session):
@@ -266,7 +266,7 @@ def test_repeated_generation_appends_history(db_session):
     assert latest is not None and latest.id == second.id
 
 
-# --------------------------------------------------------- Case 5: safety bounds
+# Case 5: safety bounds
 
 
 def test_event_risk_and_incident_stay_untouched(db_session):
@@ -283,7 +283,7 @@ def test_event_risk_and_incident_stay_untouched(db_session):
     assert db_session.query(Incident).count() == 0
 
 
-# ---------------------------------------------------------- Case 6: 503/502 paths
+# Case 6: 503/502 paths
 
 
 def test_provider_config_error_propagates_and_persists_nothing(db_session):
@@ -369,7 +369,7 @@ def test_protocol_strictness_at_the_real_provider_boundary(db_session, payload):
     assert db_session.query(AIResponseRecommendation).count() == 0
 
 
-# ----------------------------------------------------- Case 7: flush/rollback
+# Case 7: flush/rollback
 
 
 def test_service_flushes_but_does_not_commit(db_session):
@@ -384,7 +384,7 @@ def test_service_flushes_but_does_not_commit(db_session):
     assert db_session.query(AIResponseRecommendation).count() == 0
 
 
-# ------------------------------------------------------------- error boundary
+# error boundary
 
 
 def test_unknown_event_raises_not_found(db_session):

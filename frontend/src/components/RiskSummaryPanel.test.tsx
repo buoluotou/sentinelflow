@@ -1,6 +1,6 @@
-/** Step 11.6: RiskSummaryPanel unit tests (jsdom, fetch mocked).
+/* * RiskSummaryPanel unit tests (jsdom, fetch mocked).
  *
- * Locks the frozen UI contract: GET-only on load (never an automatic POST),
+ * Locks the UI contract: GET-only on load (never an automatic POST),
  * 404 as a normal empty state, explicit trigger, backend 503/502 details
  * surfaced verbatim, and NO risk score ever rendered — EventRisk.score stays
  * the single official score even if a payload tried to smuggle one in.
@@ -12,7 +12,7 @@ import { RiskSummaryPanel } from './RiskSummaryPanel'
 const EVENT_ID = 'evt-1'
 const URL = `/api/v1/events/${EVENT_ID}/ai-risk-summary`
 
-/** Protocol-frozen sample payload; includes a smuggled risk_score to prove
+/* * Protocol-sample payload; includes a smuggled risk_score to prove
  * the UI never renders one (backend rejects it, the UI must not either). */
 function summaryBody(overrides: Record<string, unknown> = {}) {
   return {

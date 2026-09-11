@@ -10,37 +10,39 @@ from app.core.database import Base
 class Incident(Base):
     """SOC case opened for one aggregated security event (AlertGroup).
 
-    Phase 1 Step 7: an Incident is NOT an AlertGroup — it is the
-    human-driven investigation/disposition context layered on top of it:
+An Incident is not an AlertGroup: it is the human-driven
+investigation/disposition context layered on top of it:
 
-        Alert -> AlertGroup (event) -> EventRisk (automatic assessment)
-              -> Incident (analyst case: investigate, resolve, close)
+Alert -> AlertGroup (event) -> EventRisk (automatic assessment)
+-> Incident (analyst case: investigate, resolve, close)
 
-    One current Incident per event (unique alert_group_id), mirroring the
-    event_risk design. ``risk_score`` is COPIED from EventRisk at creation
-    time (a snapshot for the case record); EventRisk remains the live
-    automatic assessment and the two never share computation logic.
+One current Incident per event (unique alert_group_id), as with
+EventRisk. ``risk_score`` is copied from EventRisk at creation time (a
+snapshot for the case record); EventRisk remains the live automatic
+assessment and the two do not share computation logic.
 
-    Status vocabulary (state machine enforced in Step 7.2, not here):
-    open / in_progress / resolved / closed / false_positive.
+Status vocabulary: open / in_progress / resolved / closed /
+false_positive. The allowed transitions are enforced by the service
+layer, not by this model.
 
-    Phase 2 Step 14.1 — the incident-centric case view. The AI results are
-    NOT properties of the incident; they remain the AlertGroup's append-only
-    AI history. The Incident merely CONNECTS the chain, it never swallows it:
+The incident-centric case view: the AI results are not properties of the
+incident, they remain the AlertGroup's append-only AI history. The
+Incident connects the chain without owning it:
 
-        Incident -> alert_group -> ai_analyses          (Step 10)
-                                 -> ai_risk_summaries    (Step 11)
-                                 -> ai_response_recommendations (Step 12)
-                                       -> approval       (Step 13)
+Incident -> alert_group -> ai_analyses
+-> ai_risk_summaries
+-> ai_response_recommendations
+-> approval
 
-    The convenience traversals below are viewonly READ projections over the
-    same alert_group_id — no new foreign key, no cascade, no write path.
-    Frozen Step 14 boundaries:
-    - ``risk_score`` stays the creation-time snapshot of EventRisk.score;
-      no AI result ever writes it back
-    - an ``approved`` decision is displayed/audited, never auto-consumed
-      (no Shuffle / Wazuh / TheHive execution — that is Phase 3)
-    """
+The convenience traversals below are viewonly read projections over the
+same alert_group_id — no new foreign key, no cascade, no write path.
+Two boundaries hold:
+- ``risk_score`` stays the creation-time snapshot of EventRisk.score; no
+AI result writes it back
+- an ``approved`` decision is displayed and audited, not consumed
+automatically — the incident view performs no external execution
+(no Shuffle / Wazuh / TheHive calls)
+"""
 
     __tablename__ = "incidents"
     __table_args__ = (
@@ -49,7 +51,7 @@ class Incident(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 
-    # The event this case investigates — an event IS an AlertGroup.
+    # The event this case investigates — an event is an AlertGroup.
     alert_group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         ForeignKey("alert_groups.id", ondelete="CASCADE"),
@@ -65,14 +67,14 @@ class Incident(Base):
     # Snapshot of EventRisk.score when the incident was opened.
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # Lifecycle position; allowed values and transitions live in the
-    # Step 7.2 state machine, the model only stores the current value.
+    # Lifecycle position; the allowed values and transitions are enforced by
+    # the service layer, the model only stores the current value.
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="open", index=True
     )
 
     # Analyst's final call on the case (e.g. "contained", "benign"), set
-    # together with a terminal status transition (Step 7.2).
+    # together with a terminal status transition.
     disposition: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -95,10 +97,10 @@ class Incident(Base):
 
     alert_group: Mapped["AlertGroup"] = relationship(back_populates="incident")
 
-    # Step 14.1 read-only case-view traversals (see class docstring). They
-    # join on the SAME alert_group_id the AlertGroup relationships use, are
-    # viewonly (never persisted/cascaded through the Incident) and mirror
-    # the AlertGroup ordering: history, oldest first.
+    # Read-only case-view traversals (see class docstring). They join on the
+    # same alert_group_id the AlertGroup relationships use, are viewonly
+    # (not persisted or cascaded through the Incident) and mirror the
+    # AlertGroup ordering: history, oldest first.
     ai_analyses: Mapped[list["AIAnalysis"]] = relationship(
         "AIAnalysis",
         primaryjoin="Incident.alert_group_id == foreign(AIAnalysis.alert_group_id)",

@@ -1,24 +1,24 @@
-"""Phase 3.3.3.3.2: Health API — the observed-health read model exposed
+"""Health API — the observed-health read model exposed
 as a read-only audit view:
 
-    GET /api/v1/executions/health
-        -> collect_observed_health -> execution_log -> verdicts
+GET /api/v1/executions/health
+-> collect_observed_health -> execution_log -> verdicts
 
 Locks the acceptance gate:
 
 - 200 empty (adapters={}), single & multi adapter shapes
 - recent window semantics over HTTP (newest-20 basis)
-- the four frozen verdicts reachable over HTTP: healthy / degraded /
-  failing / unknown — the word stays ``observed_status``, never a
-  boolean ``healthy`` flag
+- the four verdicts reachable over HTTP: healthy / degraded /
+failing / unknown — the word stays ``observed_status``, never a
+boolean ``healthy`` flag
 - recent_failures / last_execution / timeout / unavailable /
-  protocol_violation surfaced
+protocol_violation surfaced
 - guard_rejected floods never poison adapter health; in-flight chains
-  stay out of the health window
+stay out of the health window
 - NO token, NO executor, NO credentials, ZERO external requests
 - GET writes NOTHING (row count + content identical before/after)
 - multi-GET consistency: response1 == response2 except generated_at
-- response schema aligned field-for-field with the frozen read model
+- response schema aligned field-for-field with the read model
 """
 import inspect
 from dataclasses import fields as dc_fields
@@ -52,9 +52,9 @@ def log_snapshot(db_session):
     )
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Shapes: empty / single / multi adapter
-# --------------------------------------------------------------------------
+#
 class TestShapes:
     def test_empty_200_with_no_adapters(self, client):
         response = client.get(HEALTH)
@@ -80,9 +80,9 @@ class TestShapes:
         assert body["adapters"]["probe-a"]["observed_status"] == "failing"
 
 
-# --------------------------------------------------------------------------
-# 2. The four frozen verdicts over HTTP + recent window
-# --------------------------------------------------------------------------
+#
+# 2. The four verdicts over HTTP + recent window
+#
 class TestVerdictsOverHttp:
     def test_all_four_statuses_reachable(self, client, db_session):
         # healthy: mock all green
@@ -113,8 +113,8 @@ class TestVerdictsOverHttp:
 
     def test_unknown_status_for_refusal_only_adapter(self, client, db_session):
         """An adapter whose chains were ALL refused before dispatch has
-        observed nothing — unknown, never healthy."""
-        # DENY_POLICY refusal lands in the mock bucket (requested row
+observed nothing — unknown, never healthy."""
+      # DENY_POLICY refusal lands in the mock bucket (requested row
         # records detail.executor = mock): 2 refusals, 0 terminals.
         run_chain(db_session, policy=DENY_POLICY)
         run_chain(db_session, policy=DENY_POLICY)
@@ -140,9 +140,9 @@ class TestVerdictsOverHttp:
         assert view["all_time_failed"] == 3
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Classifications, recent_failures, last_execution
-# --------------------------------------------------------------------------
+#
 class TestWindowFacts:
     def test_classification_counts_and_recent_failures(self, client, db_session):
         run_chain(db_session, FailingStub("timeout", name="probe-a"))
@@ -171,9 +171,9 @@ class TestWindowFacts:
         assert view["last_execution_at"] is not None
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Governance / in-flight can never poison adapter health
-# --------------------------------------------------------------------------
+#
 class TestAttributionLock:
     def test_guard_rejections_do_not_affect_health(self, client, db_session):
         run_chain(db_session)
@@ -196,9 +196,9 @@ class TestAttributionLock:
         assert view["all_time_in_flight"] == 3
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Read-only contract: no token / no writes / multi-GET consistency
-# --------------------------------------------------------------------------
+#
 class TestReadOnlyContract:
     def test_no_token_required(self, client, db_session, monkeypatch):
         from app.core.config import settings
@@ -243,9 +243,9 @@ class TestReadOnlyContract:
         )
 
 
-# --------------------------------------------------------------------------
-# 6. Schema alignment: Read mirrors == frozen read model, field for field
-# --------------------------------------------------------------------------
+#
+# 6. Schema alignment: Read mirrors == read model, field for field
+#
 class TestSchemaAlignment:
     def test_mirrors_match_dataclass_fields_exactly(self):
         assert set(ObservedHealthRead.model_fields) == {

@@ -1,8 +1,8 @@
-"""Exception hierarchy of the AI provider layer (Phase 2 Step 9).
+"""Exception hierarchy of the AI provider layer.
 
 All AI-layer failures are AIProviderError; callers catch the base class.
-Nothing here is ever swallowed silently — an unavailable model or a broken
-output surfaces as a typed exception.
+An unavailable model or a broken output surfaces as a typed exception
+instead of being swallowed.
 """
 
 
@@ -16,10 +16,10 @@ class AIProviderConfigError(AIProviderError):
 
 class AIProviderUnavailable(AIProviderError):
     """The provider cannot be reached (connection refused, HTTP error,
-    timeout). The caller may retry later; nothing was computed."""
+timeout). The caller may retry later; nothing was computed."""
 
 
 class AIResponseParseError(AIProviderError):
-    """The provider answered, but the output is not the frozen structured
-    protocol (invalid JSON or schema violation). Never fabricate a fallback
-    analysis from a broken response."""
+    """The provider answered, but the output is not the structured protocol
+(invalid JSON or schema violation). A broken response is rejected, never
+replaced by a fabricated fallback analysis."""

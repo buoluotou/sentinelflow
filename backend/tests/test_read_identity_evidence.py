@@ -1,23 +1,23 @@
-"""M4-B read-side identity / version evidence seam tests (Phase 3.4.5-M4 §B; Amendment §12.2-B).
+"""B read-side identity / version evidence seam tests.
 
-WHAT THIS PROVES — and what it deliberately does NOT. M4-B builds the READ-side half of the
+WHAT THIS PROVES — and what it does NOT. B builds the READ-side half of the
 gate-5 (INSTANCE / TENANT) unlock design: a read-only probe of the AUTHORITATIVE version /
 organisation interfaces the EXACT certified TheHive version supports, plus a PURE fail-closed
 assessor. TheHive 4.1.24-1 (= git ``b6649bb`` / ScalliGraph ``2c2a7a4``) is SOURCE-certified:
 
-  - ``GET /api/status`` (v0 default router, PUBLIC) -> ``versions.TheHive``: a REAL RUNTIME
-    version observation (a liveness proof, DISTINCT from the config-declared
-    ``THEHIVE_EXPECTED_VERSION``). The SAME body carries ``config.protectDownloadsWith`` (the
-    attachment-ZIP password — a SECRET) which the probe MUST NEVER return / log / persist.
-  - ``GET /api/user/current`` (AUTHENTICATED, read-only key) -> ``organisation`` + ``roles``: the
-    READER's OWN tenant context and RBAC roles.
-  - ``GET /api/system`` DOES NOT EXIST in the source — it is a CANDIDATE only and is NEVER
-    assumed / probed (the task's explicit rule).
+- ``GET /api/status`` (v0 default router, PUBLIC) -> ``versions.TheHive``: a REAL RUNTIME
+version observation (a liveness proof, DISTINCT from the config-declared
+``THEHIVE_EXPECTED_VERSION``). The SAME body carries ``config.protectDownloadsWith`` (the
+attachment-ZIP password — a SECRET) which the probe MUST NEVER return / log / persist.
+- ``GET /api/user/current`` (AUTHENTICATED, read-only key) -> ``organisation`` + ``roles``: the
+READER's OWN tenant context and RBAC roles.
+- ``GET /api/system`` DOES NOT EXIST in the source — it is a CANDIDATE only and is NEVER
+assumed / probed (the task's explicit rule).
 
 THE HONEST LIMIT (why gate 5 STAYS fail-closed). The reader's OWN organisation is NOT the CASE's
 owner; a 200 on ``/api/case/{id}`` proves only VISIBILITY (owned OR shared), never ownership; and
 ``/api/status`` exposes NO stable instance identity. OutputCase (4.1.24-1) carries NO organisation
-field, so Amendment §12.2-B B2's precondition is UNMET: ``assess_identity_evidence`` ALWAYS returns
+field, so Amendment -B B2's precondition is UNMET: ``assess_identity_evidence`` ALWAYS returns
 ``gate5_instance_binding`` / ``gate5_tenant_binding`` = ``None`` — the seam UPGRADES the version
 assertion to a runtime observation and records the reader's tenant context, but it NEVER unlocks
 ``confirmed_success`` on its own. A base URL / config string is NEVER a real identity.
@@ -25,7 +25,7 @@ assertion to a runtime observation and records the reader's tenant context, but 
 There is NO real TheHive runtime on this host (LAB BLOCKED — no container runtime / virtualization
 / sufficient memory), so ``read_identity`` is exercised with an INJECTED path-routing stub
 transport (no socket is ever opened) and the assessor is a pure function. NO test here marks a real
-version as runtime-certified; that needs a real Lab probe (Amendment §12).
+version as runtime-certified; that needs a real Lab probe.
 
 Design invariants honored: ``read_identity`` is a READ verb (never execute / compensate / dispatch
 / create / close / write / post); ONE probe per endpoint (no retry / poll); a probe failure is
@@ -57,25 +57,25 @@ from app.services.read_adapters.verified import (
     assess_identity_evidence,
 )
 
-# ---------------------------------------------------------------------------
+#
 # constants + path-routing stub transport (the isolation seam — NO network, ever)
-# ---------------------------------------------------------------------------
-#: An obviously-fake loopback-style Lab base URL + key. NEVER a real secret; used only so the
-#: hygiene tests can assert these exact values never leak into an observation.
+#
+# An obviously-fake loopback-style Lab base URL + key. NEVER a real secret; used only so the
+# hygiene tests can assert these exact values never leak into an observation.
 LAB_BASE_URL = "https://thehive.lab.local"
 LAB_API_KEY = "LAB_THEHIVE_KEY_DO_NOT_USE"
 
-#: The attachment-ZIP password (``config.protectDownloadsWith``) that rides inside the
-#: ``/api/status`` body. It is a SECRET the probe MUST extract AROUND — it must NEVER appear in
-#: an ``IdentityEvidence``.
+# The attachment-ZIP password (``config.protectDownloadsWith``) that rides inside the
+# ``/api/status`` body. It is a SECRET the probe MUST extract AROUND — it must NEVER appear in
+# an ``IdentityEvidence``.
 ATTACHMENT_PASSWORD = "SUPER_SECRET_ATTACHMENT_PW_DO_NOT_LEAK"
 
-#: The reader's own organisation (tenant context) + RBAC roles, as /api/user/current returns.
+# The reader's own organisation (tenant context) + RBAC roles, as /api/user/current returns.
 READER_ORG = "organisation-1"
 READER_ROLES = ["read", "manageCase"]
 
-#: The write-verb absence seal (mirrors test_read_adapter_thehive.py): read_identity is a READ
-#: verb, so NONE of these may ever exist on the reader.
+# The write-verb absence seal (mirrors test_read_adapter_thehive.py): read_identity is a READ
+# verb, so NONE of these may ever exist on the reader.
 FORBIDDEN_WRITE_VERBS = (
     "execute", "compensate", "dispatch", "create_case", "close_case",
     "delete", "delete_case", "trigger", "run", "write", "post",
@@ -84,7 +84,7 @@ FORBIDDEN_WRITE_VERBS = (
 
 class _StubResponse:
     """Mimics the subset of ``http.client.HTTPResponse`` the probe touches: ``.status`` +
-    ``.read()`` -> bytes."""
+``.read()`` -> bytes."""
 
     def __init__(self, status, body):
         self.status = status
@@ -96,10 +96,10 @@ class _StubResponse:
 
 class IdentityStubTransport:
     """Routes by URL PATH: ``read_identity`` hits TWO endpoints (``/api/status`` +
-    ``/api/user/current``), so a single-body stub is not enough. Each path maps to a canned
-    ``(status, body)`` OR an exception to raise; an unconfigured path raises a 404 (fail-closed —
-    the endpoint is treated as absent). This is the ONLY way the probe is exercised here — no
-    socket is ever opened."""
+``/api/user/current``), so a single-body stub is not enough. Each path maps to a canned
+``(status, body)`` OR an exception to raise; an unconfigured path raises a 404 (fail-closed —
+the endpoint is treated as absent). This is the ONLY way the probe is exercised here — no
+socket is ever opened."""
 
     def __init__(self, *, routes=None):
         self._routes = routes or {}
@@ -135,7 +135,7 @@ def _http_error(code, path="/api/status", body=b'{"message":"SUPER_SECRET_BODY"}
 
 def _status_body(version=CERTIFIED_THEHIVE_VERSION, *, include_secret=True, include_versions=True):
     """A realistic v0 ``/api/status`` body (TheHive 4.1.24-1 StatusCtrl.get): ``versions.TheHive``
-    from the running JAR + ``config.protectDownloadsWith`` (the attachment password SECRET)."""
+from the running JAR + ``config.protectDownloadsWith`` (the attachment password SECRET)."""
     body = {
         "config": {"authType": "local", "capabilities": ["password"], "ssoAutoLogin": False},
         "schemaStatus": [],
@@ -149,7 +149,7 @@ def _status_body(version=CERTIFIED_THEHIVE_VERSION, *, include_secret=True, incl
 
 def _user_body(organisation=READER_ORG, roles=None, *, include_org=True):
     """A realistic v0 ``OutputUser`` body from ``/api/user/current``: ``organisation`` (String) +
-    ``roles`` (Set[String])."""
+``roles`` (Set[String])."""
     body = {
         "_id": "~8", "id": "~8", "login": "reader@thehive.local", "name": "SF Reader",
         "hasKey": True, "status": "ok", "_type": "User",
@@ -198,7 +198,7 @@ def _evidence(**overrides):
 class TestAssessIdentityEvidence:
     def test_full_evidence_version_matches_but_gate5_stays_none(self):
         # THE crux: even a fully-observed certified version + reader org NEVER binds gate 5,
-        # because the CASE-owned tenant / instance is unobservable in 4.1.24-1 (§12.2-B B2 unmet).
+        # because the CASE-owned tenant / instance is unobservable in 4.1.24-1.
         result = assess_identity_evidence(_evidence(), certified_version=CERTIFIED_THEHIVE_VERSION)
         assert isinstance(result, IdentityAssessment)
         assert result.version_matches_certified is True
@@ -458,7 +458,7 @@ class TestReadIdentityVerb:
         assert ev.observed_reader_organisation == READER_ORG
 
     def test_end_to_end_full_probe_still_never_unlocks_gate5(self):
-        # the honest M4-B conclusion: a REAL certified-version + reader-org observation STILL
+        # the honest B conclusion: a REAL certified-version + reader-org observation STILL
         # yields gate-5 bindings None (the case-owned tenant is unobservable in 4.1.24-1).
         ev = _reader(_both_ok_transport()).read_identity()
         result = assess_identity_evidence(ev, certified_version=CERTIFIED_THEHIVE_VERSION)
@@ -476,7 +476,7 @@ class TestReadIdentityIsolation:
     def test_read_identity_is_a_read_verb_no_write_verbs_exist(self):
         reader = _reader(IdentityStubTransport(routes={}))
         assert hasattr(reader, "read_identity")
-        assert hasattr(reader, "read")           # the frozen public verb is untouched
+        assert hasattr(reader, "read")           # the public verb is untouched
         assert hasattr(reader, "read_creation")  # the M3 internal verb is untouched
         for forbidden in FORBIDDEN_WRITE_VERBS:
             assert not hasattr(reader, forbidden), forbidden

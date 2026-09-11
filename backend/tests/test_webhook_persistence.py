@@ -1,4 +1,4 @@
-"""Phase 3.4.4-E — Outcome Fact Persistence tests (the append edge).
+"""E — Outcome Fact Persistence tests (the append edge).
 
 This suite locks the FIRST step allowed to write, and the ONLY thing it may
 write: an append-only INSERT into ``execution_outcome`` once all four frozen
@@ -12,8 +12,8 @@ inbound gates have passed.
         -> Outcome Fact Append      (THIS FILE, 3.4.4-E)
         -> commit -> HTTP 200 {"accepted": true}
 
-Coverage map (spec §22 A-I, plus §23 ORM identity, §24 transaction, §25 HTTP):
-  A. successful persistence  — the TEST-ONLY fake adapter (G1-C / B0 §15.4)
+Coverage map:
+  A. successful persistence  — the TEST-ONLY fake adapter
      confirmed_success / pending / unknown each append exactly ONE fact with the
      right execution_id, source=webhook, operator=adapter:fakesuccess, UTC
      observed_at, server-side created_at. The REAL Wazuh vocabulary is now EMPTY
@@ -22,7 +22,7 @@ Coverage map (spec §22 A-I, plus §23 ORM identity, §24 transaction, §25 HTTP
      is byte-identical; a replay is a NEW row (no dedup / UPDATE / DELETE).
   C. failed gates            — auth / schema / correlation / mapping rejection
      each leave the outcome count UNCHANGED (zero fact), and Shuffle/TheHive
-     stay fail-closed (§30) — never a fabricated fact.
+     stay fail-closed — never a fabricated fact.
   D. security                — the callback token / Authorization / identity are
      absent from detail, response and exception; operator is never client-set.
   E. rollback                — a simulated flush / commit failure rolls back,
@@ -39,7 +39,7 @@ Coverage map (spec §22 A-I, plus §23 ORM identity, §24 transaction, §25 HTTP
 The AST assertions are docstring-immune (they parse imports / calls, not prose).
 G1-C EMPTIED the real Wazuh vocabulary (fail-closed), so NO production adapter is
 a success vehicle; the end-to-end success pipeline is proven on a TEST-ONLY fake
-adapter (B0 §15.4), NEVER by reopening a real vocabulary. Shuffle/TheHive/Wazuh
+adapter, NEVER by reopening a real vocabulary. Shuffle/TheHive/Wazuh
 success is NEVER forced by widening the D mapping.
 """
 import ast
@@ -93,17 +93,17 @@ SHUFFLE_TOKEN = "shuffle-callback-secret"
 WAZUH_TOKEN = "wazuh-callback-secret"
 THEHIVE_TOKEN = "thehive-callback-secret"
 
-#: G1-C / B0 §15.4 — the TEST-ONLY fake adapter is the platform success-pipeline
-#: vehicle (the real Wazuh vocabulary is now EMPTY / fail-closed). Its webhook
-#: channel reuses the declared WAZUH_CALLBACK_TOKEN (conftest.fake_adapter_channel),
-#: so WAZUH_TOKEN still authenticates it; the operator identity becomes
-#: ``adapter:fakesuccess``. Mirrors conftest.FAKE_ADAPTER.
+# G1-C / B0 — the TEST-ONLY fake adapter is the platform success-pipeline
+# vehicle (the real Wazuh vocabulary is now EMPTY / fail-closed). Its webhook
+# channel reuses the declared WAZUH_CALLBACK_TOKEN (conftest.fake_adapter_channel),
+# so WAZUH_TOKEN still authenticates it; the operator identity becomes
+# ``adapter:fakesuccess``. Mirrors conftest.FAKE_ADAPTER.
 FAKE = "fakesuccess"
 
-#: The exact import surface the persistence service is allowed (§22.H / §22.I /
-#: §23). Deliberately EXACT: any executor / adapter-client / outbound-transport
-#: / FastAPI / router module would break this set. ``app.services.executions
-#: .secrets`` is REQUIRED (the §21 redaction gate) and is NOT an executor import.
+# The exact import surface the persistence service is allowed (.H / .I /
+# ). Deliberately EXACT: any executor / adapter-client / outbound-transport
+# / FastAPI / router module would break this set. ``app.services.executions
+# .secrets`` is REQUIRED and is NOT an executor import.
 SERVICE_MODULES = {
     "sqlalchemy.exc",
     "sqlalchemy.orm",
@@ -114,9 +114,9 @@ SERVICE_MODULES = {
     "app.services.outcomes.reconciliation",
 }
 
-#: Fragments that must NEVER appear in the service import surface. Precise
-#: enough not to false-positive on ``app.services.executions.secrets`` (the
-#: redaction gate) or ``app.models.execution_outcome`` (the ORM fact).
+# Fragments that must NEVER appear in the service import surface. Precise
+# enough not to false-positive on ``app.services.executions.secrets`` (the
+# redaction gate) or ``app.models.execution_outcome`` (the ORM fact).
 FORBIDDEN_SERVICE_FRAGMENTS = (
     "executor",
     "response_execution",
@@ -133,9 +133,9 @@ FORBIDDEN_SERVICE_FRAGMENTS = (
 )
 
 
-# --------------------------------------------------------------------------
+#
 # fixtures + helpers (seed pattern mirrors tests/test_correlation.py)
-# --------------------------------------------------------------------------
+#
 @pytest.fixture()
 def all_tokens(monkeypatch):
     """Configure all three callback channels with distinct secrets."""
@@ -195,7 +195,7 @@ def _seed_approval(db_session) -> AIResponseApproval:
 def _seed_chain(db_session, execution_id, *, decisions=("succeeded",), operator="ops-1"):
     """Seed one dispatch chain of ``ExecutionLog`` rows keyed on execution_id.
     Correlation (Gate 3) only needs the chain to EXIST, so a single row is the
-    norm here; ``decisions`` may carry a dispatch word to prove §6 (the outcome
+    norm here; ``decisions`` may carry a dispatch word to prove (the outcome
     is NEVER derived from it)."""
     approval = _seed_approval(db_session)
     db_session.add_all(
@@ -223,7 +223,7 @@ def _all_log_rows(db_session):
 
 
 def _log_snapshot(db_session):
-    """Full-table content snapshot of execution_log (§2 / §18 / §22.F)."""
+    """Full-table content snapshot of execution_log."""
     return sorted(
         (
             r.id, r.execution_id, r.approval_id, r.decision, r.direction,
@@ -242,7 +242,7 @@ def _outcome_count(db_session):
 
 
 def _outcome_snapshot(db_session):
-    """Row-by-row content snapshot of execution_outcome (§18 historical
+    """Row-by-row content snapshot of execution_outcome (historical
     immutability). detail is JSON-canonicalized so the tuple is hashable."""
     return sorted(
         (
@@ -255,7 +255,7 @@ def _outcome_snapshot(db_session):
 
 
 def _assert_session_clean(db_session):
-    """Nothing left staged to write anywhere in the session (§9 / §10)."""
+    """Nothing left staged to write anywhere in the session."""
     assert not list(db_session.new)
     assert not list(db_session.dirty)
     assert not list(db_session.deleted)
@@ -264,7 +264,7 @@ def _assert_session_clean(db_session):
 def _body(execution_id, *, external_state="success", external_reference="wazuh-ref-1",
           observed_at=NOW, **extra):
     """A Gate-2-valid callback body. ``extra`` smuggles forbidden fields to
-    prove ``extra="forbid"`` rejects them (§22.D)."""
+    prove ``extra="forbid"`` rejects them."""
     payload = {
         "execution_id": str(execution_id),
         "external_reference": external_reference,
@@ -277,7 +277,7 @@ def _body(execution_id, *, external_state="success", external_reference="wazuh-r
 
 def _observation(execution_id, *, adapter=FAKE, external_state="success",
                  external_reference="wazuh-ref-1", observed_at=NOW, source="webhook"):
-    """A frozen 3.4.3-A ExternalObservation for service-level tests. G1-C: the
+    """A 3.4.3-A ExternalObservation for service-level tests. G1-C: the
     default adapter is the TEST-ONLY fake (the real Wazuh vocabulary is empty), so
     service-level success proofs run on the fake; refusal tests pass a real
     adapter explicitly."""
@@ -318,10 +318,10 @@ def _imported_service():
 
 
 # ==========================================================================
-# A. Successful persistence (§22.A / §1 / §5 / §6 / §8)
+# A. Successful persistence
 # ==========================================================================
 class TestSuccessfulPersistence:
-    # G1-C / B0 §15.4: the platform success pipeline runs on the TEST-ONLY fake
+    # G1-C / B0 : the platform success pipeline runs on the TEST-ONLY fake
     # adapter (the real Wazuh vocabulary is EMPTY / fail-closed). The two Wazuh
     # tests below are REVERSED to prove the security fix (422, zero fact).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
@@ -362,7 +362,7 @@ class TestSuccessfulPersistence:
         assert _outcome_count(db_session) == 0
 
     def test_source_and_operator_are_server_side(self, client, db_session, all_tokens):
-        # §5: source is the frozen webhook channel; operator is adapter:{auth}.
+        # source is the webhook channel; operator is adapter:{auth}.
         # G1-C: proven on the TEST-ONLY fake adapter (operator=adapter:fakesuccess).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
@@ -373,7 +373,7 @@ class TestSuccessfulPersistence:
         assert fact.operator == f"adapter:{FAKE}"
 
     def test_observed_at_is_utc_normalized(self, client, db_session, all_tokens):
-        # §5: a +02:00 fact time is stored as the SAME instant in UTC.
+        # a +02:00 fact time is stored as the SAME instant in UTC.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         plus_two = datetime(2026, 9, 3, 14, 0, 0, tzinfo=timezone(timedelta(hours=2)))
@@ -388,7 +388,7 @@ class TestSuccessfulPersistence:
         assert stored.replace(tzinfo=None) == NOW.replace(tzinfo=None)
 
     def test_created_at_and_id_are_server_side(self, client, db_session, all_tokens):
-        # §5: created_at / id are DB / server defaults, never client-supplied.
+        # created_at / id are DB / server defaults, never client-supplied.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid), headers=_bearer(WAZUH_TOKEN))
@@ -397,7 +397,7 @@ class TestSuccessfulPersistence:
         assert fact.id is not None
 
     def test_external_state_mapping_form(self, client, db_session, all_tokens):
-        # §4/§8: a Mapping external_state carries the word under the fake adapter's
+        # /: a Mapping external_state carries the word under the fake adapter's
         # agent_status key; observed_state preserves the RAW extracted word.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
@@ -412,7 +412,7 @@ class TestSuccessfulPersistence:
         assert fact.detail["observed_state"] == "success"
 
     def test_external_state_preserved_raw_no_second_normalization(self, client, db_session, all_tokens):
-        # §8: persistence is NOT a second normalization layer — the RAW word
+        # persistence is NOT a second normalization layer — the RAW word
         # ("SUCCESS") is echoed as observed_state; D produced the lowered form.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
@@ -427,7 +427,7 @@ class TestSuccessfulPersistence:
         assert fact.detail["normalized_state"] == "success"   # the matched form
 
     def test_outcome_status_not_derived_from_dispatch_decision(self, client, db_session, all_tokens):
-        # §6: a dispatch decision of "failed" must NOT pull the outcome toward
+        # a dispatch decision of "failed" must NOT pull the outcome toward
         # failure — the word comes ONLY from the external_state via Gate 4.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, decisions=("failed",))
@@ -462,11 +462,11 @@ class TestSuccessfulPersistence:
 
 
 # ==========================================================================
-# B. Append-only (§22.B / §3 / §17 / §18)
+# B. Append-only
 # ==========================================================================
 class TestAppendOnly:
-    #: G1-C / B0 §15.4 — the platform append-only pipeline is proven on the
-    #: TEST-ONLY fake adapter (the real Wazuh vocabulary is now empty/refused).
+    # G1-C / B0 — the platform append-only pipeline is proven on the
+    # TEST-ONLY fake adapter (the real Wazuh vocabulary is now empty/refused).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_second_callback_adds_second_fact(self, client, db_session, all_tokens):
@@ -480,7 +480,7 @@ class TestAppendOnly:
         assert {f.outcome_status for f in facts} == {"pending", "confirmed_success"}
 
     def test_first_fact_byte_identical_after_second(self, client, db_session, all_tokens):
-        # §18: appending NEVER mutates the rows already there.
+        # appending NEVER mutates the rows already there.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
@@ -492,7 +492,7 @@ class TestAppendOnly:
         assert before <= after   # the prior row survives byte-identical
 
     def test_replay_identical_callback_appends_new_fact(self, client, db_session, all_tokens):
-        # §17: NO dedup — a replayed identical callback is a NEW fact (rows +2).
+        # NO dedup — a replayed identical callback is a NEW fact (rows +2).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         body = _body(eid, external_state="success", observed_at=NOW)
@@ -504,7 +504,7 @@ class TestAppendOnly:
         assert len({f.id for f in facts}) == 2   # two distinct rows
 
     def test_service_session_writes_are_append_only(self):
-        # §3: the ONLY mutating Session calls are add/flush/commit/rollback —
+        # the ONLY mutating Session calls are add/flush/commit/rollback —
         # no delete / merge / bulk-upsert / execute anywhere in the source.
         src = inspect.getsource(webhook_service)
         for present in ("session.add(", "session.flush(", "session.commit(", "session.rollback("):
@@ -514,7 +514,7 @@ class TestAppendOnly:
 
 
 # ==========================================================================
-# C. Zero fact on every failed gate (§22.C / §19 / §30 / §12 / §31)
+# C. Zero fact on every failed gate
 # ==========================================================================
 class TestZeroFactOnFailure:
     def test_auth_failure_writes_no_fact(self, client, db_session, all_tokens):
@@ -573,7 +573,7 @@ class TestZeroFactOnFailure:
         assert _outcome_count(db_session) == 0
 
     def test_shuffle_fail_closed_writes_no_fact(self, client, db_session, all_tokens):
-        # §30: EVERY Shuffle state is refused — even a plausible "success".
+        # EVERY Shuffle state is refused — even a plausible "success".
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         for state in ("success", "completed", "resolved", "done", "ok"):
@@ -583,10 +583,10 @@ class TestZeroFactOnFailure:
         assert _outcome_count(db_session) == 0
 
     def test_thehive_fail_closed_writes_no_fact(self, client, db_session, all_tokens):
-        # §30 / M2-R §2: EVERY TheHive word a webhook could plausibly carry is
+        # / M2-R : EVERY TheHive word a webhook could plausibly carry is
         # refused — the native-lifecycle words (resolved/closed/success/completed/ok,
-        # case created != resolved) AND the M2 §5 synthesized ``case_created``, which
-        # M2-R §2 REMOVED from the path-agnostic vocabulary (fail-closed). Zero facts.
+        # case created != resolved) AND the M2 synthesized ``case_created``, which
+        # M2-R REMOVED from the path-agnostic vocabulary (fail-closed). Zero facts.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         for state in ("resolved", "closed", "success", "completed", "ok", "case_created"):
@@ -597,14 +597,14 @@ class TestZeroFactOnFailure:
     def test_thehive_forged_case_created_callback_is_refused_zero_facts(
         self, client, db_session, all_tokens
     ):
-        # M2-R §2 SECURITY REGRESSION (reviewer P1-1). BEFORE the fix, ``case_created``
+        # M2-R SECURITY REGRESSION (reviewer P1-1). BEFORE the fix, ``case_created``
         # sat in the path-agnostic thehive vocabulary, so THIS request — a VALID
         # THEHIVE_CALLBACK_TOKEN (Gate 1 pass), a Gate-2-valid schema, a SEEDED chain
         # so execution correlation passes (Gate 3), and the bare string
         # ``case_created`` — mapped straight to ``confirmed_success`` and appended an
         # Outcome Fact WITHOUT ever passing the trusted reader. That is the G1-A/G1-C
         # defect class: a verified-effect signal degraded into a string ANY inbound
-        # entry can submit. AFTER M2-R §2 (empty vocabulary, fail-closed) the SAME
+        # entry can submit. AFTER M2-R (empty vocabulary, fail-closed) the SAME
         # forged callback is REFUSED at Gate 4 -> 422 (static detail) -> ZERO fact.
         # No caller-controllable verified=true flag, no second table: the word simply
         # maps to NOTHING on the webhook path (and every other path).
@@ -641,12 +641,12 @@ class TestZeroFactOnFailure:
 
 
 # ==========================================================================
-# D. Security (§22.D / §20 / §21 / §25)
+# D. Security
 # ==========================================================================
 class TestSecurity:
-    #: G1-C / B0 §15.4 — the success-path security proofs (token/identity never
-    #: echoed, operator server-side) run on the TEST-ONLY fake adapter; the
-    #: mapping-REJECTION proof below stays on the real (now-refused) Wazuh path.
+    # G1-C / B0 — the success-path security proofs (token/identity never
+    # echoed, operator server-side) run on the TEST-ONLY fake adapter; the
+    # mapping-REJECTION proof below stays on the real (now-refused) Wazuh path.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_callback_token_absent_from_detail(self, client, db_session, all_tokens):
@@ -659,7 +659,7 @@ class TestSecurity:
         assert "bearer" not in blob
 
     def test_response_echoes_no_credential_identity_or_payload(self, client, db_session, all_tokens):
-        # §25 + the identity-not-echoed property relocated from 3.4.4-A.
+        # + the identity-not-echoed property relocated from 3.4.4-A.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         resp = client.post(
@@ -688,7 +688,7 @@ class TestSecurity:
         assert resp.json() == {"detail": CALLBACK_VALIDATION_FAILURE_DETAIL}
 
     def test_operator_is_never_client_controlled(self, client, db_session, all_tokens):
-        # §5/§20: a smuggled operator field is refused; the fact's operator is
+        # /: a smuggled operator field is refused; the fact's operator is
         # ALWAYS the server-side adapter identity.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
@@ -710,7 +710,7 @@ class TestSecurity:
         assert f"adapter:{FAKE}" not in msg
 
     def test_router_detail_constants_are_static_and_credential_free(self):
-        # §12/§31: every HTTP detail is a STATIC string leaking nothing.
+        # /: every HTTP detail is a STATIC string leaking nothing.
         for detail in (
             CALLBACK_AUTH_FAILURE_DETAIL, CALLBACK_CORRELATION_FAILURE_DETAIL,
             CALLBACK_VALIDATION_FAILURE_DETAIL, CALLBACK_PERSISTENCE_FAILURE_DETAIL,
@@ -722,11 +722,11 @@ class TestSecurity:
 
 
 # ==========================================================================
-# E. Rollback (§22.E / §10 / §24)
+# E. Rollback
 # ==========================================================================
 class TestRollback:
-    #: G1-C / B0 §15.4 — rollback-on-DB-failure is proven on the fake adapter (a
-    #: real Wazuh word is refused at Gate 4 before any flush/commit is reached).
+    # G1-C / B0 — rollback-on-DB-failure is proven on the fake adapter (a
+    # real Wazuh word is refused at Gate 4 before any flush/commit is reached).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_flush_failure_rolls_back_and_raises(self, db_session, all_tokens, monkeypatch):
@@ -748,7 +748,7 @@ class TestRollback:
         _assert_session_clean(db_session)
 
     def test_commit_failure_rolls_back_no_half_fact(self, db_session, all_tokens, monkeypatch):
-        # §24: flush DID stage the INSERT, commit failed -> rollback -> no fact.
+        # flush DID stage the INSERT, commit failed -> rollback -> no fact.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         calls = {"flush": 0, "rollback": 0}
@@ -790,11 +790,11 @@ class TestRollback:
         assert _outcome_count(db_session) == 0
 
     def test_persistence_error_is_not_a_contract_failure(self):
-        # §10: a DB failure is NOT a 4xx contract rejection.
+        # a DB failure is NOT a 4xx contract rejection.
         assert not issubclass(OutcomePersistenceError, ContractValidationFailure)
 
     def test_persistence_failure_never_yields_reconciliation_failed(self, db_session, all_tokens, monkeypatch):
-        # §10: a DB failure is NEVER laundered into the 3.4.5 read-failure word.
+        # a DB failure is NEVER laundered into the 3.4.5 read-failure word.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         monkeypatch.setattr(db_session, "flush", _raiser(SQLAlchemyError("simulated flush failure")))
@@ -804,10 +804,10 @@ class TestRollback:
 
 
 # ==========================================================================
-# F. execution_log immutability (§22.F / §2 / §18)
+# F. execution_log immutability
 # ==========================================================================
 class TestExecutionLogImmutable:
-    #: G1-C / B0 §15.4 — success/rollback log-immutability proven on the fake adapter.
+    # G1-C / B0 — success/rollback log-immutability proven on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_execution_log_identical_before_and_after_success(self, client, db_session, all_tokens):
@@ -829,7 +829,7 @@ class TestExecutionLogImmutable:
         assert _log_snapshot(db_session) == before
 
     def test_no_new_dispatch_row_created(self, client, db_session, all_tokens):
-        # §22.H: persistence never creates an execution / dispatch row.
+        # .H: persistence never creates an execution / dispatch row.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         n_before = len(_all_log_rows(db_session))
@@ -839,10 +839,10 @@ class TestExecutionLogImmutable:
 
 
 # ==========================================================================
-# G. Derivation over the appended series (§22.G / §16)
+# G. Derivation over the appended series
 # ==========================================================================
 class TestDerivation:
-    #: G1-C / B0 §15.4 — derivation-over-series proven on the fake adapter.
+    # G1-C / B0 — derivation-over-series proven on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_derivation_picks_latest_observed_at(self, client, db_session, all_tokens):
@@ -876,7 +876,7 @@ class TestDerivation:
         assert derive_outcome_state(facts) == winner.outcome_status
 
     def test_no_derived_state_is_stored(self, client, db_session, all_tokens):
-        # §16: the DB stores observations only — no derived_outcome column/value.
+        # the DB stores observations only — no derived_outcome column/value.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         client.post(f"{WEBHOOK}/{FAKE}", json=_body(eid, external_state="running", observed_at=NOW), headers=_bearer(WAZUH_TOKEN))
@@ -889,7 +889,7 @@ class TestDerivation:
 
 
 # ==========================================================================
-# H + I. Execution / adapter isolation (§22.H / §22.I / §29)
+# H + I. Execution / adapter isolation
 # ==========================================================================
 class TestIsolation:
     def test_service_imports_no_executor_or_adapter_io(self):
@@ -899,7 +899,7 @@ class TestIsolation:
             assert forbidden not in joined, forbidden
 
     def test_service_makes_no_adapter_read_call(self):
-        # §29: adapter read (get_status / query_status / outbound HTTP) is 3.4.5.
+        # adapter read (get_status / query_status / outbound HTTP) is 3.4.5.
         # AST-based (docstring-immune): collect every called name and assert no
         # adapter-read / outbound-transport call exists in the persistence path.
         tree = ast.parse(inspect.getsource(webhook_service))
@@ -915,10 +915,10 @@ class TestIsolation:
 
 
 # ==========================================================================
-# §23. ORM identity — the fact is the ORM model, never the Pydantic dispatch DTO
+# . ORM identity — the fact is the ORM model, never the Pydantic dispatch DTO
 # ==========================================================================
 class TestOrmIdentity:
-    #: G1-C / B0 §15.4 — the ORM-identity fact is produced on the fake adapter.
+    # G1-C / B0 — the ORM-identity fact is produced on the fake adapter.
     pytestmark = pytest.mark.usefixtures("fake_adapter_vocab")
 
     def test_service_aliases_the_orm_fact(self):
@@ -948,12 +948,12 @@ class TestOrmIdentity:
 
 
 # ==========================================================================
-# §24. Transaction order + gate-before-write
+# . Transaction order + gate-before-write
 # ==========================================================================
 class TestTransaction:
-    #: G1-C / B0 §15.4 — transaction order + gate-before-write proven on the fake
-    #: adapter (test_every_gate_runs_before_add uses a word OUTSIDE the fake vocab
-    #: -> UnrecognizedExternalState, add() never reached).
+    # G1-C / B0 — transaction order + gate-before-write proven on the fake
+    # adapter (test_every_gate_runs_before_add uses a word OUTSIDE the fake vocab
+    # > UnrecognizedExternalState, add() never reached).
     pytestmark = pytest.mark.usefixtures("fake_adapter_vocab")
 
     def test_order_is_add_flush_commit(self, db_session, all_tokens, monkeypatch):
@@ -982,7 +982,7 @@ class TestTransaction:
         assert _outcome_count(db_session) == 1
 
     def test_every_gate_runs_before_add(self, db_session, all_tokens, monkeypatch):
-        # §9: a gate rejection means add() is NEVER reached — nothing staged.
+        # a gate rejection means add() is NEVER reached — nothing staged.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid)
         added = []
@@ -1000,11 +1000,11 @@ class TestTransaction:
 
 
 # ==========================================================================
-# §25. HTTP response contract
+# . HTTP response contract
 # ==========================================================================
 class TestHttpResponse:
-    #: G1-C / B0 §15.4 — the 200 success-response contract is proven on the fake
-    #: adapter (a real Wazuh success word is now REFUSED -> 422, see TestZeroFactOnFailure).
+    # G1-C / B0 — the 200 success-response contract is proven on the fake
+    # adapter (a real Wazuh success word is now REFUSED -> 422, see TestZeroFactOnFailure).
     pytestmark = pytest.mark.usefixtures("fake_adapter_channel")
 
     def test_success_is_exactly_200_accepted_true(self, client, db_session, all_tokens):
@@ -1027,6 +1027,6 @@ class TestHttpResponse:
             assert leaked not in resp.text, leaked
 
     def test_endpoint_is_registered_at_the_frozen_path(self):
-        # §11: POST /api/v1/webhooks/{adapter}, the path is frozen.
+        # POST /api/v1/webhooks/{adapter}, the path is frozen.
         paths = {(r.path, tuple(sorted(r.methods))) for r in webhook_module.router.routes}
         assert ("/webhooks/{adapter}", ("POST",)) in paths

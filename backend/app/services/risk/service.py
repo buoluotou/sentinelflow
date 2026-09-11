@@ -1,11 +1,11 @@
 """RiskService: persists the current risk snapshot for an event.
 
-Phase 1 Step 5.3: the engine computes, the service stores. Every event
+the engine computes, the service stores. Every event
 (AlertGroup) keeps exactly ONE EventRisk row (enforced by the unique
 constraint) — the "current risk" snapshot:
 
-    first scoring      -> CREATE EventRisk
-    subsequent scoring -> UPDATE in place (score / level / factors)
+first scoring      -> CREATE EventRisk
+subsequent scoring -> UPDATE in place (score / level / factors)
 
 Never call this from a read path (GET /events): risk is recalculated when
 the event changes (after deduplication), so queries stay pure reads.
@@ -28,14 +28,12 @@ class RiskService:
     def recalculate(self, db: Session, group: AlertGroup) -> EventRisk:
         """Recompute the group's risk and persist it (create or update).
 
-        RC2 / H-1: runs INSIDE the caller's transaction — flushes but NEVER
-        commits. The pipeline boundary (``DeduplicationEngine.process``) owns
-        the ONE commit so the EventRisk update and the automatic Incident
-        creation commit or roll back TOGETHER; a case can never be missing
-        while the risk update that should have produced it is already durable
-        (pre-RC2 this method committed internally, durably SPLITTING the
-        pipeline at exactly that point).
-        """
+/ H-1: runs INSIDE the caller's transaction — flushes but NEVER
+commits. The pipeline boundary (``DeduplicationEngine.process``) owns
+the ONE commit so the EventRisk update and the automatic Incident
+creation commit or roll back TOGETHER; a case can never be missing
+while the risk update that should have produced it is already durable.
+"""
         result = self._engine.calculate(group, list(group.alerts))
 
         risk = group.risk
@@ -56,5 +54,5 @@ class RiskService:
         risk.updated_at = datetime.now(timezone.utc)
 
 
-#: service shared by the pipeline
+# service shared by the pipeline
 service = RiskService()

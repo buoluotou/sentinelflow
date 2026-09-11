@@ -1,4 +1,4 @@
-"""Phase 1 Step 5.2: RiskEngine rule-based scoring tests."""
+"""RiskEngine rule-based scoring tests."""
 
 from datetime import datetime, timezone
 

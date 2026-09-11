@@ -1,14 +1,14 @@
-/** Response Recommendation panel (Step 12.5): display + explicit trigger.
+/** Response Recommendation panel: display + explicit trigger.
  *
  * Reads the latest recommendation on mount (GET only — never an automatic
  * POST); "Generate Response Recommendation" POSTs a new one. The backend
  * appends a history row per trigger — the panel always renders whatever the
  * API returns and never edits or overwrites an existing record.
  *
- * Advisory only: the six frozen actions render as readable labels, but the
+ * Advisory only: the six actions render as readable labels, but the
  * panel never executes anything — no Execute/Block/Isolate affordance exists
- * here; every action stays a suggestion until human approval (Step 13).
- * An empty recommendations list is a SUCCESS ("no action warranted"), which
+ * here; every action stays a suggestion until human approval.
+ * An empty recommendations list is a success ("no action warranted"), which
  * is a different state from the 404 "nothing generated yet" empty state.
  */
 import { useCallback, useEffect, useState } from 'react'
@@ -23,9 +23,9 @@ import type {
 } from '../types/responseRecommendation'
 import { ErrorBanner, Loading, Panel, formatTime } from './common'
 
-/** Display-layer mapping of the frozen 12.1 vocabulary — NOT a new protocol
+/** Display-layer mapping of the fixed action vocabulary — not a new protocol
  * enum; unknown actions fall back to the raw value instead of inventing
- * semantics. Shared with the Step 13.5 Approval Queue so the vocabulary has
+ * semantics. Shared with the Approval Queue so the vocabulary has
  * exactly one display mapping. */
 export const ACTION_LABELS: Record<ResponseAction, string> = {
   block_source_ip: 'Block Source IP',
@@ -40,7 +40,7 @@ export function actionLabel(action: string): string {
   return ACTION_LABELS[action as ResponseAction] ?? action
 }
 
-/** Backend contract -> operator-readable message (same as Step 11.6).
+/** Backend contract -> operator-readable message (same as the risk-summary panel).
  *
  * The API layer already renders human-readable details ("AI provider
  * unavailable: ...", "AI response did not match the expected protocol: ..."),

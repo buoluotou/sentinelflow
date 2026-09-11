@@ -1,5 +1,5 @@
 /**
- * TypeScript mirror of the Events API schemas (Phase 1 Step 4.4 / 5.4).
+ * TypeScript mirror of the Events API schemas.
  * Backend serialises UUID/datetime as strings; keep them as strings here.
  */
 

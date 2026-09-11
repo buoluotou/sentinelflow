@@ -1,4 +1,4 @@
-"""Minimal HTTP transport for the AI providers (Phase 2 Step 9).
+"""Minimal HTTP transport for the AI providers.
 
 Stdlib urllib only — no new dependency. Every provider takes an injectable
 ``transport`` callable ``(url, payload, headers) -> body str`` so tests and
@@ -14,7 +14,7 @@ from app.services.ai.exceptions import AIProviderUnavailable
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
-#: Injectable HTTP layer: (url, json payload, optional headers) -> body text.
+# Injectable HTTP layer: (url, json payload, optional headers) -> body text.
 Transport = Callable[[str, dict, "dict[str, str] | None"], str]
 
 
@@ -26,11 +26,11 @@ def http_post_json(
 ) -> str:
     """POST JSON and return the response body as text.
 
-    All network-layer failures (refused, DNS, HTTP >= 400, timeout) map to
-    AIProviderUnavailable — callers never see raw urllib types. Local
-    models can take minutes per analysis (Step 10.4: qwen3:4b needs ~40s),
-    so the timeout is configurable via AI_TIMEOUT_SECONDS.
-    """
+All network-layer failures (refused, DNS, HTTP >= 400, timeout) map to
+AIProviderUnavailable — callers never see raw urllib types. Local
+models can take minutes per analysis (qwen3:4b needs ~40s),
+so the timeout is configurable via AI_TIMEOUT_SECONDS.
+"""
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

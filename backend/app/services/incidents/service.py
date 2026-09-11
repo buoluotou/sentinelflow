@@ -1,20 +1,20 @@
 """Incident service: case creation + lifecycle state machine.
 
-Phase 1 Step 7.2. Two write operations, both transaction-friendly:
+. Two write operations, both transaction-friendly:
 
-    create_incident     AlertGroup + EventRisk -> open Incident (snapshot)
-    transition_status   strict lifecycle moves with checkpoint timestamps
+create_incident     AlertGroup + EventRisk -> open Incident (snapshot)
+transition_status   strict lifecycle moves with checkpoint timestamps
 
 Neither function commits on its own — it flushes and returns, leaving the
-transaction boundary to the caller (API layer / Step 7.4 pipeline). This
+transaction boundary to the caller (API layer / pipeline). This
 lets "Event -> Incident" join other writes in one transaction later.
 
 Frozen semantics:
 - Incident.risk_score COPIES EventRisk.score at creation (snapshot, not a
-  link); live rescoring never touches an open case.
+link); live rescoring never touches an open case.
 - disposition is set ONLY by transitions, always agreeing with the status:
-  resolved -> "resolved", false_positive -> "false_positive",
-  closed -> keeps the previous disposition.
+resolved -> "resolved", false_positive -> "false_positive",
+closed -> keeps the previous disposition.
 - resolved_at / closed_at are written exactly on the matching transition.
 """
 import uuid
@@ -42,12 +42,12 @@ MAX_PAGE_SIZE = 100
 def create_incident(db: Session, alert_group_id: uuid.UUID) -> Incident:
     """Open the SOC case of an event; case record auto-filled from it.
 
-    Refuses (business errors, never silent):
-    - unknown AlertGroup            -> IncidentNotFound
-    - event already has a case      -> IncidentAlreadyExists
-    - event has no EventRisk        -> IncidentRiskMissing (a score=0 case
-      would mask a broken risk pipeline instead of surfacing it)
-    """
+Refuses (business errors, never silent):
+- unknown AlertGroup            -> IncidentNotFound
+- event already has a case      -> IncidentAlreadyExists
+- event has no EventRisk        -> IncidentRiskMissing (a score=0 case
+would mask a broken risk pipeline instead of surfacing it)
+"""
     group = db.get(AlertGroup, alert_group_id)
     if group is None:
         raise IncidentNotFound(f"AlertGroup {alert_group_id} does not exist")
@@ -74,9 +74,9 @@ def create_incident(db: Session, alert_group_id: uuid.UUID) -> Incident:
     return incident
 
 
-#: Unique-constraint markers of "one current incident per event"
-#: (PostgreSQL reports the constraint/index name, SQLite the column list) —
-#: the concurrent-race detector for the auto-creation savepoint below.
+# Unique-constraint markers of "one current incident per event"
+# (PostgreSQL reports the constraint/index name, SQLite the column list) —
+# the concurrent-race detector for the auto-creation savepoint below.
 _GROUP_INCIDENT_CONFLICT_MARKERS = (
     "uq_incidents_alert_group_id",
     "incidents.alert_group_id",
@@ -90,21 +90,19 @@ def _is_group_incident_conflict(exc: IntegrityError) -> bool:
 
 
 def auto_create_from_risk(db: Session, group: AlertGroup) -> Incident | None:
-    """Pipeline hook (Step 7.4): open the case when the event's CURRENT
-    risk crosses the policy threshold; no-op otherwise.
+    """Pipeline hook (): open the case when the event's CURRENT
+risk crosses the policy threshold; no-op otherwise.
 
-    Called by the deduplication engine right after risk recalculation, inside
-    the SAME transaction as the alert + risk writes (RC2 / H-1: this function
-    never commits — the pipeline boundary owns the ONE commit, so a case and
-    the risk update that produced it commit or roll back TOGETHER).
+Called by the deduplication engine right after risk recalculation, inside
+the SAME transaction as the alert + risk writes.
 
-    Idempotent by design, in TWO layers:
-    - the pre-check skips an event that already has a case (the common path);
-    - ``uq_incidents_alert_group_id`` adjudicates a TRUE concurrent race: the
-      loser's nested SAVEPOINT rolls back to a benign no-op (the winner's case
-      stands; a duplicate is refused) WITHOUT poisoning the caller's
-      transaction, so its alert + risk update still commit normally.
-    """
+Idempotent by design, in TWO layers:
+- the pre-check skips an event that already has a case (the common path);
+- ``uq_incidents_alert_group_id`` adjudicates a TRUE concurrent race: the
+loser's nested SAVEPOINT rolls back to a benign no-op (the winner's case
+stands; a duplicate is refused) WITHOUT poisoning the caller's
+transaction, so its alert + risk update still commit normally.
+"""
     if group.incident is not None:
         return None
     risk = group.risk
@@ -125,16 +123,16 @@ def auto_create_from_risk(db: Session, group: AlertGroup) -> Incident | None:
 def transition_status(
     db: Session, incident_id: uuid.UUID, target: str
 ) -> Incident:
-    """Move an incident along the frozen lifecycle matrix.
+    """Move an incident along the lifecycle matrix.
 
-    Raises InvalidIncidentTransition for unknown vocabulary, self-moves and
-    every disallowed edge (e.g. closed -> open) — never returns a silent
-    failure. Writes the lifecycle checkpoints:
+Raises InvalidIncidentTransition for unknown vocabulary, self-moves and
+every disallowed edge (e.g. closed -> open) — never returns a silent
+failure. Writes the lifecycle checkpoints:
 
-        -> resolved        resolved_at = now, disposition = "resolved"
-        -> false_positive  disposition = "false_positive"
-        -> closed          closed_at = now, disposition preserved
-    """
+-> resolved        resolved_at = now, disposition = "resolved"
+-> false_positive  disposition = "false_positive"
+-> closed          closed_at = now, disposition preserved
+"""
     incident = db.get(Incident, incident_id)
     if incident is None:
         raise IncidentNotFound(f"Incident {incident_id} does not exist")
@@ -186,9 +184,9 @@ def list_incidents(
 ) -> tuple[int, list[Incident]]:
     """Return (total, page of incidents) newest first.
 
-    Pure read. With ``status`` set, only cases at that lifecycle position
-    are returned.
-    """
+Pure read. With ``status`` set, only cases at that lifecycle position
+are returned.
+"""
     size = min(size, MAX_PAGE_SIZE)
     total_stmt = select(func.count(Incident.id))
     items_stmt = select(Incident)

@@ -12,7 +12,7 @@ export default defineConfig({
       '/health': 'http://localhost:8000',
     },
   },
-  // Step 11.6: frontend unit tests (jsdom). Browser E2E stays separate.
+  // frontend unit tests (jsdom). Browser E2E stays separate.
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],

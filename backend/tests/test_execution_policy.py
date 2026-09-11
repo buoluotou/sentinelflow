@@ -1,16 +1,16 @@
-"""Phase 3.3.2.1 — Execution Policy decision model tests.
+"""Execution Policy decision model tests.
 
 Locks the PURE decision layer (no DB, no Executor, no API):
 
-    ExecutionPolicy.evaluate(PolicyContext, now) -> PolicyDecision
+ExecutionPolicy.evaluate(PolicyContext, now) -> PolicyDecision
 
 Coverage map (acceptance gate):
 
 Policy Core
 - time window allow / deny / boundary start (inclusive) / boundary end
-  (exclusive) / UTC handling (aware conversions + naive = UTC)
+(exclusive) / UTC handling (aware conversions + naive = UTC)
 - risk allow / deny / per-action thresholds / action without threshold
-  / missing risk fact -> fail-closed
+/ missing risk fact -> fail-closed
 - combined policies (first refusal wins: window before risk)
 - policy disabled -> ALLOW (never a Guard bypass — structural)
 - malformed config -> PolicyViolation (fail-closed at construction)
@@ -18,18 +18,18 @@ Policy Core
 
 Attack suite
 - fake risk: a forged high value cannot enter — only the server fact
-  in PolicyContext is judged
+in PolicyContext is judged
 - fake severity: no severity channel exists on PolicyContext
 - fake timestamp: no timestamp channel exists; the decision follows the
-  server ``now`` argument only
+server ``now`` argument only
 - fake operator: no operator channel exists
 - policy bypass: disabled policy returns ALLOW, not a chain skip
 - executor zero-call: the module never references an executor (source
-  lock) and evaluate() takes none
+lock) and evaluate() takes none
 
 Fact immunity
 - PolicyContext / ExecutionPolicy are immutable; Policy NEVER writes
-  (source lock: no add / flush / commit / rollback in policy.py)
+(source lock: no add / flush / commit / rollback in policy.py)
 
 No Service change, no state-machine change, no React.
 """
@@ -64,9 +64,9 @@ def at(hour: int, minute: int = 0, tz=timezone.utc) -> datetime:
     return datetime(2026, 9, 1, hour, minute, tzinfo=tz)
 
 
-# --------------------------------------------------------------------------
+#
 # PolicyDecision — the verdict object
-# --------------------------------------------------------------------------
+#
 class TestPolicyDecision:
     def test_allow_is_allowed_no_code(self):
         d = PolicyDecision.allow()
@@ -118,14 +118,14 @@ class TestPolicyDecision:
 
     def test_source_cannot_be_forged_at_construction(self):
         """init=False lock: no caller can mint a decision claiming a
-        different provenance (e.g. 'guard')."""
+different provenance (e.g. 'guard')."""
         with pytest.raises(TypeError):
             PolicyDecision(allowed=True, source="guard")  # type: ignore[call-arg]
 
 
-# --------------------------------------------------------------------------
+#
 # Policy Core — time window
-# --------------------------------------------------------------------------
+#
 class TestTimeWindowPolicy:
     def test_inside_window_allows(self):
         policy = enabled_policy()
@@ -171,7 +171,7 @@ class TestTimeWindowPolicy:
 
     def test_naive_datetime_treated_as_utc(self):
         """Frozen time basis: a naive server clock is UTC — never the
-        host's local timezone."""
+host's local timezone."""
         policy = enabled_policy()
         ctx = PolicyContext(action="block_source_ip", risk_score=90)
         naive_inside = datetime(2026, 9, 1, 10, 0)  # naive
@@ -181,7 +181,7 @@ class TestTimeWindowPolicy:
 
     def test_aware_non_utc_converted_to_utc(self):
         """A +09:00 server clock at 18:00 local is 09:00 UTC — inside
-        the window; the verdict follows UTC, never the wall clock."""
+the window; the verdict follows UTC, never the wall clock."""
         policy = enabled_policy()
         ctx = PolicyContext(action="block_source_ip", risk_score=90)
         assert policy.evaluate(ctx, at(18, 0, tz=JST)).allowed is True
@@ -199,9 +199,9 @@ class TestTimeWindowPolicy:
         assert "19:00" in decision.reason
 
 
-# --------------------------------------------------------------------------
+#
 # Policy Core — risk threshold
-# --------------------------------------------------------------------------
+#
 class TestRiskThresholdPolicy:
     def test_risk_at_threshold_allows(self):
         policy = enabled_policy()
@@ -218,8 +218,8 @@ class TestRiskThresholdPolicy:
         assert "40" in decision.reason and "70" in decision.reason
 
     def test_per_action_thresholds(self):
-        """The frozen first-version table: block/isolate 70, disable 80,
-        escalate 50. One score can pass one action and fail another."""
+        """The first-version table: block/isolate 70, disable 80,
+escalate 50. One score can pass one action and fail another."""
         policy = enabled_policy()
         moment = at(10, 0)
         assert (
@@ -249,14 +249,14 @@ class TestRiskThresholdPolicy:
 
     def test_action_without_threshold_carries_no_risk_rule(self):
         """Actions absent from the threshold map have no risk
-        requirement (window still applies)."""
+requirement (window still applies)."""
         policy = enabled_policy(min_risk_by_action={"block_source_ip": 70})
         ctx = PolicyContext(action="isolate_host", risk_score=None)
         assert policy.evaluate(ctx, at(10, 0)).allowed is True
 
     def test_missing_risk_fact_is_fail_closed(self):
         """No EventRisk row -> risk_score None -> refuse; never treated
-        as a passing zero or an implicit allow."""
+as a passing zero or an implicit allow."""
         policy = enabled_policy()
         ctx = PolicyContext(action="block_source_ip", risk_score=None)
         decision = policy.evaluate(ctx, at(10, 0))
@@ -286,13 +286,13 @@ class TestRiskThresholdPolicy:
         )
 
 
-# --------------------------------------------------------------------------
+#
 # Policy Core — combined, disabled, deterministic
-# --------------------------------------------------------------------------
+#
 class TestCombinedAndModes:
     def test_window_refusal_wins_over_risk(self):
         """First refusal wins, window first: at 23:00 with risk 10 the
-        verdict is outside_execution_window, not risk."""
+verdict is outside_execution_window, not risk."""
         policy = enabled_policy()
         ctx = PolicyContext(action="block_source_ip", risk_score=10)
         decision = policy.evaluate(ctx, at(23, 0))
@@ -311,7 +311,7 @@ class TestCombinedAndModes:
 
     def test_disabled_policy_always_allows(self):
         """EXECUTION_POLICY_ENABLED=false -> ALLOW regardless of time
-        and risk (the default shipping mode)."""
+and risk (the default shipping mode)."""
         policy = ExecutionPolicy()  # enabled=False by default
         ctx = PolicyContext(action="block_source_ip", risk_score=0)
         assert policy.evaluate(ctx, at(3, 0)).allowed is True
@@ -332,7 +332,7 @@ class TestCombinedAndModes:
 
     def test_decision_is_deterministic(self):
         """Same (context, config, now) -> identical verdict, every
-        time; no clock read, no randomness inside evaluate()."""
+time; no clock read, no randomness inside evaluate()."""
         policy = enabled_policy()
         ctx = PolicyContext(action="disable_account", risk_score=79)
         moment = at(10, 0)
@@ -343,9 +343,9 @@ class TestCombinedAndModes:
         assert verdict.code == "risk_threshold_not_met"
 
 
-# --------------------------------------------------------------------------
+#
 # Configuration validation (fail-closed at construction)
-# --------------------------------------------------------------------------
+#
 class TestConfigValidation:
     def test_malformed_window_start_rejected(self):
         with pytest.raises(PolicyViolation, match="window_start"):
@@ -390,7 +390,7 @@ class TestConfigValidation:
 
     def test_error_messages_are_stable_and_secret_free(self):
         """Config errors name the FIELD, never echo values a deployment
-        might have injected elsewhere."""
+might have injected elsewhere."""
         with pytest.raises(PolicyViolation) as exc:
             enabled_policy(window_start="not-a-time")
         assert "window_start" in str(exc.value)
@@ -415,14 +415,14 @@ class TestConfigValidation:
             parse_hhmm("", "x")
 
 
-# --------------------------------------------------------------------------
+#
 # Attack suite — forged client inputs have no channel
-# --------------------------------------------------------------------------
+#
 class TestForgedInputImmunity:
     def test_fake_risk_cannot_enter_context(self):
         """Attack: client claims risk=100, real server fact is 40.
-        PolicyContext carries ONLY the server fact — the forged value
-        has no field to land in, so the verdict follows the real 40."""
+PolicyContext carries ONLY the server fact — the forged value
+has no field to land in, so the verdict follows the real 40."""
         policy = enabled_policy()
         real_server_fact = PolicyContext(action="block_source_ip", risk_score=40)
         decision = policy.evaluate(real_server_fact, at(10, 0))
@@ -430,15 +430,15 @@ class TestForgedInputImmunity:
 
     def test_fake_severity_has_no_channel(self):
         """PolicyContext exposes NO severity field — a forged
-        severity=critical cannot influence the decision."""
+severity=critical cannot influence the decision."""
         fields = set(PolicyContext.__dataclass_fields__)
         assert "severity" not in fields
 
     def test_fake_timestamp_has_no_channel(self):
         """PolicyContext exposes NO timestamp field; the decision
-        follows the server ``now`` argument only. A client claiming
-        'it is 10:00' cannot move the verdict when the server clock
-        says 23:00."""
+follows the server ``now`` argument only. A client claiming
+'it is 10:00' cannot move the verdict when the server clock
+says 23:00."""
         fields = set(PolicyContext.__dataclass_fields__)
         assert "timestamp" not in fields
         policy = enabled_policy()
@@ -452,14 +452,14 @@ class TestForgedInputImmunity:
 
     def test_context_carries_exactly_action_and_risk(self):
         """Frozen surface: the ONLY inputs are the executable action
-        and the server-side risk score. Adding any client-facing field
-        here must fail this lock."""
+and the server-side risk score. Adding any client-facing field
+here must fail this lock."""
         assert set(PolicyContext.__dataclass_fields__) == {"action", "risk_score"}
 
     def test_request_schema_still_forbids_policy_fields(self):
         """Boundary proof from the other side: the API request schemas
-        (extra='forbid') accept no risk / severity / timestamp, so
-        forged values die at 422 before any service runs."""
+(extra='forbid') accept no risk / severity / timestamp, so
+forged values die at 422 before any service runs."""
         from app.schemas.response_execution import CompensateRequest, ExecuteRequest
 
         for schema in (ExecuteRequest, CompensateRequest):
@@ -468,22 +468,22 @@ class TestForgedInputImmunity:
             assert fields.isdisjoint({"risk_score", "severity", "timestamp"})
 
 
-# --------------------------------------------------------------------------
+#
 # Fact immunity + executor zero-call (structural locks)
-# --------------------------------------------------------------------------
+#
 class TestPurityLocks:
     def test_policy_module_never_writes(self):
         """Source lock: policy.py contains no DB-write primitive. The
-        guard_rejected row is the Execute Service's job."""
+guard_rejected row is the Execute Service's job."""
         source = inspect.getsource(policy_module)
         for forbidden in (".add(", ".flush(", ".commit(", ".rollback("):
             assert forbidden not in source, f"policy.py must never {forbidden}"
 
     def test_policy_module_never_imports_executor(self):
         """Import lock (AST-level): policy.py imports no executor
-        module — a policy refusal must stop the chain BEFORE dispatch
-        (Executor zero-call). The module docstring may mention the
-        Executor to explain the boundary; imports may not."""
+module — a policy refusal must stop the chain BEFORE dispatch
+(Executor zero-call). The module docstring may mention the
+Executor to explain the boundary; imports may not."""
         import ast
 
         tree = ast.parse(inspect.getsource(policy_module))
@@ -518,8 +518,8 @@ class TestPurityLocks:
 
     def test_policy_cannot_mutate_approval_or_risk(self):
         """The Policy consumes plain values (str / int), never ORM
-        objects — structurally it cannot modify EventRisk / Incident /
-        Recommendation / Approval."""
+objects — structurally it cannot modify EventRisk / Incident /
+Recommendation / Approval."""
         import typing
 
         hints = typing.get_type_hints(PolicyContext)

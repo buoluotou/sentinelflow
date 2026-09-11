@@ -1,8 +1,8 @@
 /** Incident AI context types — field-level mirror of backend
- * IncidentAIContext (Phase 2 Step 14.5).
+ * IncidentAIContext.
  *
- * ONE protocol, shared semantics front-to-back: this file composes the
- * EXISTING frozen types (Steps 10–13) exactly as the backend DTO embeds
+ * One protocol, shared semantics front-to-back: this file composes the
+ * existing types exactly as the backend DTO embeds
  * its Read schemas — no second AI protocol, no translated view-model.
  */
 import type { AIAnalysis } from './aiAnalysis'
@@ -20,8 +20,8 @@ export interface IncidentSnapshot {
   risk_score_snapshot: number
 }
 
-/** Mirror of backend RecommendationWithApproval: one Step 12 recommendation
- * plus its Step 13 audit trail. `approval === null` IS the pending state —
+/** Mirror of backend RecommendationWithApproval: one recommendation
+ * plus its approval audit trail. `approval === null` is the pending state —
  * a derived UI semantic, never a status sent back to the backend. */
 export interface RecommendationWithApproval {
   recommendation: AIResponseRecommendation

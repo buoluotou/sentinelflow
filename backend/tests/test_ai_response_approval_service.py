@@ -1,10 +1,10 @@
-"""Step 13.2: AIResponseApprovalService tests.
+"""AIResponseApprovalService tests.
 
 Recommendation -> pending (derived) -> approve()/reject() -> terminal
 decision row. CI-stable: pure database semantics, no provider involved.
 Covers the derived-pending semantics (absence, never a stored status),
 one-shot INSERT finality, server-stamped reviewed_at, the flush-not-commit
-discipline, the advisory-only boundary (approve/reject execute NOTHING) and
+discipline, the advisory-only boundary (approve/reject execute nothing) and
 the typed conversion of the UNIQUE concurrency violation.
 """
 import inspect
@@ -71,7 +71,7 @@ def _service() -> AIResponseApprovalService:
     return AIResponseApprovalService()
 
 
-# -------------------------------------------------- pending = derived absence
+# pending = derived absence
 
 
 def test_unreviewed_recommendation_is_pending(db_session):
@@ -113,7 +113,7 @@ def test_pending_filters_mixed_queue(db_session):
 
 
 def test_pending_ordered_first_in_first_reviewed(db_session):
-    """Frozen ordering: created_at ASC — the oldest item tops the queue."""
+    """Ordering: created_at ASC — the oldest item tops the queue."""
     oldest = _seed(db_session, minutes_ago=10)
     middle = _seed(db_session, minutes_ago=5)
     newest = _seed(db_session)
@@ -135,7 +135,7 @@ def test_pending_tie_broken_by_id_asc(db_session):
     assert [r.id for r in pending] == sorted([first.id, second.id])
 
 
-# ------------------------------------------------------- one-shot decisions
+# one-shot decisions
 
 
 def test_approve_inserts_approved_decision(db_session):
@@ -217,7 +217,7 @@ def test_comment_variants_follow_schema_rules(db_session, comment):
     assert approval.review_comment == comment
 
 
-# --------------------------------------------------- flush, never commit
+# flush, never commit
 
 
 def test_approve_flushes_but_does_not_commit(db_session):
@@ -236,12 +236,12 @@ def test_reject_flushes_but_does_not_commit(db_session):
     assert db_session.query(AIResponseApproval).count() == 0
 
 
-# ------------------------------------------------------- safety boundaries
+# safety boundaries
 
 
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 def test_decision_executes_nothing(db_session, decision):
-    """Approve != Execute (and Reject != Execute): the decision only adds
+    """Approving or rejecting is not executing: the decision only adds
     one approval row — EventRisk is untouched, no Incident appears and the
     recommendation itself is never rewritten."""
     record = _seed(db_session, score=85)
@@ -259,7 +259,7 @@ def test_decision_executes_nothing(db_session, decision):
     assert db_session.query(AIResponseApproval).count() == 1
 
 
-# ------------------------------------------- finality + concurrency defense
+# finality + concurrency defense
 
 
 def test_second_approve_is_rejected_and_original_stands(db_session):
@@ -324,7 +324,7 @@ def test_racing_insert_surfaces_as_typed_domain_error(db_session):
     assert _service().get_pending_approvals(db_session)[0].id == record.id
 
 
-# ------------------------------------------------------------- error paths
+# error paths
 
 
 @pytest.mark.parametrize("decision", ["approve", "reject"])

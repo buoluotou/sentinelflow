@@ -1,8 +1,7 @@
-"""Phase 3.1.3: execution state machine + pure derived-state tests.
+"""execution state machine + pure derived-state tests.
 
 The whole later stack (Execute/Compensation services, API, audit UI)
-derives state through these two functions, so this suite is deliberately
-hard: every legal transition, an exhaustive illegal-transition matrix,
+derives state through these two functions, so this suite is hard: every legal transition, an exhaustive illegal-transition matrix,
 terminal-state protection, direction isolation, the constraint-10
 first-row invariant, deterministic created_at+id derivation, and
 per-execution isolation.
@@ -42,7 +41,7 @@ ALL_DECISIONS = sorted(EXECUTE_DECISIONS | COMPENSATE_DECISIONS)
 @dataclass
 class StubRow:
     """Minimal structural stand-in for ExecutionLog (Protocol conformance
-    is the contract — derive/validate never need the DB)."""
+is the contract — derive/validate never need the DB)."""
 
     id: uuid.UUID
     created_at: datetime
@@ -81,9 +80,9 @@ def expect_invalid(current, target, direction):
     return exc
 
 
-# ---------------------------------------------------------------------------
+#
 # Vocabulary / matrix freeze
-# ---------------------------------------------------------------------------
+#
 
 
 class TestVocabularyFreeze:
@@ -126,9 +125,9 @@ class TestVocabularyFreeze:
         }
 
 
-# ---------------------------------------------------------------------------
+#
 # Legal transition matrix — one test per legal edge
-# ---------------------------------------------------------------------------
+#
 
 
 class TestLegalExecuteTransitions:
@@ -159,14 +158,14 @@ class TestLegalCompensateTransitions:
         expect_ok("compensation_requested", "compensation_failed", "compensate")
 
 
-# ---------------------------------------------------------------------------
+#
 # Illegal transition matrix
-# ---------------------------------------------------------------------------
+#
 
 
 class TestFirstRowInvariant:
     """Constraint 10: the DB only knows `requested` is unique — the
-    Service alone enforces that it is the chain's FIRST row."""
+Service alone enforces that it is the chain's FIRST row."""
 
     @pytest.mark.parametrize(
         "decision", ["dispatched", "succeeded", "failed", "guard_rejected"]
@@ -210,7 +209,7 @@ class TestSkipLevelTransitions:
 
 class TestTerminalStateProtection:
     """Every terminal state x every decision word of its own direction
-    must raise the typed exception — exhaustively."""
+must raise the typed exception — exhaustively."""
 
     @pytest.mark.parametrize("terminal", sorted(TERMINAL_DECISIONS))
     def test_terminal_rejects_every_same_direction_decision(self, terminal):
@@ -245,10 +244,10 @@ class TestUnknownStateAndDecision:
         assert exc_info.value.direction == "rollback"
 
 
-# ---------------------------------------------------------------------------
+#
 # Direction isolation (Service refuses cross-direction words itself,
 # even though the DB CHECK would also catch them)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDirectionIsolation:
@@ -281,9 +280,9 @@ class TestDirectionIsolation:
                 fn()
 
 
-# ---------------------------------------------------------------------------
+#
 # Derived state — pure, deterministic, per-execution
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDeriveBasics:
@@ -331,7 +330,7 @@ class TestDeriveBasics:
 
 class TestDeriveOrderingDeterminism:
     """Constraint 8: ORDER BY created_at DESC, id DESC — never list
-    position, never id alone."""
+position, never id alone."""
 
     def test_latest_by_created_at_wins_regardless_of_id(self):
         small_id = uuid.UUID(int=1)
@@ -377,7 +376,7 @@ class TestDeriveIsolationAndPurity:
         assert derive_execution_state(chain_a[:2]) == "dispatched"
 
     def test_derive_is_pure_no_writes(self):
-        # Structural proof: frozen stub rows carry no session; the
+        # Structural proof: stub rows carry no session; the
         # function cannot touch a DB. Repeated calls give identical
         # results and leave the input untouched.
         rows = chain("requested", "dispatched")

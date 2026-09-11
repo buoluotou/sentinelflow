@@ -11,9 +11,9 @@ from app.models.alert import JSONVariant
 class AlertEvent(Base):
     """Raw security event as received from a data source.
 
-    Keeps the original payload (JSONB) so future adapters (Wazuh, Simulator,
-    ...) can always be audited back to the source event.
-    """
+Keeps the original payload (JSONB) so future adapters (Wazuh, Simulator,
+...) can always be audited back to the source event.
+"""
 
     __tablename__ = "alert_events"
 

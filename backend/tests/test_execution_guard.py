@@ -1,13 +1,13 @@
-"""Phase 3.1.4: Execution Guard / Policy tests (G2 / G3 / G4).
+"""Execution Guard / Policy tests (G2 / G3 / G4).
 
 Hard requirements this suite nails down:
 - G2 approval binding: approved-only, snapshot provenance, D3 vocabulary
-- G3 lifecycle/idempotency pre-check through the frozen derived-state
-  rule of 3.1.3 (409 family, NO log row semantics)
+- G3 lifecycle/idempotency pre-check through the derived-state
+rule of 3.1.3 (409 family, NO log row semantics)
 - G4 capability via the minimal ExecutorCapability protocol ONLY — no
-  Mock executor exists yet (that is 3.1.5), tests use a tiny stub
+Mock executor exists yet (that is 3.1.5), tests use a tiny stub
 - Security attack: a client-tampered action is refused even when it
-  looks executable — action is a server-side snapshot fact
+looks executable — action is a server-side snapshot fact
 
 All tests are DB-free: guards are pure verdict functions; ORM objects
 are constructed without a session.
@@ -85,8 +85,8 @@ def forward_chain(*decisions):
 
 class StubExecutor:
     """Minimal test double satisfying ExecutorCapability — NOT the 3.1.5
-    Mock adapter. Records calls so tests can prove the Guard uses only
-    the protocol surface."""
+Mock adapter. Records calls so tests can prove the Guard uses only
+the protocol surface."""
 
     name = "stub-capability"
 
@@ -113,9 +113,9 @@ def expect_rejection(fn, expected_code):
     return exc
 
 
-# ---------------------------------------------------------------------------
+#
 # Vocabulary freeze
-# ---------------------------------------------------------------------------
+#
 
 
 class TestVocabularyFreeze:
@@ -160,9 +160,9 @@ class TestVocabularyFreeze:
         )
 
 
-# ---------------------------------------------------------------------------
+#
 # G2: approval binding
-# ---------------------------------------------------------------------------
+#
 
 
 class TestG2ApprovalBinding:
@@ -252,8 +252,8 @@ class TestG2ApprovalBinding:
 
 class TestG2FactSmugglingAttack:
     """The client tries to steer the action. action/target are
-    SERVER-SIDE snapshot facts — provenance is checked BEFORE the
-    executability vocabulary."""
+SERVER-SIDE snapshot facts — provenance is checked BEFORE the
+executability vocabulary."""
 
     def test_tampered_action_refused_despite_approved_approval(self):
         approval = make_approval("approved")
@@ -302,9 +302,9 @@ class TestG2FactSmugglingAttack:
             )
 
 
-# ---------------------------------------------------------------------------
+#
 # G3: lifecycle / idempotency (through the 3.1.3 derived-state rule)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestG3Lifecycle:
@@ -370,9 +370,9 @@ class TestG3Idempotency:
         assert not isinstance(exc_info.value, GuardRejection)
 
 
-# ---------------------------------------------------------------------------
+#
 # G4: executor capability (protocol surface ONLY)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestG4Capability:
@@ -425,9 +425,9 @@ class TestG4Capability:
         ]
 
 
-# ---------------------------------------------------------------------------
+#
 # Exception family shape
-# ---------------------------------------------------------------------------
+#
 
 
 class TestExceptionFamily:

@@ -1,18 +1,18 @@
-"""Phase 3.3.3.1: Metrics read model tests — execution_log is the ONLY
+"""Metrics read model tests — execution_log is the ONLY
 fact source.
 
 Locks the acceptance gate:
 
 - pure read / deterministic / no DB write (source-level locks too)
 - execution_log is the sole source: every number derived from REAL
-  service-produced chains (no hand-written facts for the main paths)
+service-produced chains (no hand-written facts for the main paths)
 - guard_rejected counted SEPARATELY from adapter outcomes
-- frozen rate definitions:
-    success_rate          = succeeded / (succeeded + failed)
-    guard_rejection_rate  = guard_rejected / total chains
-- failure classifications reuse the frozen vocabulary only
+- rate definitions:
+success_rate          = succeeded / (succeeded + failed)
+guard_rejection_rate  = guard_rejected / total chains
+- failure classifications reuse the vocabulary only
 - per-adapter statistics derived from detail.executor (server fact —
-  no client-controllable metric field exists)
+no client-controllable metric field exists)
 - empty dataset explicit (rates None, never fake percentages)
 - compensation rows and in-flight chains never pollute outcome rates
 """
@@ -42,11 +42,11 @@ METRICS_SOURCE = (
 )
 
 
-# --------------------------------------------------------------------------
+#
 # Chain production — REAL service runs, no hand-written rows
-# --------------------------------------------------------------------------
+#
 class FailingStub:
-    """Deterministic adapter failure with a chosen frozen classification."""
+    """Deterministic adapter failure with a chosen classification."""
 
     def __init__(self, classification: str, name: str = "stub-fail"):
         self.name = name
@@ -69,8 +69,8 @@ class FailingStub:
         raise AssertionError("compensate must never be reached")
 
 
-#: Policy whose risk threshold can never be met by a seed without an
-#: EventRisk row — drives a source="policy" refusal deterministically.
+# Policy whose risk threshold can never be met by a seed without an
+# EventRisk row — drives a source="policy" refusal deterministically.
 DENY_POLICY = ExecutionPolicy(
     enabled=True, min_risk_by_action={"block_source_ip": 99}
 )
@@ -97,11 +97,11 @@ def run_chain(
 
 def seed_mix(db_session):
     """The canonical mixed workload:
-    3 succeeded (mock)
-    3 failed timeout (stub-a) + 1 failed adapter_error (stub-a)
-      + 1 failed protocol_violation (bad-outcome, rogue outcome)
-    1 guard_rejected source=policy (mock) + 1 source=guard (mock)
-    => total 10, executed 8, succeeded 3, failed 5, guard_rejected 2."""
+3 succeeded (mock)
+3 failed timeout (stub-a) + 1 failed adapter_error (stub-a)
++ 1 failed protocol_violation (bad-outcome, rogue outcome)
+1 guard_rejected source=policy (mock) + 1 source=guard (mock)
+=> total 10, executed 8, succeeded 3, failed 5, guard_rejected 2."""
     for _ in range(3):
         run_chain(db_session)
     for _ in range(3):
@@ -112,9 +112,9 @@ def seed_mix(db_session):
     run_chain(db_session, status="rejected")  # source=guard
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Frozen rate definitions on the canonical mix
-# --------------------------------------------------------------------------
+#
 class TestFrozenRateDefinitions:
     def test_canonical_mix_numbers(self, db_session):
         seed_mix(db_session)
@@ -165,9 +165,9 @@ class TestFrozenRateDefinitions:
         assert metrics.latency.min_seconds <= metrics.latency.max_seconds
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Per-adapter statistics (adapter = server-recorded fact)
-# --------------------------------------------------------------------------
+#
 class TestPerAdapterStatistics:
     def test_adapters_split_by_recorded_executor(self, db_session):
         seed_mix(db_session)
@@ -191,8 +191,8 @@ class TestPerAdapterStatistics:
 
     def test_adapter_identity_never_comes_from_client(self, db_session):
         """Every chain lands detail.executor from the SERVER-selected
-        adapter; the read model groups exclusively on that fact. There
-        is no client field named adapter anywhere in the surface."""
+adapter; the read model groups exclusively on that fact. There
+is no client field named adapter anywhere in the surface."""
         seed_mix(db_session)
         metrics = collect_execution_metrics(db_session)
         assert UNKNOWN_ADAPTER not in metrics.by_adapter
@@ -203,9 +203,9 @@ class TestPerAdapterStatistics:
         assert recorded == set(metrics.by_adapter)
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Empty dataset + boundary semantics
-# --------------------------------------------------------------------------
+#
 class TestEmptyAndBoundary:
     def test_empty_dataset_is_explicit(self, db_session):
         metrics = collect_execution_metrics(db_session)
@@ -250,8 +250,8 @@ class TestEmptyAndBoundary:
 
     def test_in_flight_chains_count_toward_totals_only(self, db_session):
         """A lone requested row (crash between rows) is in flight: it
-        counts toward totals and the rejection-free denominator, never
-        toward the outcome rates."""
+counts toward totals and the rejection-free denominator, never
+toward the outcome rates."""
         run_chain(db_session)
         now = datetime.now(timezone.utc)
         db_session.add(
@@ -276,7 +276,7 @@ class TestEmptyAndBoundary:
 
     def test_foreign_classification_is_counted_nowhere(self, db_session):
         """The classification vocabulary is CLOSED: a failed row whose
-        detail carries an invented word feeds no counter."""
+detail carries an invented word feeds no counter."""
         run_chain(db_session)
         execution_id = uuid.uuid4()
         approval = seed_approved(db_session)
@@ -313,9 +313,9 @@ class TestEmptyAndBoundary:
         assert dict(metrics.by_adapter["mock"].failure_classifications) == {}
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Purity locks: read-only, deterministic, no writes
-# --------------------------------------------------------------------------
+#
 class TestPurityLocks:
     def test_collection_changes_nothing(self, db_session):
         seed_mix(db_session)
@@ -345,7 +345,7 @@ class TestPurityLocks:
 
     def test_source_never_imports_executors(self):
         """The read model observes facts; it must never reach an
-        adapter (no outbound surface, no executor coupling)."""
+adapter (no outbound surface, no executor coupling)."""
         tree = ast.parse(METRICS_SOURCE.read_text(encoding="utf-8"))
         forbidden = {
             "app.services.executions.mock",

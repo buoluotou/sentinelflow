@@ -1,4 +1,4 @@
-/** Incident Queue (Step 8.4): the SOC triage list with status filter. */
+/* * Incident Queue (): the SOC triage list with status filter. */
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { listIncidents } from '../api/incidents'

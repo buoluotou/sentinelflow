@@ -1,6 +1,6 @@
-"""PostgreSQL-specific durable-dispatch integration (M4-F §2 + M4-G §4).
+"""PostgreSQL-specific durable-dispatch integration.
 
-WHY THIS FILE EXISTS (M4-F constraint 2, verbatim): "如使用 SQLite 无法可靠模拟生产锁或
+WHY THIS FILE EXISTS: "如使用 SQLite 无法可靠模拟生产锁或
 崩溃语义，必须补充 PostgreSQL 专项集成测试或明确保持对应能力未验证。不能以 SQLite
 全绿宣称 PostgreSQL 事务与并发已认证。"
 
@@ -14,37 +14,35 @@ provable deterministically, never as a real parallel race), and file-backed SQLi
 with FOREIGN KEYS OFF (so ``execution_log.approval_id`` is unenforced). PostgreSQL MVCC +
 its unique indexes + enforced FKs are the production semantics.
 
-M4-G §4 SCENARIO MATRIX (each maps to a task-required PostgreSQL-only proof; reqs 2 and 3
-are the two M4-F capabilities, reqs 1/4/5/6/7/8/9 are the M4-G additions):
+SCENARIO MATRIX:
 
-  req 1  SAME approval_id, DIFFERENT execution_id concurrent reservation — the §1
-         approval-slot unique index (``ux_dispatch_attempt_approval_id``) adjudicates a
-         TRUE parallel race to EXACTLY ONE winner BEFORE any external call.
-         -> TestPostgresApprovalSlotRace
-  req 2  SAME execution_id concurrent replay — ``ux_dispatch_attempt_execution_id``
-         commits EXACTLY ONE; the loser raises IntegrityError (-> typed 409, ZERO
-         external calls). -> TestPostgresDurableInterleaving
-  req 3  caller's OPEN (uncommitted) write transaction vs the store's INDEPENDENT
-         commit on a SECOND connection — MVCC lets them overlap; the independent commit
-         SURVIVES the caller's rollback. -> TestPostgresDurableInterleaving
-  req 4  commit SUCCEEDED but the client confirmation was LOST — the read-only recovery
-         check FINDS the durable attempt and KEEPS the uncertainty (never auto-retries).
-         -> TestPostgresCommitConfirmationLost
-  req 5  terminal-write failure / caller rollback / process interruption — the committed
-         attempt SURVIVES, the caller's rows vanish, recovery flags the orphan.
-         -> TestPostgresTerminalFailureSurvival
-  req 6  orphan-attempt recovery AFTER a restart (engine disposed, fresh engine reopened)
-         — durability lives in the DATABASE, not the process. -> TestPostgresRestartRecovery
-  req 7  a WRONG-attempt_id terminal on the SAME execution_id does NOT mask the pending
-         attempt (recovery correlates by attempt_id, never execution_id alone).
-         -> TestPostgresAttemptIdCorrelation
-  req 8  a FAILED dispatch is NEVER ``confirmed_failure`` — a ``failed`` terminal that
-         REFERENCES the attempt is a TERMINAL_AUDIT_PRESENT audit fact, never
-         EXTERNAL_EFFECT_CONFIRMED, and fabricates NO Outcome row.
-         -> TestPostgresAttemptIdCorrelation
-  req 9  ZERO automatic second external call — a naive retry on the SAME approval after a
-         lost confirmation is REJECTED by the approval-slot index BEFORE the adapter.
-         -> TestPostgresCommitConfirmationLost
+req 1  SAME approval_id, DIFFERENT execution_id concurrent reservation — the approval-slot unique index (``ux_dispatch_attempt_approval_id``) adjudicates a
+TRUE parallel race to EXACTLY ONE winner BEFORE any external call.
+-> TestPostgresApprovalSlotRace
+req 2  SAME execution_id concurrent replay — ``ux_dispatch_attempt_execution_id``
+commits EXACTLY ONE; the loser raises IntegrityError (-> typed 409, ZERO
+external calls). -> TestPostgresDurableInterleaving
+req 3  caller's OPEN (uncommitted) write transaction vs the store's INDEPENDENT
+commit on a SECOND connection — MVCC lets them overlap; the independent commit
+SURVIVES the caller's rollback. -> TestPostgresDurableInterleaving
+req 4  commit SUCCEEDED but the client confirmation was LOST — the read-only recovery
+check FINDS the durable attempt and KEEPS the uncertainty (never auto-retries).
+-> TestPostgresCommitConfirmationLost
+req 5  terminal-write failure / caller rollback / process interruption — the committed
+attempt SURVIVES, the caller's rows vanish, recovery flags the orphan.
+-> TestPostgresTerminalFailureSurvival
+req 6  orphan-attempt recovery AFTER a restart (engine disposed, fresh engine reopened)
+— durability lives in the DATABASE, not the process. -> TestPostgresRestartRecovery
+req 7  a WRONG-attempt_id terminal on the SAME execution_id does NOT mask the pending
+attempt (recovery correlates by attempt_id, never execution_id alone).
+-> TestPostgresAttemptIdCorrelation
+req 8  a FAILED dispatch is NEVER ``confirmed_failure`` — a ``failed`` terminal that
+REFERENCES the attempt is a TERMINAL_AUDIT_PRESENT audit fact, never
+EXTERNAL_EFFECT_CONFIRMED, and fabricates NO Outcome row.
+-> TestPostgresAttemptIdCorrelation
+req 9  ZERO automatic second external call — a naive retry on the SAME approval after a
+lost confirmation is REJECTED by the approval-slot index BEFORE the adapter.
+-> TestPostgresCommitConfirmationLost
 
 STATUS — **PostgreSQL UNVERIFIED**. This module is ``@pytest.mark.external`` (conftest
 DESELECTS it unless ``-m external``) AND guarded by a dedicated-DB env var, so a normal
@@ -53,7 +51,7 @@ it is RUN against a real PostgreSQL, EVERY scenario above stays UNVERIFIED — i
 certified by the green SQLite run, and this suite MUST NOT be cited as proof that real
 PostgreSQL concurrency/transaction semantics pass.
 
-SAFETY (M4-G §4): ``SENTINELFLOW_PG_TEST_URL`` MUST point at a DEDICATED throwaway
+SAFETY: ``SENTINELFLOW_PG_TEST_URL`` MUST point at a DEDICATED throwaway
 PostgreSQL; NEVER a production/shared database. The suite issues ``Base.metadata
 .create_all`` (idempotent — ``checkfirst``; NEVER ``drop_all``) and each test removes ONLY
 the rows IT created via ``_cleanup`` (targeted, FK-safe DELETEs scoped to the test's own
@@ -90,17 +88,17 @@ from app.services.executions.durable_dispatch import (
     find_unreconciled_attempts,
 )
 
-#: The dedicated-DB env var. Unset -> SKIP (LAB BLOCKED), never a fabricated pass.
+# The dedicated-DB env var. Unset -> SKIP (LAB BLOCKED), never a fabricated pass.
 PG_URL_ENV = "SENTINELFLOW_PG_TEST_URL"
 
 
 def _pg_engine():
     """A REAL PostgreSQL engine on the DEDICATED throwaway DB, or SKIP (LAB BLOCKED).
 
-    Module-level so every §4 test class shares ONE guard + ``create_all``. ``create_all``
-    is idempotent (``checkfirst=True``) and NEVER drops — the throwaway schema is
-    provisioned once; each test cleans up ONLY its own rows (``_cleanup``).
-    """
+Module-level so every test class shares ONE guard + ``create_all``. ``create_all``
+is idempotent (``checkfirst=True``) and NEVER drops — the throwaway schema is
+provisioned once; each test cleans up ONLY its own rows (``_cleanup``).
+"""
     url = os.environ.get(PG_URL_ENV, "")
     if not url:
         pytest.skip(
@@ -118,10 +116,10 @@ def _pg_engine():
 def _pg_binding(execution_id=None, approval_id=None):
     """A deterministic pre-dispatch binding (server-side facts only).
 
-    ``approval_id`` is injectable so §4 can race the SAME approval across DIFFERENT
-    execution_ids (req 1 — the D14 approval-slot unique index) and reuse a REAL seeded
-    approval where an ExecutionLog FK demands it (reqs 5/7/8).
-    """
+``approval_id`` is injectable so can race the SAME approval across DIFFERENT
+execution_ids (req 1 — the D14 approval-slot unique index) and reuse a REAL seeded
+approval where an ExecutionLog FK demands it (reqs 5/7/8).
+"""
     return build_dispatch_binding(
         execution_id=execution_id or uuid.uuid4(),
         approval_id=approval_id or uuid.uuid4(),
@@ -156,15 +154,15 @@ def _attempt_row(binding):
 
 def _seed_approval_chain(engine):
     """Seed + COMMIT a REAL ``alert_group -> recommendation -> approval`` chain; return
-    ``(approval_id, group_id)``.
+``(approval_id, group_id)``.
 
-    PostgreSQL ENFORCES ``execution_log.approval_id`` as a FK to ``ai_response_approvals``
-    (checked at flush), so any §4 scenario that writes/flushes an ExecutionLog row (reqs
-    5/7/8) MUST first have a real approval. file-backed SQLite runs FK-OFF, which is why
-    the SQLite suite never needed this — a PostgreSQL-only precondition. ``group_id`` is
-    returned so ``_cleanup`` can remove the chain (alert_group CASCADEs to recommendation
-    -> approval). Ids are captured BEFORE commit (avoid post-commit attribute expiry).
-    """
+PostgreSQL ENFORCES ``execution_log.approval_id`` as a FK to ``ai_response_approvals``
+(checked at flush), so any scenario that writes/flushes an ExecutionLog row (reqs
+5/7/8) MUST first have a real approval. file-backed SQLite runs FK-OFF, which is why
+the SQLite suite never needed this — a PostgreSQL-only precondition. ``group_id`` is
+returned so ``_cleanup`` can remove the chain (alert_group CASCADEs to recommendation
+-> approval). Ids are captured BEFORE commit (avoid post-commit attribute expiry).
+"""
     now = datetime.now(timezone.utc)
     with Session(engine) as session:
         group = AlertGroup(
@@ -204,14 +202,14 @@ def _seed_approval_chain(engine):
 
 def _pg_terminal_row(engine, binding, approval_id, decision, attempt_id=None):
     """Append + COMMIT a terminal ``execution_log`` row (``succeeded`` / ``failed``) that
-    REFERENCES ``attempt_id`` via ``TERMINAL_REFERENCE_KEY`` (``None`` -> no reference).
+REFERENCES ``attempt_id`` via ``TERMINAL_REFERENCE_KEY`` (``None`` -> no reference).
 
-    Mirrors the real service's terminal write (``service.py``:
-    ``detail[TERMINAL_REFERENCE_KEY] = binding.attempt_id``). ``approval_id`` MUST be a
-    REAL seeded approval (PostgreSQL FK); a terminal decision falls OUTSIDE every
-    execution_log partial unique index (those bite only ``requested`` /
-    ``compensation_requested``), so terminals never collide.
-    """
+Mirrors the real service's terminal write (``service.py``:
+``detail[TERMINAL_REFERENCE_KEY] = binding.attempt_id``). ``approval_id`` MUST be a
+REAL seeded approval (PostgreSQL FK); a terminal decision falls OUTSIDE every
+execution_log partial unique index (those bite only ``requested`` /
+``compensation_requested``), so terminals never collide.
+"""
     detail = {} if attempt_id is None else {TERMINAL_REFERENCE_KEY: str(attempt_id)}
     with Session(engine) as session:
         session.add(
@@ -232,13 +230,13 @@ def _pg_terminal_row(engine, binding, approval_id, decision, attempt_id=None):
 def _cleanup(engine, *, execution_ids=(), approval_group_ids=()):
     """TARGETED, FK-safe deletion of ONLY the rows a test created.
 
-    NEVER ``drop_all`` / truncate / blanket delete — the throwaway DB stays reusable and
-    the wipe is scoped to this test's own ids (M4-G §4: no destructive cleanup). Order
-    respects the FK graph: ``execution_log`` (NO ACTION -> approvals) and the FK-free
-    ``dispatch_attempt`` / ``execution_outcome`` FIRST (by execution_id), THEN the approval
-    chain via ``alert_group`` (CASCADEs to recommendation -> approval). Deleting the group
-    before the execution_log rows would trip the NO-ACTION FK, hence the order.
-    """
+NEVER ``drop_all`` / truncate / blanket delete — the throwaway DB stays reusable and
+the wipe is scoped to this test's own ids. Order
+respects the FK graph: ``execution_log`` (NO ACTION -> approvals) and the FK-free
+``dispatch_attempt`` / ``execution_outcome`` FIRST (by execution_id), THEN the approval
+chain via ``alert_group`` (CASCADEs to recommendation -> approval). Deleting the group
+before the execution_log rows would trip the NO-ACTION FK, hence the order.
+"""
     exec_ids = [uuid.UUID(str(e)) for e in execution_ids]
     with Session(engine) as session:
         if exec_ids:
@@ -259,14 +257,14 @@ def _cleanup(engine, *, execution_ids=(), approval_group_ids=()):
 @pytest.mark.external
 class TestPostgresDurableInterleaving:
     """reqs 3 + 2 — TRUE MVCC interleaving + concurrent replay on a REAL PostgreSQL: the
-    two M4-F capabilities file-backed SQLite CANNOT certify (see the module docstring)."""
+two capabilities file-backed SQLite CANNOT certify (see the module docstring)."""
 
     def test_open_caller_write_transaction_does_not_block_the_independent_commit(self):
         """req 3 — the caller holds an OPEN write transaction WHILE the store commits the
-        attempt on a SECOND connection, then the caller rolls its WHOLE transaction back.
-        PostgreSQL MVCC: the independent commit SUCCEEDS and SURVIVES; the rolled-back
-        caller row vanishes. (On SQLite this raises "database is locked" — the exact reason
-        the capability is UNVERIFIABLE there.)"""
+attempt on a SECOND connection, then the caller rolls its WHOLE transaction back.
+PostgreSQL MVCC: the independent commit SUCCEEDS and SURVIVES; the rolled-back
+caller row vanishes. (On SQLite this raises "database is locked" — the exact reason
+the capability is UNVERIFIABLE there.)"""
         engine = _pg_engine()
         caller_binding = _pg_binding()  # execution_id A — the caller's open write
         store_binding = _pg_binding()  # execution_id B — the durable pre-dispatch
@@ -303,10 +301,10 @@ class TestPostgresDurableInterleaving:
 
     def test_concurrent_replay_commits_exactly_one_attempt(self):
         """req 2 — two threads race ``store.record()`` on the SAME execution_id: the unique
-        index commits EXACTLY ONE and the loser raises ``IntegrityError`` (which the Service
-        maps to the typed 409 with ZERO external calls — proven deterministically in
-        ``test_dispatch_durable_integration.py``). This is the TRUE parallel race SQLite
-        serialises away."""
+index commits EXACTLY ONE and the loser raises ``IntegrityError`` (which the Service
+maps to the typed 409 with ZERO external calls — proven deterministically in
+``test_dispatch_durable_integration.py``). This is the TRUE parallel race SQLite
+serialises away."""
         engine = _pg_engine()
         execution_id = uuid.uuid4()
         try:
@@ -347,14 +345,14 @@ class TestPostgresDurableInterleaving:
 
 @pytest.mark.external
 class TestPostgresApprovalSlotRace:
-    """req 1 — the M4-G §1 approval-slot unique index (``ux_dispatch_attempt_approval_id``)
-    under TRUE PostgreSQL concurrency: SAME approval_id, DIFFERENT execution_ids.
+    """req 1 — the approval-slot unique index (``ux_dispatch_attempt_approval_id``)
+under TRUE PostgreSQL concurrency: SAME approval_id, DIFFERENT execution_ids.
 
-    SQLite serialises writers, so this race is only provable there deterministically
-    (sequential duplicate); PostgreSQL MVCC makes it a REAL parallel race the unique index
-    must adjudicate to EXACTLY ONE winner BEFORE any external call. This is the durable
-    reservation the M4-F review found missing — the execution_log partial approval index
-    only bites at caller-commit AFTER the wire call, so the reservation lives HERE."""
+SQLite serialises writers, so this race is only provable there deterministically
+(sequential duplicate); PostgreSQL MVCC makes it a REAL parallel race the unique index
+must adjudicate to EXACTLY ONE winner BEFORE any external call. This is the durable
+reservation the review found missing — the execution_log partial approval index
+only bites at caller-commit AFTER the wire call, so the reservation lives HERE."""
 
     def test_same_approval_different_execution_commits_exactly_one(self):
         engine = _pg_engine()
@@ -404,12 +402,12 @@ class TestPostgresApprovalSlotRace:
 class TestPostgresCommitConfirmationLost:
     """reqs 4 + 9 — commit SUCCEEDED but the client confirmation was LOST.
 
-    The durable attempt is committed; the caller, unsure whether the external effect
-    landed, MUST NOT auto-retry with a fresh execution_id / approval reservation. The
-    READ-ONLY recovery check FINDS the committed attempt and KEEPS the uncertainty
-    (DISPATCH_STATUS_UNKNOWN, never a fabricated terminal); a naive retry on the SAME
-    approval is REJECTED by the §1 approval-slot index BEFORE any second external call
-    (req 9: ZERO automatic second external call)."""
+The durable attempt is committed; the caller, unsure whether the external effect
+landed, MUST NOT auto-retry with a fresh execution_id / approval reservation. The
+READ-ONLY recovery check FINDS the committed attempt and KEEPS the uncertainty
+(DISPATCH_STATUS_UNKNOWN, never a fabricated terminal); a naive retry on the SAME
+approval is REJECTED by the approval-slot index BEFORE any second external call
+(req 9: ZERO automatic second external call)."""
 
     def test_lost_confirmation_is_recovered_and_naive_retry_is_rejected(self):
         engine = _pg_engine()
@@ -460,11 +458,11 @@ class TestPostgresCommitConfirmationLost:
 class TestPostgresTerminalFailureSurvival:
     """req 5 — terminal-write failure / caller rollback / process interruption.
 
-    The store committed the attempt on its OWN connection BEFORE the external call; the
-    caller's business transaction (which would carry the ``dispatched`` -> terminal rows)
-    then ROLLS BACK. PostgreSQL MVCC: the committed attempt SURVIVES, the caller's rows
-    vanish, and recovery flags the orphan (no terminal references its attempt_id). Needs a
-    REAL seeded approval because the caller FLUSHES an ExecutionLog row (PG FK)."""
+The store committed the attempt on its OWN connection BEFORE the external call; the
+caller's business transaction (which would carry the ``dispatched`` -> terminal rows)
+then ROLLS BACK. PostgreSQL MVCC: the committed attempt SURVIVES, the caller's rows
+vanish, and recovery flags the orphan (no terminal references its attempt_id). Needs a
+REAL seeded approval because the caller FLUSHES an ExecutionLog row (PG FK)."""
 
     def test_attempt_survives_caller_rollback_and_is_flagged(self):
         engine = _pg_engine()
@@ -507,7 +505,7 @@ class TestPostgresTerminalFailureSurvival:
                     select(ExecutionLog).where(ExecutionLog.execution_id == execution_id)
                 ).all()
                 assert logs == []
-                # -> recovery flags the orphan as a MANUAL, read-only candidate.
+                # > recovery flags the orphan as a MANUAL, read-only candidate.
                 assert execution_id in {
                     a.execution_id for a in find_unreconciled_attempts(reader)
                 }
@@ -520,11 +518,11 @@ class TestPostgresTerminalFailureSurvival:
 class TestPostgresRestartRecovery:
     """req 6 — orphan-attempt recovery AFTER a restart.
 
-    The attempt is committed, then the engine is DISPOSED (the process-restart analog: every
-    connection dropped) and a FRESH engine is reopened on the SAME dedicated DB. The durable
-    attempt SURVIVES the restart and recovery STILL flags it — proving durability lives in the
-    DATABASE, not the process/connection. The recovery identity facts come from the IMMUTABLE
-    durable attempt, never back-filled from the current config."""
+The attempt is committed, then the engine is DISPOSED (the process-restart analog: every
+connection dropped) and a FRESH engine is reopened on the SAME dedicated DB. The durable
+attempt SURVIVES the restart and recovery STILL flags it — proving durability lives in the
+DATABASE, not the process/connection. The recovery identity facts come from the IMMUTABLE
+durable attempt, never back-filled from the current config."""
 
     def test_orphan_attempt_survives_restart_and_is_recovered(self):
         engine = _pg_engine()
@@ -558,13 +556,13 @@ class TestPostgresRestartRecovery:
 @pytest.mark.external
 class TestPostgresAttemptIdCorrelation:
     """reqs 7 + 8 — recovery correlates by attempt_id, NOT execution_id, on a REAL
-    PostgreSQL (FK-enforced ``execution_log``).
+PostgreSQL (FK-enforced ``execution_log``).
 
-    req 7: a terminal carrying a WRONG attempt_id on the SAME execution_id does NOT settle /
-    mask the still-pending attempt. req 8: a ``failed`` terminal that DOES reference the
-    attempt is a TERMINAL_AUDIT_PRESENT audit fact — NEVER ``confirmed_failure`` /
-    EXTERNAL_EFFECT_CONFIRMED — and fabricates NO Outcome row (a failed dispatch may still
-    have landed externally; only the authoritative Outcome path can confirm an effect)."""
+req 7: a terminal carrying a WRONG attempt_id on the SAME execution_id does NOT settle /
+mask the still-pending attempt. req 8: a ``failed`` terminal that DOES reference the
+attempt is a TERMINAL_AUDIT_PRESENT audit fact — NEVER ``confirmed_failure`` /
+EXTERNAL_EFFECT_CONFIRMED — and fabricates NO Outcome row (a failed dispatch may still
+have landed externally; only the authoritative Outcome path can confirm an effect)."""
 
     def test_wrong_attempt_id_terminal_does_not_mask_the_pending_attempt(self):
         engine = _pg_engine()
@@ -625,7 +623,7 @@ class TestPostgresAttemptIdCorrelation:
             engine.dispose()
 
     def test_cross_execution_terminal_referencing_the_attempt_does_not_settle(self):
-        # M4-GR (req 7 extension): a terminal belonging to a DIFFERENT execution B (its own
+        # (req 7 extension): a terminal belonging to a DIFFERENT execution B (its own
         # REAL seeded approval — execution_log.approval_id is FK-enforced on PostgreSQL) that
         # merely REFERENCES attempt X's attempt_id must NOT settle attempt X (execution A /
         # approval A). attempt_id alone is NOT enough — the immutable execution_id AND

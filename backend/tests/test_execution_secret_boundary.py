@@ -1,4 +1,4 @@
-"""Phase 3.2.2 — Credential / Secret Boundary regression.
+"""Credential / Secret Boundary regression.
 
 Locks the full secret chain offline:
 
@@ -42,8 +42,8 @@ from app.services.executions import (
 from app.services.executions.mock import MockExecutor
 from app.services.executions.service import execute_response
 
-# The deliberately obvious fake key for the full-path leak suite
-# (user-specified sentinel, Phase 3.2.2).
+# The obvious fake key for the full-path leak suite
+#.
 FAKE_SECRET = "s3cr3t-PHASE32-TEST-ONLY"
 
 
@@ -69,9 +69,9 @@ def _settings(**overrides):
     return Settings(**overrides)
 
 
-# --------------------------------------------------------------------------
+#
 # 1. URL discipline — secrets must NEVER ride inside a URL
-# --------------------------------------------------------------------------
+#
 class TestUrlDiscipline:
     def test_https_base_url_accepted(self):
         assert validate_base_url("shuffle", "https://shuffle.corp") == "https://shuffle.corp"
@@ -109,9 +109,9 @@ class TestUrlDiscipline:
             validate_base_url("shuffle", "   ")
 
 
-# --------------------------------------------------------------------------
+#
 # 2. API key validation
-# --------------------------------------------------------------------------
+#
 class TestApiKeyValidation:
     def test_empty_key_rejected(self):
         with pytest.raises(ExecutorConfigError, match="empty"):
@@ -130,9 +130,9 @@ class TestApiKeyValidation:
         assert "SHUFFLE_API_KEY" in str(exc.value)
 
 
-# --------------------------------------------------------------------------
+#
 # 3. AdapterCredentials boundary object
-# --------------------------------------------------------------------------
+#
 class TestCredentialsBoundary:
     def _creds(self):
         return credentials_from_settings(
@@ -187,9 +187,9 @@ class TestCredentialsBoundary:
         assert FAKE_SECRET not in str(exc.value)
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Redaction machinery
-# --------------------------------------------------------------------------
+#
 class TestRedaction:
     def test_redact_text_replaces_known_secret(self):
         text = f"auth failed using {FAKE_SECRET} for shuffle"
@@ -230,9 +230,9 @@ class TestRedaction:
         assert detail == {"api_key": FAKE_SECRET}
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Audit gate — the smuggler end-to-end proof
-# --------------------------------------------------------------------------
+#
 class TestAuditGate:
     def test_smuggled_secret_never_reaches_execution_log(
         self, db_session, monkeypatch
@@ -270,9 +270,9 @@ class TestAuditGate:
         assert "redact_detail(detail)" in source
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Config errors stay sanitized (registry integration)
-# --------------------------------------------------------------------------
+#
 class TestConfigErrorTaxonomy:
     def test_url_shape_gate_at_startup(self):
         from app.services.executions import validate_adapter_config
@@ -308,9 +308,9 @@ class TestConfigErrorTaxonomy:
             validate_adapter_config(_settings(EXECUTION_ADAPTER="wazuh"))
 
 
-# --------------------------------------------------------------------------
+#
 # 7. API error surface — static details, no secret, no raw exception
-# --------------------------------------------------------------------------
+#
 class TestApiErrorSurface:
     def test_misconfigured_adapter_is_static_503(self, client, monkeypatch):
         monkeypatch.setattr(settings, "EXECUTION_ADAPTER", "shuffle")
@@ -346,9 +346,9 @@ class TestApiErrorSurface:
         assert FAKE_SECRET not in response.text
 
 
-# --------------------------------------------------------------------------
+#
 # 8. Logging discipline
-# --------------------------------------------------------------------------
+#
 class TestLoggingDiscipline:
     def _emit(self, secrets_values, msg, args=None):
         logger = logging.getLogger(f"secret-boundary-{uuid.uuid4().hex}")
@@ -382,9 +382,9 @@ class TestLoggingDiscipline:
         assert FAKE_SECRET in stream.getvalue()
 
 
-# --------------------------------------------------------------------------
+#
 # 9. Full-path leak regression (user-specified sentinel key)
-# --------------------------------------------------------------------------
+#
 class TestFullPathLeak:
     def test_secret_never_survives_any_surface(self, client, monkeypatch):
         """Seed FAKE_SECRET into every credential slot, then walk ALL
@@ -444,11 +444,11 @@ class TestFullPathLeak:
         assert response.status_code == 503
 
 
-# --------------------------------------------------------------------------
-# 10. RC2 — the logging filter is actually INSTALLED (it used to be tests-only)
-# --------------------------------------------------------------------------
+#
+# 10. the logging filter is actually INSTALLED (it used to be tests-only)
+#
 class TestLoggingRedactionIsInstalled:
-    """RC2 regression: ``SecretRedactionFilter`` was defined and exercised by
+    """regression: ``SecretRedactionFilter`` was defined and exercised by
     tests, but ``_configure_logging()`` never attached it — so the README's
     "secrets are never logged at any level" rested on there happening to be no
     secret-bearing log line. It is now installed on the app logger, the root
@@ -518,11 +518,11 @@ class TestLoggingRedactionIsInstalled:
         assert MASK in stream.getvalue()
 
 
-# --------------------------------------------------------------------------
-# 11. RC2 — the substitution set covers EVERY credential-bearing setting
-# --------------------------------------------------------------------------
+#
+# 11. the substitution set covers EVERY credential-bearing setting
+#
 class TestRedactionSetCompleteness:
-    """RC2 regression: the set held the adapter keys + the legacy execution token
+    """regression: the set held the adapter keys + the legacy execution token
     only. Operator tokens, callback tokens, the AI provider key and the password
     inside ``DATABASE_URL`` were missing — interpolating any of them into a log
     line would have printed it in the clear."""

@@ -1,40 +1,40 @@
-"""Adapter Observed-Health read model (Phase 3.3.3.3.1).
+"""Adapter observed-health read model.
 
-OBSERVED health, never ACTIVE health (frozen adjudication):
+Observed health, never live health:
 
-    execution_log -> Health read model
+execution_log -> Health read model
 
-There is NO probe: this module never sends a request to Shuffle /
+There is no probe: this module never sends a request to Shuffle /
 Wazuh / TheHive (or anywhere else), never calls an executor, never
-writes. What it reports is "how the adapter behaved over its recent
-executed chains", NOT "the adapter is online right now" — hence the
-deliberate field name ``observed_status`` and the vocabulary below.
+writes. What it reports is how the adapter behaved over its recent
+executed chains, not whether it is online right now — hence the field
+name ``observed_status`` and the vocabulary below.
 
-Frozen vocabulary (3.3.3.3.1 adjudication):
+Status vocabulary:
 
-    OBSERVED_STATUSES = {healthy, degraded, failing, unknown}
+OBSERVED_STATUSES = {healthy, degraded, failing, unknown}
 
-Frozen judgement rule (recent-N terminal window, default N=20):
+Judgement rule (recent-N terminal window, default N=20):
 
-    unknown   no TERMINAL executor chain of this adapter was ever
-              observed — nothing seen, nothing claimed
-    healthy   window success_rate >= healthy_threshold (default 0.9)
-    degraded  degraded_threshold <= success_rate < healthy_threshold
-              (defaults 0.5 / 0.9)
-    failing   success_rate < degraded_threshold
+unknown   no terminal executor chain of this adapter was ever
+observed — nothing seen, nothing claimed
+healthy   window success_rate >= healthy_threshold (default 0.9)
+degraded  degraded_threshold <= success_rate < healthy_threshold
+(defaults 0.5 / 0.9)
+failing   success_rate < degraded_threshold
 
-Frozen window basis: ONLY chains with a terminal EXECUTOR outcome
+Window basis: only chains with a terminal executor outcome
 (succeeded / failed) enter the window. guard_rejected chains never
 touched the adapter (governance refusals) and in-flight chains have no
 outcome yet — both are excluded, so Policy / Approval / RBAC pressure
-can NEVER be misattributed to an external system.
+can never be misattributed to an external system.
 
-Recency ordering (frozen): a terminal chain's recency is its TERMINAL
-row's ``(created_at, id)``; the window keeps the newest N. All-time
-totals are counted separately so a long-lived adapter's full history
-stays visible next to its recent window.
+Recency ordering: a terminal chain's recency is its terminal row's
+``(created_at, id)``; the window keeps the newest N. All-time totals
+are counted separately so a long-lived adapter's full history stays
+visible next to its recent window.
 
-Pure-read discipline (same nail as metrics): ONE read-only SELECT over
+Pure-read discipline (same as metrics): one read-only SELECT over
 execution_log; no add / flush / commit / rollback; the same rows in,
 the same numbers out — the wall-clock stamp is injected as ``now`` so
 the derivation itself is deterministic.
@@ -57,22 +57,22 @@ from app.services.executions.metrics import (
 )
 from app.services.executions.state import derive_execution_state
 
-#: Frozen observed-status vocabulary. Words are chosen to be impossible
-#: to read as a live probe result: "observed_status = healthy" means
-#: "recent executions went well", never "the adapter answers right now".
+# Observed-status vocabulary. The words cannot be read as a live probe
+# result: "observed_status = healthy" means "recent executions went
+# well", never "the adapter answers right now".
 OBSERVED_STATUSES = frozenset({"healthy", "degraded", "failing", "unknown"})
 
-#: The default recent-window size (configurable per call, validated).
+# The default recent-window size (configurable per call, validated).
 DEFAULT_WINDOW_SIZE = 20
 
 
 @dataclass(frozen=True)
 class HealthThresholds:
-    """Frozen success-rate bands for observed_status.
+    """Success-rate bands for observed_status.
 
-    Validation is eager and fail-closed (policy.py precedent): both
-    bounds must be real ratios in [0, 1] (bool excluded) and the
-    healthy band must start at or above the degraded band."""
+Validation is eager and fail-closed (the policy.py precedent): both
+bounds must be real ratios in [0, 1] (bool excluded) and the
+healthy band must start at or above the degraded band."""
 
     healthy: float = 0.9
     degraded: float = 0.5
@@ -91,15 +91,15 @@ class HealthThresholds:
             )
 
 
-#: The default frozen bands (success-rate basis, 3.3.3.3.1 adjudication).
+# The default bands (success-rate basis).
 DEFAULT_THRESHOLDS = HealthThresholds()
 
 
 @dataclass(frozen=True)
 class RecentFailure:
-    """One failed chain inside the recent window — identity + the frozen
-    failure classification (None when the terminal row carried no
-    in-vocabulary classification word)."""
+    """One failed chain inside the recent window — identity + the failure
+classification (None when the terminal row carried no known
+classification word)."""
 
     execution_id: object
     classification: str | None
@@ -110,19 +110,19 @@ class RecentFailure:
 class AdapterHealth:
     """Observed health of ONE adapter.
 
-    Two scopes, deliberately separate:
+Two separate scopes:
 
-    - the RECENT WINDOW (newest ``window_size`` terminal chains) drives
-      success_rate and observed_status — "how is it behaving lately";
-    - the ALL-TIME counters plus last_execution_* describe the adapter's
-      full recorded life — "what has it done, and when last".
+- the recent window (newest ``window_size`` terminal chains) drives
+success_rate and observed_status — "how is it behaving lately";
+- the all-time counters plus last_execution_* describe the adapter's
+full recorded life — "what has it done, and when last".
 
-    ``observed_status`` is the ONLY verdict word; there is no boolean
-    ``healthy`` field (a true/false would be misread as a live probe)."""
+``observed_status`` is the only verdict word; there is no boolean
+``healthy`` field (a true/false would be misread as a live probe)."""
 
     adapter: str
     observed_status: str = "unknown"
-    #: Recent window (newest N terminal executor chains).
+    # Recent window (newest N terminal executor chains).
     window_size: int = 0
     window_succeeded: int = 0
     window_failed: int = 0
@@ -130,17 +130,17 @@ class AdapterHealth:
     timeout_count: int = 0
     unavailable_count: int = 0
     protocol_violation_count: int = 0
-    #: Newest-first failures inside the window.
+    # Newest-first failures inside the window.
     recent_failures: tuple[RecentFailure, ...] = ()
-    #: All-time totals (every chain of this adapter, any derived state).
+    # All-time totals (every chain of this adapter, any derived state).
     total_chains: int = 0
     all_time_succeeded: int = 0
     all_time_failed: int = 0
     all_time_guard_rejected: int = 0
     all_time_in_flight: int = 0
-    #: The most recent chain of this adapter, ANY outcome (observed
-    #: fact; a governance refusal or an in-flight chain is still the
-    #: last thing that happened).
+    # The most recent chain of this adapter, any outcome (observed
+    # fact; a governance refusal or an in-flight chain is still the
+    # last thing that happened).
     last_execution_at: datetime | None = None
     last_execution_state: str | None = None
 
@@ -148,7 +148,7 @@ class AdapterHealth:
 @dataclass(frozen=True)
 class ObservedHealth:
     """The whole-platform observed-health snapshot over
-    direction='execute' chains, stamped with the injected clock."""
+direction='execute' chains, stamped with the injected clock."""
 
     generated_at: datetime
     window_size: int
@@ -158,7 +158,7 @@ class ObservedHealth:
 def _observed_status(
     succeeded: int, failed: int, thresholds: HealthThresholds
 ) -> str:
-    """Frozen judgement rule over the recent window's success rate."""
+    """Judgement rule over the recent window's success rate."""
     rate = _rate(succeeded, succeeded + failed)
     if rate is None:
         return "unknown"  # zero terminal chains observed
@@ -170,7 +170,7 @@ def _observed_status(
 
 
 def _terminal_recency(rows: list[ExecutionLog]) -> tuple:
-    """A terminal chain's recency key: its TERMINAL row's stamp + id."""
+    """A terminal chain's recency key: its terminal row's stamp + id."""
     last = rows[-1]
     return (last.created_at, last.id)
 
@@ -199,10 +199,10 @@ def collect_observed_health(
 ) -> ObservedHealth:
     """Derive the observed-health snapshot from execution_log.
 
-    ONE read-only SELECT, no writes, no executor calls, ZERO outbound
-    traffic (no probe exists by design). ``now`` is the injected server
-    clock stamp — the derivation itself is a pure function of the
-    stored rows and the parameters."""
+One read-only SELECT, no writes, no executor calls, no outbound
+traffic (no probe exists). ``now`` is the injected server clock
+stamp — the derivation itself is a pure function of the stored rows
+and the parameters."""
     if isinstance(window_size, bool) or not isinstance(window_size, int):
         raise ValueError(f"window_size must be an int, got {window_size!r}")
     if window_size < 1:
@@ -256,7 +256,7 @@ def collect_observed_health(
             # requested / dispatched: in flight, no outcome yet.
             bucket["in_flight"] += 1
 
-        # Last thing that happened on this adapter, ANY outcome.
+        # Last thing that happened on this adapter, any outcome.
         recency = (chain[-1].created_at, chain[-1].id)
         if bucket["last_key"] is None or recency > bucket["last_key"]:
             bucket["last_key"] = recency
@@ -266,8 +266,8 @@ def collect_observed_health(
     adapters: dict[str, AdapterHealth] = {}
     for adapter in sorted(stats):
         bucket = stats[adapter]
-        # Newest-first terminal window (frozen basis: executor outcomes
-        # only — governance refusals never pollute adapter health).
+        # Newest-first terminal window (executor outcomes only —
+        # governance refusals never pollute adapter health).
         terminal = sorted(
             bucket["terminal"], key=_terminal_recency, reverse=True
         )

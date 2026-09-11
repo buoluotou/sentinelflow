@@ -1,6 +1,6 @@
-"""Step 11.5: RiskSummary provider/protocol regression (mock only).
+"""RiskSummary provider/protocol regression (mock only).
 
-Proves the frozen risk_summary contract holds end to end under mock
+Proves the risk_summary contract holds end to end under mock
 conditions — the exact JSON a compliant model must emit, and every way a
 non-compliant one can fail:
 
@@ -8,7 +8,7 @@ non-compliant one can fail:
 - unknown risk drivers rejected (no lowercase/trim/guessing coercion)
 - confidence bounded to [0, 1]
 - key_findings bounded to 1..5
-- analyst_priority limited to the frozen enum
+- analyst_priority limited to the enum
 - provider failures (Config / Unavailable / Parse) never persist a row
 
 No real model, no network: JsonEchoProvider replays canned model output
@@ -39,7 +39,7 @@ from app.services.ai.base import AIProvider
 from app.services.ai.models import AIRequest
 from app.services.ai.protocol import parse_task_output
 
-#: A compliant model answer, exactly as frozen in Step 11.
+# A compliant model answer, exactly as in Step 11.
 VALID_SUMMARY_JSON = json.dumps(
     {
         "summary": (
@@ -149,7 +149,7 @@ def _generate(db_session: Session, provider: AIProvider) -> AIRiskSummary:
     return record
 
 
-# ------------------------------------------------- 11.5.1 valid protocol path
+# 11.5.1 valid protocol path
 
 
 class TestValidRiskSummaryProtocol:
@@ -178,7 +178,7 @@ def test_valid_json_persists_via_service(db_session):
     assert db_session.query(AIRiskSummary).count() == 1
 
 
-# ----------------------------------- 11.5.2 the AI may never emit risk_score
+# 11.5.2 the AI may never emit risk_score
 
 
 class TestRiskScoreForbidden:
@@ -193,7 +193,7 @@ class TestRiskScoreForbidden:
         assert db_session.query(AIRiskSummary).count() == 0
 
 
-# ------------------------------------------------- 11.5.3 driver vocabulary
+# 11.5.3 driver vocabulary
 
 
 class TestRiskDriverVocabulary:
@@ -214,7 +214,7 @@ class TestRiskDriverVocabulary:
             parse_risk_summary(json.dumps(_summary_dict(risk_drivers=[mangled])))
 
 
-# ------------------------------------------------------ 11.5.4 confidence
+# 11.5.4 confidence
 
 
 class TestConfidenceBounds:
@@ -228,7 +228,7 @@ class TestConfidenceBounds:
             parse_risk_summary(json.dumps(_summary_dict(confidence=value)))
 
 
-# ---------------------------------------------------- 11.5.5 key_findings
+# 11.5.5 key_findings
 
 
 class TestKeyFindingsBounds:
@@ -248,7 +248,7 @@ class TestKeyFindingsBounds:
             parse_risk_summary(json.dumps(_summary_dict(key_findings=findings)))
 
 
-# ------------------------------------------------ 11.5.6 analyst_priority
+# 11.5.6 analyst_priority
 
 
 class TestAnalystPriorityEnum:
@@ -264,7 +264,7 @@ class TestAnalystPriorityEnum:
             parse_risk_summary(json.dumps(_summary_dict(analyst_priority=priority)))
 
 
-# ------------------------------- 11.5.7 provider failures never persist rows
+# 11.5.7 provider failures never persist rows
 
 
 class TestFailuresNeverPersist:

@@ -1,8 +1,8 @@
-"""Phase 3.4.2: pure outcome derivation tests.
+"""pure outcome derivation tests.
 
 The whole later outcome stack (reconcile contract, webhook ingest, API,
 metrics UI) derives the current outcome state through these functions, so
-this suite is deliberately hard: the five-word vocabulary freeze, the
+this suite is hard: the five-word vocabulary freeze, the
 dispatch/outcome vocabulary isolation (O5 / D3.4-04), deterministic
 ``observed_at DESC, id DESC`` selection, out-of-order delivery, callback
 replay, the empty-fact ``unknown`` sentinel, and a structural + DB-backed
@@ -56,7 +56,7 @@ DISPATCH_WORDS = sorted(EXECUTION_DECISIONS)
 @dataclass
 class StubObservation:
     """Minimal structural stand-in for ExecutionOutcome (Protocol
-    conformance is the contract — derivation never needs the DB)."""
+conformance is the contract — derivation never needs the DB)."""
 
     id: uuid.UUID
     observed_at: datetime
@@ -79,9 +79,9 @@ def series(*statuses, start=T0):
     ]
 
 
-# ---------------------------------------------------------------------------
+#
 # Vocabulary freeze + dispatch/outcome isolation (requirement 13, section 三)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestOutcomeVocabularyFreeze:
@@ -131,9 +131,9 @@ class TestOutcomeVocabularyFreeze:
         assert not any("execution_log" in name for name in imported)
 
 
-# ---------------------------------------------------------------------------
+#
 # Empty + single-observation derivation (requirements 1-5, Cases 1-5)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDeriveEmptyAndSingle:
@@ -159,9 +159,9 @@ class TestDeriveEmptyAndSingle:
         assert derive_outcome_state(single) == status
 
 
-# ---------------------------------------------------------------------------
+#
 # Latest observed_at wins (requirements 6-8, Cases 6-7)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDeriveLatestObservedAtWins:
@@ -210,9 +210,9 @@ class TestDeriveLatestObservedAtWins:
         assert derive_outcome_state([rows[2], rows[0], rows[1]]) == "confirmed_success"
 
 
-# ---------------------------------------------------------------------------
+#
 # Same observed_at -> id DESC (requirement 9, Case 8)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDeriveSameTimestampDeterminism:
@@ -238,9 +238,9 @@ class TestDeriveSameTimestampDeterminism:
             assert derive_outcome_state(list(perm)) == "confirmed_success"
 
 
-# ---------------------------------------------------------------------------
+#
 # Purity + isolation (requirement 12 structural, per-execution isolation)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestDerivePurityAndIsolation:
@@ -286,9 +286,9 @@ class TestDerivePurityAndIsolation:
         assert derive_outcome_state(orm_rows) == "confirmed_success"
 
 
-# ---------------------------------------------------------------------------
+#
 # Foreign vocabulary refused at runtime (requirement 13, enforced)
-# ---------------------------------------------------------------------------
+#
 
 
 class TestForeignVocabularyRefused:
@@ -310,14 +310,14 @@ class TestForeignVocabularyRefused:
             assert derive_outcome_state([obs(status)]) == status
 
 
-# ---------------------------------------------------------------------------
+#
 # No DB side effect + O5, against a REAL session (requirements 10-12, O5)
-# ---------------------------------------------------------------------------
+#
 
 
 def _seed_approval(db_session) -> AIResponseApproval:
     """One committed event + recommendation + approved decision (the
-    FK-safe chain used across the execution test-suite)."""
+FK-safe chain used across the execution test-suite)."""
     now = datetime.now(timezone.utc)
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex,
@@ -354,12 +354,12 @@ def _seed_approval(db_session) -> AIResponseApproval:
 
 class TestDeriveNoDbSideEffect:
     """Derivation over PERSISTED rows: it must not mutate execution_outcome,
-    must not touch execution_log, and must leave the session clean."""
+must not touch execution_log, and must leave the session clean."""
 
     def _seed(self, db_session, execution_id, *, decisions, outcomes):
         """Seed one dispatch chain (``decisions``) plus outcome facts
-        (``outcomes`` = tuple of (status, source)); observed_at increases
-        with position so the LAST outcome is the newest."""
+(``outcomes`` = tuple of (status, source)); observed_at increases
+with position so the LAST outcome is the newest."""
         approval = _seed_approval(db_session)
         now = datetime.now(timezone.utc)
         db_session.add_all(
@@ -458,7 +458,7 @@ class TestDeriveNoDbSideEffect:
 
     def test_failed_dispatch_never_invents_confirmed_success(self, db_session):
         # section 六 reverse: a FAILED dispatch with NO outcome fact derives
-        # 'unknown' — derivation never fabricates a confirmed_success. Only
+        # 'unknown' — derivation Only
         # a real stored fact can produce that word.
         eid = uuid.uuid4()
         self._seed(

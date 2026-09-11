@@ -1,45 +1,45 @@
-"""M3 trusted creation-proof tests — Component + read_creation + Service (Phase 3.4.5-M3 §6).
+"""Trusted creation-proof tests — Component + read_creation + Service.
 
-WHAT THIS PROVES. The source-isolated trusted creation-proof channel (Amendment §5.3 +
-§6.2) at THREE levels, with NO network and NO real TheHive (LAB BLOCKED on this host):
+Scope: the source-isolated trusted creation-proof channel at three levels, with no
+network and no live TheHive (not verified against a live instance on this host):
 
-  1. COMPONENT — the SINGLE pure six-gate verifier ``verify_creation_effect`` against
-     hand-built ``ReadCorrelationContext`` / ``VerifiedReadResult`` shapes: the positive
-     verdict (ALL six gates pass -> ``VerifiedCreationEffect``) and the FULL negative
-     matrix (each gate's every fail-closed reason). This is where the strict-correlation
-     logic is proven exhaustively, including the reviewer's probes: the ten-year-old
-     re-tagged case (gate 4 ``created_before_dispatch`` + the decisive
-     ``dispatch_created_at_mismatch``), a future-dated ``createdAt`` (``created_out_of_window``),
-     cross-instance / cross-tenant (gate 5), a wrong reference (gate 1
-     ``resource_id_mismatch``), and an unapproved / non-escalate action (gate 6).
-  2. read_creation — ``TheHiveReadAdapter.read_creation`` against an INJECTED
-     ``StubTransport``: a faithful typed observation of a 200 body, the all-``None``
-     observation for a non-object body (a gate-1 refusal, NOT a transport failure), and
-     the 401/403/404/timeout/connection/5xx discrimination (each a ``ReadTransportError``
-     with a SAFE STATIC category). ``observed_instance`` / ``observed_tenant`` are ALWAYS
-     ``None`` (4.1.24-1 ``OutputCase`` carries neither -> gate 5 fails closed).
-  3. SERVICE — ``reconcile_verified_execution`` over a REAL seeded dispatch chain:
-     the derivation produces the immutable fact matrix (gate 5 bindings UNKNOWN), a
-     faithful read of a real dispatched execution STILL fails closed at gate 5
-     (``VerifiedCreationRefused``, ZERO fact — Amendment §12), a transport failure is
-     ``reconciliation_failed`` (NEVER ``confirmed_failure``), the EMPTY production
-     registry fails closed (``UnsupportedAdapterRead``), a reader without ``read_creation``
-     is not a trusted reader, and the whitelisted ``_persist_verified_creation_outcome``
-     appends exactly ONE ``confirmed_success`` fact with NO raw response / NO secret /
-     NO tenant value.
+1. Component — the single pure six-gate verifier ``verify_creation_effect`` against
+hand-built ``ReadCorrelationContext`` / ``VerifiedReadResult`` shapes: the positive
+verdict (all six gates pass -> ``VerifiedCreationEffect``) and the full negative
+matrix (each gate's every fail-closed reason). Here the strict-correlation logic
+is covered exhaustively: the ten-year-old re-tagged case (gate 4
+``created_before_dispatch`` + the decisive ``dispatch_created_at_mismatch``), a
+future-dated ``createdAt`` (``created_out_of_window``), cross-instance /
+cross-tenant (gate 5), a wrong reference (gate 1 ``resource_id_mismatch``), and an
+unapproved / non-escalate action (gate 6).
+2. read_creation — ``TheHiveReadAdapter.read_creation`` against an injected
+``StubTransport``: a faithful typed observation of a 200 body, the all-``None``
+observation for a non-object body (a gate-1 refusal, not a transport failure), and
+the 401/403/404/timeout/connection/5xx discrimination (each a ``ReadTransportError``
+with a static category). ``observed_instance`` / ``observed_tenant`` are always
+``None`` (4.1.24-1 ``OutputCase`` carries neither -> gate 5 fails closed).
+3. Service — ``reconcile_verified_execution`` over a real seeded dispatch chain:
+the derivation produces the immutable fact matrix (gate 5 bindings unknown), a
+faithful read of a real dispatched execution still fails closed at gate 5
+(``VerifiedCreationRefused``, zero fact — no instance / tenant binding exists for
+real history), a transport failure is ``reconciliation_failed`` (never
+``confirmed_failure``), the empty production registry fails closed
+(``UnsupportedAdapterRead``), a reader without ``read_creation`` is not a trusted
+reader, and the whitelisted ``_persist_verified_creation_outcome`` appends exactly
+one ``confirmed_success`` fact with no raw response / no secret / no tenant value.
 
-HONESTY (Amendment §12 / constraint #2). The positive ``confirmed_success`` arm is
-composition-proven (Component positive + Service persist) but is UNREACHABLE for REAL
+Reachability. The positive ``confirmed_success`` arm is
+composition-proven (Component positive + Service persist) but is unreachable for real
 history: ``derive_read_correlation_context`` sets ``instance_binding`` / ``tenant_binding``
-to ``None`` for every real execution, so gate 5 refuses. NO test here fabricates an
-instance / tenant binding to force a real-history success — that is the correct fail-closed
-state, not a gap. The Component positive uses an EXPLICITLY hand-built context (a future
-§12 forward-binding shape), never a real derived one.
+to ``None`` for every real execution, so gate 5 refuses. No test here fabricates an
+instance / tenant binding to force a real-history success — the pinned TheHive version
+carries no authoritative instance / tenant source, so failing closed is the state, not a
+gap. The Component positive uses an explicitly hand-built context, never a derived one.
 
-Design invariants honored: ``read`` is the SOLE public verb (``read_creation`` is an
-internal additional READ verb, never a write verb); ONE read attempt (no retry / poll /
-compensation); a refused proof is ZERO fact (never ``confirmed_failure``, never
-``reconciliation_failed``); a failed READ is ``reconciliation_failed`` (never
+Invariants: ``read`` is the only public verb (``read_creation`` is an
+internal additional read verb, never a write verb); one read attempt (no retry / poll /
+compensation); a refused proof is zero fact (never ``confirmed_failure``, never
+``reconciliation_failed``); a failed read is ``reconciliation_failed`` (never
 ``confirmed_failure``); credentials never surface in a message, a fact, or an observation.
 """
 import io
@@ -122,9 +122,9 @@ from app.services.read_adapters.verified import (
     verify_creation_effect,
 )
 
-# ---------------------------------------------------------------------------
+#
 # constants (fixed clock + obviously-fake Lab identity — NEVER a real secret)
-# ---------------------------------------------------------------------------
+#
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 DISPATCH_MS = int(NOW.timestamp() * 1000)
 REFERENCE = "~42"
@@ -139,13 +139,12 @@ LAB_API_KEY = "LAB_THEHIVE_KEY_DO_NOT_USE"
 SECRET_BODY = b'{"message":"SUPER_SECRET_BODY","x":"AKIAIOSFODNN7EXAMPLE"}'
 
 
-# ---------------------------------------------------------------------------
+#
 # Component builders — a fully-passing context + observation, overridden per gate
-# ---------------------------------------------------------------------------
+#
 def _context(**overrides) -> ReadCorrelationContext:
-    """A context whose immutable facts SATISFY all six gates (the §12 forward-binding
-    shape: instance / tenant bindings PRESENT). Component-only — a REAL derived context
-    NEVER has bindings (gate 5 fails closed), proven in the Service section."""
+    """A context whose immutable facts SATISFY all six gates. Component-only — a REAL derived context
+NEVER has bindings (gate 5 fails closed), proven in the Service section."""
     base = dict(
         execution_id=EID,
         adapter="thehive",
@@ -184,9 +183,9 @@ def _observed(**overrides) -> VerifiedReadResult:
     return VerifiedReadResult(**base)
 
 
-# ---------------------------------------------------------------------------
+#
 # read_creation / Service stub transport (the isolation seam — NO network, ever)
-# ---------------------------------------------------------------------------
+#
 class _StubResponse:
     def __init__(self, status, body):
         self.status = status
@@ -198,7 +197,7 @@ class _StubResponse:
 
 class StubTransport:
     """Mimics ``urllib.request.urlopen``: records every ``(request, timeout)``, returns a
-    canned response OR raises a canned exception. Mirrors test_read_adapter_thehive.py."""
+canned response OR raises a canned exception. Mirrors test_read_adapter_thehive.py."""
 
     def __init__(self, *, status=200, body=None, exc=None):
         self._status = status
@@ -234,8 +233,8 @@ def _request(execution_id=EID, reference=REFERENCE, adapter="thehive"):
 def _case_body(execution_id=EID, *, reference=REFERENCE, created_ms=DISPATCH_MS,
                case_number=42, extra_tags=None, include_id=True, include_created=True):
     """A realistic OutputCase v0 body (TheHive 4.1.24-1): ``_id`` == ``id``, ``createdAt``
-    (epoch millis), ``tags`` (carrying THIS execution's correlation tag), ``caseId`` (the
-    audit-only human NUMBER, never the reference)."""
+(epoch millis), ``tags`` (carrying THIS execution's correlation tag), ``caseId`` (the
+audit-only human NUMBER, never the reference)."""
     tags = [sentinelflow_execution_tag(execution_id), "sentinelflow"]
     if extra_tags:
         tags.extend(extra_tags)
@@ -254,9 +253,9 @@ def _http_error(code, body=SECRET_BODY):
     )
 
 
-# ---------------------------------------------------------------------------
+#
 # Service seeding (mirrors test_read_adapter_thehive.py + adds raw_response.createdAt)
-# ---------------------------------------------------------------------------
+#
 def _seed_approval(db_session, *, status="approved"):
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex, title="SSH Brute Force on edge-gateway",
@@ -284,10 +283,10 @@ def _seed_approval(db_session, *, status="approved"):
 def _binding_detail(execution_id, approval_id, *, action="escalate_to_incident",
                     target="case", approval_status="approved", started_at=None,
                     target_instance=None, target_tenant=None):
-    """A faithful post-M4-A TheHive pre-dispatch binding detail — the shape the REAL write
-    path persists into the ``dispatched`` row (``build_dispatch_binding(...).to_detail()``).
-    ``target_instance`` / ``target_tenant`` default ``None``: TheHive 4.1.24-1 has no
-    authoritative dispatch-time identity source, so gate 5 stays fail-closed (Amendment §12)."""
+    """A faithful post-A TheHive pre-dispatch binding detail — the shape the REAL write
+path persists into the ``dispatched`` row (``build_dispatch_binding(...).to_detail()``).
+``target_instance`` / ``target_tenant`` default ``None``: TheHive 4.1.24-1 has no
+authoritative dispatch-time identity source, so gate 5 stays fail-closed."""
     binding = build_dispatch_binding(
         execution_id=execution_id,
         approval_id=approval_id,
@@ -311,10 +310,10 @@ def _seed_chain(db_session, execution_id, *, rows, action="escalate_to_incident"
                 operator="ops-1", approval_status="approved", with_binding=True,
                 binding_approval_status=None):
     """One execute chain from ``[(decision, detail), ...]`` in CHRONOLOGICAL order. The
-    ``dispatched`` row carries the immutable pre-dispatch binding (M4-A) unless
-    ``with_binding=False`` — the OLD-HISTORY shape (no binding) M4-D must reject fail-closed.
-    ``binding_approval_status`` overrides the binding's dispatch-time approval snapshot
-    (default: the chain's ``approval_status``) to seed an approval-inconsistency probe."""
+``dispatched`` row carries the immutable pre-dispatch binding unless
+``with_binding=False`` — the OLD-HISTORY shape (no binding) D must reject fail-closed.
+``binding_approval_status`` overrides the binding's dispatch-time approval snapshot
+(default: the chain's ``approval_status``) to seed an approval-inconsistency probe."""
     approval = _seed_approval(db_session, status=approval_status)
     snapshot_status = (
         binding_approval_status if binding_approval_status is not None else approval_status
@@ -341,9 +340,9 @@ def _seed_chain(db_session, execution_id, *, rows, action="escalate_to_incident"
 
 def _verified_rows(reference=REFERENCE, case_number=42, created_ms=DISPATCH_MS):
     """A thehive dispatch chain AS THE REAL WRITE PATH PERSISTS IT: the terminal
-    ``succeeded`` row's ``detail`` carries ``case_id`` (the reference) AND ``raw_response``
-    with the immutable ``createdAt`` (``service._terminal_outcome_detail``) — the gate-4
-    exact-match source. This is the faithful historical shape, source-verified §11.3."""
+``succeeded`` row's ``detail`` carries ``case_id`` (the reference) AND ``raw_response``
+with the immutable ``createdAt`` (``service._terminal_outcome_detail``) — the gate-4
+exact-match source. This is the faithful historical shape, source-verified ."""
     raw_response = {
         "_id": reference, "id": reference, "createdAt": created_ms,
         "caseId": case_number, "tags": [sentinelflow_execution_tag(EID)],
@@ -404,7 +403,7 @@ class TestCreatedAtConverters:
         assert created_at_millis(DISPATCH_MS) == DISPATCH_MS
 
     def test_proof_converter_agrees_with_frozen_read_path(self):
-        # The proof-layer created_at_to_datetime and the frozen read-path
+        # The proof-layer created_at_to_datetime and the read-path
         # _created_at_to_datetime MUST agree on the whole matrix, so the two read
         # paths can never drift on the creation-time semantics.
         for value in (DISPATCH_MS, 0, True, False, None, "x", 10**30, -1):
@@ -429,7 +428,7 @@ class TestVerifierPositive:
     def test_verifier_is_pure_no_mutation_of_inputs(self):
         ctx, obs = _context(), _observed()
         verify_creation_effect(ctx, obs)
-        # frozen + slots dataclasses: a mutation would raise; re-read the fields.
+        # + slots dataclasses: a mutation would raise; re-read the fields.
         assert ctx.instance_binding == INSTANCE
         assert obs.resource_id == REFERENCE
 
@@ -478,7 +477,7 @@ class TestVerifierGate3CreationTime:
 
 class TestVerifierGate4TimeOrder:
     def test_dispatch_started_at_unknown(self):
-        # M4-D: no binding -> no REAL dispatch start -> gate 4 fails closed (old history).
+        # D: no binding -> no REAL dispatch start -> gate 4 fails closed (old history).
         verdict = verify_creation_effect(_context(dispatch_started_at=None), _observed())
         assert (verdict.gate, verdict.reason) == (
             GATE_TIME_ORDER, REASON_DISPATCH_STARTED_AT_UNKNOWN
@@ -542,7 +541,7 @@ class TestVerifierGate4TimeOrder:
 
 class TestVerifierGate5InstanceTenant:
     def test_instance_binding_unknown_fails_closed_for_real_history(self):
-        # THE Amendment §12 fail-closed: a REAL derived context has NO instance binding.
+        # THE Amendment fail-closed: a REAL derived context has NO instance binding.
         verdict = verify_creation_effect(_context(instance_binding=None), _observed())
         assert (verdict.gate, verdict.reason) == (
             GATE_INSTANCE_TENANT, REASON_INSTANCE_BINDING_UNKNOWN
@@ -575,7 +574,7 @@ class TestVerifierGate6ApprovedAction:
         assert (verdict.gate, verdict.reason) == (GATE_APPROVED_ACTION, REASON_UNAPPROVED_ACTION)
 
     def test_approval_not_approved(self):
-        # M4-D: the DISPATCH-TIME snapshot (not the live status) is "rejected".
+        # D: the DISPATCH-TIME snapshot (not the live status) is "rejected".
         verdict = verify_creation_effect(
             _context(approval_status_at_dispatch="rejected"), _observed()
         )
@@ -584,7 +583,7 @@ class TestVerifierGate6ApprovedAction:
         )
 
     def test_bound_action_snapshot_inconsistent(self):
-        # M4-D: the binding's action snapshot != the chain's approved action.
+        # D: the binding's action snapshot != the chain's approved action.
         verdict = verify_creation_effect(_context(bound_action="close_case"), _observed())
         assert (verdict.gate, verdict.reason) == (
             GATE_APPROVED_ACTION, REASON_APPROVAL_SNAPSHOT_INCONSISTENT
@@ -614,18 +613,18 @@ class TestVerifierGate6ApprovedAction:
 
     def test_approved_action_is_pinned_to_the_frozen_write_vocabulary(self):
         # Drift pin: the read/proof layer's APPROVED_CREATION_ACTION must be a member of
-        # the WRITE side's frozen THEHIVE_ACTIONS, so the two can never silently diverge.
+        # the WRITE side's THEHIVE_ACTIONS, so the two can never silently diverge.
         assert APPROVED_CREATION_ACTION in THEHIVE_ACTIONS
 
 
 class TestVerifierGate6AbsentEvidenceFailsClosed:
-    """M4-F §4: gate 6 must FAIL CLOSED on ABSENT immutable evidence — a missing
-    dispatch-time approval snapshot / execution snapshot is NEVER treated as
-    ``approved`` and NEVER back-filled from the live approval status or the current
-    config ("若现有不可变历史缺少必要证据，保持拒绝…不得用当前审批状态倒填").
-    These isolate gate 6's own None-handling (the sibling wrong-VALUE refusals are
-    ``TestVerifierGate6ApprovedAction``; the derivation that PRODUCES None for old
-    history is ``TestDeriveReadCorrelationContext``)."""
+    """gate 6 must FAIL CLOSED on ABSENT immutable evidence — a missing
+dispatch-time approval snapshot / execution snapshot is NEVER treated as
+``approved`` and NEVER back-filled from the live approval status or the current
+config ("若现有不可变历史缺少必要证据，保持拒绝…不得用当前审批状态倒填").
+These isolate gate 6's own None-handling (the sibling wrong-VALUE refusals are
+``TestVerifierGate6ApprovedAction``; the derivation that PRODUCES None for old
+history is ``TestDeriveReadCorrelationContext``)."""
 
     def test_absent_approval_snapshot_is_refused_never_treated_as_approved(self):
         # approval_status_at_dispatch=None (no binding captured it) -> refuse; None is
@@ -749,7 +748,7 @@ class TestReadCreationVerb:
 # ===========================================================================
 class TestDeriveReadCorrelationContext:
     def test_derives_the_immutable_fact_matrix(self, db_session):
-        # §2 fact-matrix proof (M4-D): the derivation anchors gates 1/2/3/4/6 on immutable
+        # fact-matrix proof: the derivation anchors gates 1/2/3/4/6 on immutable
         # history + the pre-dispatch binding, and leaves gate 5 bindings UNKNOWN.
         approval = _seed_chain(db_session, EID, rows=_verified_rows())
         ctx = derive_read_correlation_context(db_session, EID)
@@ -757,12 +756,12 @@ class TestDeriveReadCorrelationContext:
         assert ctx.external_reference == REFERENCE
         assert ctx.approved_action == APPROVED_CREATION_ACTION
         assert ctx.reference_from_terminal_success is True
-        # M4-D gate 4: DISTINCT times — the REAL dispatch START (the dispatched row, i=1)
+        # D gate 4: DISTINCT times — the REAL dispatch START (the dispatched row, i=1)
         # vs the TERMINAL RECORD (the succeeded row, i=2). NEVER conflated.
         assert ctx.dispatch_started_at == NOW + timedelta(seconds=1)
         assert ctx.terminal_recorded_at == NOW + timedelta(seconds=2)
         assert ctx.dispatch_created_at_millis == DISPATCH_MS
-        # M4-D gate 6: the DISPATCH-TIME approval snapshot + execution snapshot, and the
+        # D gate 6: the DISPATCH-TIME approval snapshot + execution snapshot, and the
         # chain counterparts they are cross-checked against.
         assert ctx.approval_status_at_dispatch == APPROVED_APPROVAL_STATUS
         assert ctx.bound_action == APPROVED_CREATION_ACTION
@@ -770,7 +769,7 @@ class TestDeriveReadCorrelationContext:
         assert ctx.bound_approval_id == str(approval.id)
         assert ctx.chain_approval_id == str(approval.id)
         assert ctx.chain_target == "case"
-        # Amendment §12: the instance / tenant binding DOES NOT EXIST -> UNKNOWN.
+        # Amendment : the instance / tenant binding DOES NOT EXIST -> UNKNOWN.
         assert ctx.instance_binding is None
         assert ctx.tenant_binding is None
 
@@ -783,7 +782,7 @@ class TestDeriveReadCorrelationContext:
         assert ctx.tenant_binding is None
 
     def test_old_history_without_binding_fails_closed(self, db_session):
-        # M4-D: a pre-M4-A chain (NO binding) has NO real dispatch start and NO dispatch-time
+        # D: a pre-A chain (NO binding) has NO real dispatch start and NO dispatch-time
         # approval snapshot -> gate 4 fails closed; the derivation NEVER back-fills. The
         # terminal-record time still exists (it is the terminal row's OWN stamp).
         _seed_chain(db_session, EID, rows=_verified_rows(), with_binding=False)
@@ -798,7 +797,7 @@ class TestDeriveReadCorrelationContext:
 
 class TestReconcileVerifiedExecution:
     def test_real_history_fails_closed_at_gate5_zero_facts(self, db_session):
-        # THE Amendment §12 proof: a FAITHFUL read of a REAL dispatched execution (same
+        # THE Amendment proof: a FAITHFUL read of a REAL dispatched execution (same
         # reference, correlation tag, and the SAME immutable createdAt) STILL cannot reach
         # confirmed_success — gate 5 refuses because the instance/tenant binding is UNKNOWN.
         _seed_chain(db_session, EID, rows=_verified_rows())
@@ -814,7 +813,7 @@ class TestReconcileVerifiedExecution:
         assert _outcome_count(db_session) == 0  # ZERO fact — fail-closed
 
     def test_old_history_without_binding_refused_at_gate4_zero_facts(self, db_session):
-        # M4-D: a pre-M4-A chain (NO binding) cannot prove the REAL dispatch start -> gate 4
+        # D: a pre-A chain (NO binding) cannot prove the REAL dispatch start -> gate 4
         # refuses (dispatch_started_at_unknown), ZERO fact. Old history is NEVER back-filled,
         # and the faithful read (matching reference / tag / createdAt) STILL cannot pass.
         _seed_chain(db_session, EID, rows=_verified_rows(), with_binding=False)
@@ -917,7 +916,7 @@ class TestReconcileVerifiedExecution:
 
 class TestPersistVerifiedCreationOutcome:
     def _effect(self, execution_id=EID, case_number=42):
-        # M4-C: a REAL verifier-minted (SEALED) effect — the ONLY shape persist now accepts.
+        # C: a REAL verifier-minted (SEALED) effect — the ONLY shape persist now accepts.
         # Built by running the six-gate verifier over a fully-passing context + observation,
         # NOT a plain hand-constructed VerifiedCreationEffect (which persist now REFUSES).
         verdict = verify_creation_effect(
@@ -955,7 +954,7 @@ class TestPersistVerifiedCreationOutcome:
         assert "raw_response" not in d
         assert "raw_evidence" not in d
         assert "createdAt" not in d
-        # NEVER the raw instance / tenant VALUES (§3 — only the verification booleans).
+        # NEVER the raw instance / tenant VALUES.
         assert TENANT not in serialized
         assert INSTANCE not in serialized
         assert LAB_API_KEY not in serialized
@@ -973,9 +972,9 @@ class TestPersistVerifiedCreationOutcome:
         assert len(_facts(db_session, EID)) == 2
 
     def test_persist_refuses_a_plain_unsealed_effect_zero_fact(self, db_session):
-        # M4-C BOUNDARY: a PLAIN hand-constructed VerifiedCreationEffect (NOT minted by the
+        # C BOUNDARY: a PLAIN hand-constructed VerifiedCreationEffect (NOT minted by the
         # verifier — its seal is not the private sentinel) is REFUSED with ZERO fact. persist
-        # no longer trusts the TYPE NAME alone (Amendment §11.2 constraint #1). The seal is NOT
+        # no longer trusts the TYPE NAME alone. The seal is NOT
         # a magic credential — the real boundary is the AST-proven single construction site.
         plain = VerifiedCreationEffect(
             execution_id=EID, adapter="thehive", external_reference=REFERENCE,
@@ -996,26 +995,26 @@ class TestPersistVerifiedCreationOutcome:
 class TestRealLabTrustedRead:
     """The REAL ``read_creation`` ``GET /api/case/{_id}`` against a live TheHive 4.1.24-1 Lab.
 
-    Behind ``@pytest.mark.external`` (conftest DESELECTS it unless ``-m external``) AND a
-    live-Lab env guard, so a normal ``pytest`` run never touches a real system and this
-    SKIPS rather than fabricating a result. LAB BLOCKED on this host (no container runtime /
-    virtualization / memory — the M2 Lab feasibility finding). It documents the exact real
-    trusted-read intent for the phase that has a running Lab, and is the ONLY place a real
-    trusted-channel ``GET`` is issued.
+Behind ``@pytest.mark.external`` (conftest DESELECTS it unless ``-m external``) AND a
+live-Lab env guard, so a normal ``pytest`` run never touches a real system and this
+SKIPS rather than fabricating a result. LAB BLOCKED on this host (no container runtime /
+virtualization / memory — the M2 Lab feasibility finding). It documents the exact real
+trusted-read intent for the phase that has a running Lab, and is the ONLY place a real
+trusted-channel ``GET`` is issued.
 
-    HONEST §12 STATE (constraint #2 — never fabricate a real success). Even against a REAL
-    Lab, ``read_creation`` observes ``observed_instance`` / ``observed_tenant`` as ``None``
-    (4.1.24-1 ``OutputCase`` carries neither), and ``derive_read_correlation_context`` leaves
-    the bindings UNKNOWN for real history, so gate 5 FAILS CLOSED -> ``reconcile_verified_
-    execution`` yields ``VerifiedCreationRefused``, NEVER a real ``confirmed_success``. This
-    test therefore asserts the READER half only (a faithful typed observation whose instance
-    / tenant bindings are None); the persisted ``confirmed_success`` closure stays LAB BLOCKED
-    pending the §12 forward-binding Amendment. A None-binding read is NEVER accepted as success.
-    """
+HONEST STATE (constraint #2 — never fabricate a real success). Even against a REAL
+Lab, ``read_creation`` observes ``observed_instance`` / ``observed_tenant`` as ``None``
+(4.1.24-1 ``OutputCase`` carries neither), and ``derive_read_correlation_context`` leaves
+the bindings UNKNOWN for real history, so gate 5 FAILS CLOSED -> ``reconcile_verified_
+execution`` yields ``VerifiedCreationRefused``, NEVER a real ``confirmed_success``. This
+test therefore asserts the READER half only (a faithful typed observation whose instance
+/ tenant bindings are None); the persisted ``confirmed_success`` closure stays LAB BLOCKED
+pending the forward-binding Amendment. A None-binding read is NEVER accepted as success.
+"""
 
     def test_real_read_creation_observes_typed_creation_with_none_bindings(self):
         base_url = os.environ.get("THEHIVE_LAB_BASE_URL", "")
-        # The INDEPENDENT read-only key (Amendment §5 — never the create-capable write key).
+        # The INDEPENDENT read-only key.
         api_key = (
             os.environ.get("THEHIVE_LAB_READ_API_KEY", "")
             or os.environ.get("THEHIVE_LAB_API_KEY", "")
@@ -1037,7 +1036,7 @@ class TestRealLabTrustedRead:
             )
         )
         # The typed observation is faithful; the instance / tenant bindings are ALWAYS None
-        # on 4.1.24-1 -> gate 5 fails closed (Amendment §12). A transport failure would have
+        # on 4.1.24-1 -> gate 5 fails closed. A transport failure would have
         # raised ReadTransportError (never a fabricated verdict).
         assert isinstance(observed, VerifiedReadResult)
         assert observed.observed_instance is None

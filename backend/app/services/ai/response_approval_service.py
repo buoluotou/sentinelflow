@@ -1,4 +1,4 @@
-"""Human approval gate over AI response recommendations (Phase 2 Step 13.2).
+"""Human approval gate over AI response recommendations.
 
     Recommendation (no approval row)   -> pending (DERIVED, never stored)
     Recommendation + approval row      -> approved | rejected (final)

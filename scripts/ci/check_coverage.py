@@ -9,7 +9,7 @@ headroom, so ordinary churn passes and a real regression does not. Raise them
 when the baseline moves; do not lower them to make a build green.
 
 Usage:
-    check_coverage.py [coverage.json]
+check_coverage.py [coverage.json]
 """
 from __future__ import annotations
 

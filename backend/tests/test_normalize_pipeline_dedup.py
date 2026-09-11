@@ -1,4 +1,4 @@
-"""Phase 1 Step 4.3: end-to-end Normalize -> Deduplication -> DB pipeline.
+"""end-to-end Normalize -> Deduplication -> DB pipeline.
 
 Exercises POST /api/v1/normalize, which now routes every normalized alert
 through the DeduplicationEngine.

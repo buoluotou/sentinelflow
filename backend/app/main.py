@@ -20,15 +20,12 @@ logger = logging.getLogger("sentinelflow")
 
 
 def _install_secret_redaction() -> None:
-    """Install the platform-wide ``***`` gate on every logger AND handler.
+    """Install the platform-wide ``***`` gate on every logger and handler.
 
-    The README promises "secrets are never logged at any level", but the filter
-    was only ever attached in tests — in production nothing was installed, so
-    the promise rested on there happening to be no secret-bearing log line.
-    Handlers are filtered as well as loggers: a logger filter only sees records
-    logged through that logger directly, whereas a HANDLER filter sees every
-    propagated record, including uvicorn's. Idempotent, so repeated
-    ``_configure_logging()`` calls (tests, reloads) never stack filters."""
+Handlers are filtered as well as loggers: a logger filter only sees records
+logged through that logger directly, whereas a handler filter sees every
+propagated record, including uvicorn's. Idempotent, so repeated
+``_configure_logging()`` calls (tests, reloads) never stack filters."""
     redaction = SecretRedactionFilter()
     targets = [logger, logging.getLogger()]
     targets.extend(logging.getLogger().handlers)
@@ -43,8 +40,8 @@ def _install_secret_redaction() -> None:
 
 def _configure_logging() -> None:
     """Level from DEBUG (DEBUG when true, else INFO). Adds a handler only
-    when neither this logger nor the root has one, so uvicorn/pytest keep
-    their own config (no duplicate lines). Stack traces stay debug-only."""
+when neither this logger nor the root has one, so uvicorn/pytest keep
+their own config (no duplicate lines). Stack traces stay debug-only."""
     logger.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
     if not logger.handlers and not logging.getLogger().handlers:
         handler = logging.StreamHandler()
@@ -54,9 +51,9 @@ def _configure_logging() -> None:
 
 
 def _safe_config_summary() -> str:
-    """Startup config summary — WHAT is enabled/disabled, never a secret
-    value. Only the DB driver scheme, enums and configured/unconfigured
-    booleans are emitted; credentials / tokens / URLs are never printed."""
+    """Startup config summary — which components are enabled, never a secret
+value. Only the DB driver scheme, enums and configured/unconfigured
+booleans are emitted; credentials / tokens / URLs are never printed."""
     db_backend = settings.DATABASE_URL.split("://", 1)[0] or "unknown"
     return (
         f"mode={deployment_mode(settings)} "
@@ -77,15 +74,16 @@ def _safe_config_summary() -> str:
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     _configure_logging()
-    # RC2 §7 + §20: PRODUCTION MODE IS FAIL-CLOSED BEFORE ANYTHING ELSE — an
+    # Production mode is fail-closed ahead of every other startup step: an
     # unsafe deployment (missing OPERATORS_JSON auth / SQLite / mock adapter /
-    # compensation / non-loopback BIND_HOST) refuses to boot with ONE
-    # sanitized error naming keys only. Demo mode returns immediately.
+    # compensation / non-loopback BIND_HOST) refuses to boot, with one
+    # sanitized error that names the offending keys and never their values.
+    # Demo mode returns immediately.
     validate_production_mode(settings)
-    # Startup fail-closed: a misconfigured execution adapter (unknown /
+    # Startup fail-closed: a misconfigured execution adapter (unknown or
     # multi-value selection, or a real adapter missing its credentials)
-    # refuses to BOOT — the platform never pretends to run and then fails
-    # at the first Execute. mock needs no credentials.
+    # refuses to boot, so the failure surfaces here rather than at the first
+    # Execute request. mock needs no credentials.
     validate_adapter_config(settings)
     logger.info("SentinelFlow backend starting | %s", _safe_config_summary())
     yield
@@ -93,8 +91,9 @@ async def _lifespan(application: FastAPI):
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    # Single source of truth (app.__version__) — the OpenAPI version used to lag
-    # one release behind the shipped tag. Bumped with the release, not by hand.
+    # Single source of truth (app.__version__): the OpenAPI version and the
+    # release tag both come from this constant, so they cannot drift apart.
+    # Bumped with the release, not by hand.
     version=__version__,
     lifespan=_lifespan,
 )
@@ -105,10 +104,10 @@ app.include_router(v1_router, prefix=settings.API_V1_PREFIX)
 @app.get("/health")
 def health_check(db: Session = Depends(get_db)):
     """Liveness: 200 whenever the process is up (DB state is reported in
-    the body, never in the status code). Orchestrators should probe
-    /ready for dependency readiness. ``database_driver`` is the non-sensitive
-    URL scheme (e.g. ``postgresql`` / ``sqlite``) so doctor / smoke can detect
-    the platform without ever reading the credential-bearing URL."""
+the body, never in the status code). Orchestrators should probe
+/ready for dependency readiness. ``database_driver`` is the non-sensitive
+URL scheme (e.g. ``postgresql`` / ``sqlite``) so doctor / smoke can detect
+the platform without ever reading the credential-bearing URL."""
     db_status = "connected"
     try:
         db.execute(text("SELECT 1"))
@@ -125,7 +124,7 @@ def health_check(db: Session = Depends(get_db)):
 @app.get("/ready")
 def readiness_check(db: Session = Depends(get_db)):
     """Readiness: 200 only when the database answers SELECT 1, else 503.
-    This is the probe compose / orchestrators gate backend traffic on."""
+This is the probe compose / orchestrators gate backend traffic on."""
     try:
         db.execute(text("SELECT 1"))
     except Exception:

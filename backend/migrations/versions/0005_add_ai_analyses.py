@@ -4,10 +4,10 @@ Revision ID: 0005
 Revises: 0004
 Create Date: 2026-08-25
 
-Phase 2 Step 10: AI alert-explanation history. alert_group_id is indexed
-but NOT unique — every analysis run appends a record (models change,
-re-analysis is expected), unlike event_risk/incidents which are 1:1
-"current state" rows.
+AI alert-explanation history. alert_group_id is indexed but not unique:
+every analysis run appends a record (models change, re-analysis is
+expected), unlike event_risk and incidents, which hold one current-state
+row each.
 """
 from typing import Sequence, Union
 

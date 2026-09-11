@@ -5,9 +5,8 @@ from pydantic_settings import BaseSettings
 # backend/app/core/config.py -> parents[3] is the monorepo root (.env lives there)
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-#: Field names whose VALUES must never surface in repr/str (3.2.1 secret
-#: discipline, mirrors the EXECUTION_TOKEN lineage). Names of the keys
-#: ARE reportable (config errors name missing keys); values are not.
+# Field names whose values must never surface in repr/str. Key names stay
+# reportable (startup config errors name the missing keys); values do not.
 _SENSITIVE_FIELD_NAMES = frozenset({"DATABASE_URL", "OPERATORS_JSON"})
 _SENSITIVE_FIELD_SUFFIXES = ("API_KEY", "TOKEN", "PASSWORD")
 
@@ -21,40 +20,41 @@ def _is_sensitive_field(name: str) -> bool:
 class Settings(BaseSettings):
     PROJECT_NAME: str = "SentinelFlow"
     API_V1_PREFIX: str = "/api/v1"
-    # Address a NATIVE / host-run backend binds to. Loopback by default so a
+    # Address a native / host-run backend binds to. Loopback by default so a
     # host-run backend is local-only (native uvicorn already defaults to
-    # 127.0.0.1). The Docker container binds 0.0.0.0 INTERNALLY via the compose
-    # command — independent of this value; its HOST exposure is controlled by
-    # BIND_HOST in docker-compose.yml. Set 0.0.0.0 only to deliberately expose
-    # a host-run backend (put it behind SSO / a reverse proxy first).
+    # 127.0.0.1). The Docker container binds 0.0.0.0 internally via the compose
+    # command, independently of this value; its host-side exposure is governed
+    # by BIND_HOST in docker-compose.yml. Set 0.0.0.0 only to expose a host-run
+    # backend on purpose (put it behind SSO / a reverse proxy first).
     BACKEND_HOST: str = "127.0.0.1"
     BACKEND_PORT: int = 8000
     # Compose-level host-port bind address (published ports use
     # ${BIND_HOST:-127.0.0.1} in docker-compose.yml). The API reads it too so
-    # the production startup gate (RC2 §20) can refuse a non-loopback default
-    # — TLS + authentication terminate at a reverse proxy, never the API port.
+    # the production startup gate can refuse a non-loopback value: TLS and
+    # authentication terminate at a reverse proxy, not at the API port.
     BIND_HOST: str = "127.0.0.1"
     # Verbose logging + debug diagnostics. Defaults to False (safe for
     # production / quickstart); wired to the backend log level (DEBUG when
     # true, INFO otherwise). Exception stack traces stay debug-only.
     DEBUG: bool = False
 
-    # RC2 §7 + §20: explicit deployment mode ("demo" | "production").
-    # DEMO (default) keeps the simple local UX: loopback binding is the
-    # exposure control, approval is tokenless-but-display-only, the offline
-    # mock adapter is allowed. PRODUCTION is FAIL-CLOSED at startup — see
+    # Explicit deployment mode ("demo" | "production"). The default keeps the
+    # simple local UX: loopback binding is the exposure control, approval is
+    # tokenless-but-display-only, the offline mock adapter is allowed.
+    # "production" fails closed at startup — see
     # app.core.runtime_mode.validate_production_mode: OPERATORS_JSON auth is
-    # required, PostgreSQL only, a real execution adapter required,
-    # compensation / reverse workflows refused (not certified) and BIND_HOST
-    # pinned to loopback (terminate TLS + auth at a reverse proxy).
+    # required, PostgreSQL only, a real execution adapter is required,
+    # compensation / reverse workflows are refused (not certified) and
+    # BIND_HOST is pinned to loopback (terminate TLS and auth at a reverse
+    # proxy).
     DEPLOYMENT_MODE: str = "demo"
 
-    # Phase 1 Step 4: deduplication aggregation window (seconds)
+    # Deduplication aggregation window, in seconds.
     DEDUP_WINDOW_SECONDS: int = 300
 
-    # Phase 2 Step 9: AI provider selection. Defaults to "mock" so the
-    # platform always runs (tests/demo/air-gapped); switch to ollama or
-    # cloud via .env without touching business code.
+    # AI provider selection. Defaults to "mock" so the app runs with no
+    # external service (tests, demo, air-gapped hosts); switch to ollama or a
+    # cloud provider through .env without touching business code.
     AI_PROVIDER: str = "mock"
     AI_MODEL: str = ""
     AI_BASE_URL: str = "http://localhost:11434"
@@ -63,44 +63,45 @@ class Settings(BaseSettings):
     # raise for larger models, keep tests/fast providers at the default.
     AI_TIMEOUT_SECONDS: float = 60.0
 
-    # Phase 3.1.5: response-execution adapter selection. Defaults to
-    # "mock" (offline DryRun); shuffle / wazuh / thehive are reserved
-    # registry values and raise ConfigError until Phase 3.2 implements
-    # them — the platform never fakes support.
+    # Response-execution adapter selection. Defaults to "mock" (offline dry
+    # run, no credentials needed). A real adapter needs its own credential
+    # pair below; an unknown or multi-valued name, and a real adapter with an
+    # incomplete configuration, both raise ConfigError at startup instead of
+    # falling back to mock.
     EXECUTION_ADAPTER: str = "mock"
 
-    # Phase 3.1.7 / 3.3.1: execution WRITE-path shared secret.
-    # Legacy backwards-compatible fallback when OPERATORS_JSON is empty;
-    # mapped to a synthetic "legacy-execution" operator with the executor
-    # role. Empty stays fail-closed: every write request gets 401 until
-    # either OPERATORS_JSON or EXECUTION_TOKEN is configured. The token
-    # never enters logs, responses, exception strings, audit detail or
-    # the database (frozen security discipline).
+    # Execution write-path shared secret. Backwards-compatible fallback used
+    # when OPERATORS_JSON is empty; mapped to a synthetic "legacy-execution"
+    # operator with the executor role. An empty value stays fail-closed: every
+    # write request gets 401 until either OPERATORS_JSON or EXECUTION_TOKEN is
+    # configured. The token lives only in configuration and the outgoing
+    # Authorization header, and never enters logs, responses, exception
+    # strings, audit detail or the database — a persisted copy would be a
+    # durable credential that outlives the configuration it was read from.
     EXECUTION_TOKEN: str = ""
 
-    # Phase 3.3.1: static operator registry. JSON array of
-    # {"token": "...", "name": "...", "role": "..."} objects.
-    # Each token maps to exactly one Operator (name + role); roles are
-    # viewer / reviewer / executor / admin. When empty, the legacy
-    # EXECUTION_TOKEN above provides backwards-compatible fallback.
-    # When both are empty, every write path stays fully closed (401).
-    # Operator tokens never enter logs / responses / audit / DB.
+    # Static operator registry: a JSON array of
+    # {"token": "...", "name": "...", "role": "..."} objects. Each token maps
+    # to one Operator (name + role); roles are viewer / reviewer / executor /
+    # admin. When empty, the legacy EXECUTION_TOKEN above provides the
+    # backwards-compatible fallback. When both are empty, every write path
+    # stays fully closed (401). Operator tokens never enter logs, responses,
+    # audit or the DB.
     OPERATORS_JSON: str = ""
 
-    # Phase 3.3.2: execution policy (B-3 — sits AFTER the Guard, BEFORE
-    # the Executor). Disabled by default so upgrades keep the exact
-    # 3.1/3.2 behavior; enabling NEVER bypasses Auth / RBAC / Approval /
-    # Guard — a disabled policy is an ALLOW, not a security bypass.
-    # A policy refusal lands as guard_rejected with detail.source=
-    # "policy" (no new execution state). Time basis is UTC: the window
-    # bounds are judged against the SERVER clock converted to UTC —
-    # never the deployment host's local timezone.
+    # Execution policy, evaluated after the Guard and before the Executor.
+    # Disabled by default, so leaving it off preserves the previous behaviour;
+    # enabling it never bypasses auth, RBAC, approval or the Guard — a disabled
+    # policy is an allow, not a security bypass. A policy refusal is recorded
+    # as guard_rejected with detail.source="policy" (no new execution state).
+    # Time basis is UTC: the window bounds are judged against the server clock
+    # converted to UTC — never the deployment host's local timezone.
     EXECUTION_POLICY_ENABLED: bool = False
     # Window bounds, strict HH:MM, [start, end) UTC (start inclusive,
     # end exclusive). Default = business hours.
     EXECUTION_POLICY_WINDOW_START: str = "09:00"
     EXECUTION_POLICY_WINDOW_END: str = "18:00"
-    # Minimum SERVER-SIDE risk score (EventRisk.score — the live
+    # Minimum server-side risk score (EventRisk.score — the live
     # authoritative assessment, never recomputed here) each executable
     # action requires; a missing risk fact refuses fail-closed.
     EXECUTION_POLICY_MIN_RISK_BLOCK_SOURCE_IP: int = 70
@@ -108,83 +109,81 @@ class Settings(BaseSettings):
     EXECUTION_POLICY_MIN_RISK_DISABLE_ACCOUNT: int = 80
     EXECUTION_POLICY_MIN_RISK_ESCALATE_TO_INCIDENT: int = 50
 
-    # Phase 3.2.1 (E3 frozen): external-adapter credentials, one flat
-    # *_BASE_URL / *_API_KEY pair per adapter. Empty defaults stay
-    # fail-closed — the registry's startup validation refuses to run a
-    # real adapter on half a configuration. mock requires NONE of these
-    # (local development is never hostage to external credentials).
-    # API keys never enter repr / logs / exceptions / audit / responses.
+    # External-adapter credentials, one flat *_BASE_URL / *_API_KEY pair per
+    # adapter. Empty defaults stay fail-closed: startup validation refuses to
+    # run a real adapter on half a configuration. The mock adapter requires
+    # none of them, so local development needs no external credentials. API
+    # keys never enter repr, logs, exceptions, audit or responses.
     SHUFFLE_BASE_URL: str = ""
     SHUFFLE_API_KEY: str = ""
     WAZUH_BASE_URL: str = ""
-    # 3.2.4: Wazuh authenticates with a user/password pair (Basic) —
-    # still one Authorization header, still .env -> Settings ->
-    # AdapterCredentials -> header, never URL/body/query.
+    # Wazuh authenticates with a user/password pair (Basic auth): still one
+    # Authorization header, still .env -> Settings -> AdapterCredentials ->
+    # header, never URL, body or query.
     WAZUH_API_USER: str = ""
     WAZUH_API_PASSWORD: str = ""
     THEHIVE_BASE_URL: str = ""
     THEHIVE_API_KEY: str = ""
-    # Phase 3.4.5-M2-R §4: TheHive READ-adapter authorization gate. A reader is
-    # NOT authorized by mere URL + write-key presence — it needs BOTH (a) an
-    # INDEPENDENT read-only key (never the create-capable THEHIVE_API_KEY) and
-    # (b) an EXACT certified-version match (THEHIVE_EXPECTED_VERSION must equal
-    # the reader's CERTIFIED_THEHIVE_VERSION). Either empty / mismatched -> the
-    # factory fails CLOSED (no reader), so a one-line wiring can never apply
-    # 4.1.24-1 read semantics to a different version or silently reuse the write
-    # credential. THEHIVE_READ_API_KEY ends in API_KEY -> auto-masked in repr;
-    # never enters logs / responses / exceptions / audit / DB.
+    # TheHive read-adapter authorization gate. URL and write-key presence do
+    # not authorize a reader: it needs both an independent read-only key (never
+    # the create-capable THEHIVE_API_KEY) and an exact certified-version match
+    # (THEHIVE_EXPECTED_VERSION must equal the reader's
+    # CERTIFIED_THEHIVE_VERSION). If either is empty or mismatched, the factory
+    # builds no reader, so a wiring change cannot apply the certified version's
+    # read semantics to a different version or silently reuse the write
+    # credential. THEHIVE_READ_API_KEY ends in API_KEY and is auto-masked in
+    # repr; it never enters logs, responses, exceptions, audit or the DB.
     THEHIVE_READ_API_KEY: str = ""
     THEHIVE_EXPECTED_VERSION: str = ""
 
-    # Phase 3.2.3: Shuffle action -> workflow mapping (frozen §4 column).
-    # Each executable action triggers EXACTLY ONE pre-configured workflow;
-    # empty ids stay fail-closed (ConfigError at construction). Reverse
-    # workflows are OPTIONAL — configured = compensation supported, BUT
-    # compensation is EXPERIMENTAL / NOT PRODUCTION-CERTIFIED (RC1 / C-1):
-    # the reverse dispatch lacks the forward path's durable pre-dispatch
-    # reservation, so configuring a SHUFFLE_WORKFLOW_REVERSE_* id ALSO
-    # requires EXECUTION_COMPENSATION_EXPERIMENTAL=true (below) or
-    # validate_adapter_config() refuses to BOOT. The offline mock is exempt
-    # (DryRun) — Demo compensation always works.
+    # Shuffle action -> workflow mapping. Each executable action triggers one
+    # pre-configured workflow; an empty id stays fail-closed (ConfigError when
+    # the executor is built). Reverse workflows are optional: configuring one
+    # enables compensation, but compensation on a real adapter is experimental
+    # and not production-certified — it still needs end-to-end lab validation
+    # before it leaves that status. Setting a SHUFFLE_WORKFLOW_REVERSE_* id
+    # therefore also requires EXECUTION_COMPENSATION_EXPERIMENTAL=true (below),
+    # otherwise validate_adapter_config() refuses to start. The offline mock
+    # adapter is exempt because compensation there is a dry run.
     SHUFFLE_WORKFLOW_BLOCK_SOURCE_IP: str = ""
     SHUFFLE_WORKFLOW_ISOLATE_HOST: str = ""
     SHUFFLE_WORKFLOW_DISABLE_ACCOUNT: str = ""
     SHUFFLE_WORKFLOW_ESCALATE_TO_INCIDENT: str = ""
     SHUFFLE_WORKFLOW_REVERSE_BLOCK_SOURCE_IP: str = ""
     SHUFFLE_WORKFLOW_REVERSE_ISOLATE_HOST: str = ""
-    # Deliberate, default-OFF acknowledgment that REAL-adapter compensation is
-    # EXPERIMENTAL / LAB-only (C-1 above). false (default) + a configured
-    # reverse workflow = refuse to boot. Never required for the mock Demo.
+    # Explicit acknowledgment, off by default, that compensation on a real
+    # adapter is experimental and lab-only. While a reverse workflow is
+    # configured, leaving it false refuses the boot. Not required for the mock
+    # adapter.
     EXECUTION_COMPENSATION_EXPERIMENTAL: bool = False
-    # Adapter-level HTTP timeout; must never exceed the global sync
-    # dispatch budget (frozen §6; default stays 30s).
+    # Adapter-level HTTP timeout. It must stay within the global synchronous
+    # dispatch budget, so the default is 30s.
     SHUFFLE_TIMEOUT_SECONDS: float = 30.0
 
-    # Phase 3.2.4: Wazuh adapter-level HTTP timeout (same budget rule).
-    # The endpoint-action vocabulary is frozen inside the adapter; no
-    # further configuration surface is needed.
+    # Wazuh adapter-level HTTP timeout; same budget rule. The endpoint-action
+    # vocabulary is fixed inside the adapter, so the adapter needs no further
+    # configuration.
     WAZUH_TIMEOUT_SECONDS: float = 30.0
 
-    # Phase 3.2.5: TheHive adapter-level HTTP timeout (same budget
-    # rule). The case-creation vocabulary is frozen inside the adapter;
-    # no further configuration surface is needed.
+    # TheHive adapter-level HTTP timeout; same budget rule. The case-creation
+    # vocabulary is fixed inside the adapter, so the adapter needs no further
+    # configuration.
     THEHIVE_TIMEOUT_SECONDS: float = 30.0
 
-    # Phase 3.4.4-A: external-adapter CALLBACK (inbound webhook) tokens —
-    # one per RECOGNIZED adapter. This is a THIRD trust domain, completely
-    # separate from BOTH the outbound *_API_KEY credentials above AND the
-    # human-operator registry (design §8 / D3.4-07: External Adapter
-    # Callback Identity is never Human Operator Identity). Bound per-route:
-    # POST /api/v1/webhooks/{adapter} authenticates ONLY against
-    # <ADAPTER>_CALLBACK_TOKEN — never a body field, never another
-    # adapter's token. Empty stays fail-closed for THAT adapter's INBOUND
-    # channel only (one uniform 401); an unconfigured callback token NEVER
-    # blocks app startup and is deliberately NOT wired into
-    # validate_adapter_config() (which guards the OUTBOUND dispatch path).
+    # External-adapter callback (inbound webhook) tokens, one per recognized
+    # adapter. This is a third trust domain, separate from both the outbound
+    # *_API_KEY credentials above and the human-operator registry: an external
+    # adapter callback identity is never a human operator identity. Bound
+    # per-route: POST /api/v1/webhooks/{adapter} authenticates only against
+    # <ADAPTER>_CALLBACK_TOKEN, never a body field, never another adapter's
+    # token. An empty value stays fail-closed for that adapter's inbound
+    # channel only (one uniform 401); an unconfigured callback token never
+    # blocks app startup and is intentionally not wired into
+    # validate_adapter_config(), which guards the outbound dispatch path.
     # Values end in TOKEN, so _SENSITIVE_FIELD_SUFFIXES auto-masks them in
-    # repr; they never enter logs / responses / exceptions / audit / DB.
-    # mock has NO callback token by design (offline DryRun, no external
-    # callback identity) — it is never a webhook channel (spec §5 / §17).
+    # repr; they never enter logs, responses, exceptions, audit or DB.
+    # The mock adapter has no callback token: it is an offline dry run with no
+    # external callback identity, so it is not a webhook channel.
     SHUFFLE_CALLBACK_TOKEN: str = ""
     WAZUH_CALLBACK_TOKEN: str = ""
     THEHIVE_CALLBACK_TOKEN: str = ""
@@ -200,9 +199,9 @@ class Settings(BaseSettings):
     }
 
     def __repr__(self) -> str:
-        # 3.2.1 secret discipline: the default pydantic repr prints every
-        # value — API keys and the DB URL included. Sensitive values are
-        # masked; key NAMES stay visible so config debugging still works.
+        # The default pydantic repr prints every value — API keys and the DB
+        # URL included. Sensitive values are masked here; key names stay
+        # visible so config debugging still works.
         parts = [
             f"{name}={'***' if _is_sensitive_field(name) else getattr(self, name)!r}"
             for name in type(self).model_fields

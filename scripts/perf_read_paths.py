@@ -9,9 +9,9 @@ the same machine, not across machines. Statement counts are the stable part:
 they must not grow with the row count.
 
 Usage:
-    python scripts/perf_read_paths.py
-    DATABASE_URL=sqlite:///./perf.db python scripts/perf_read_paths.py
-    DATABASE_URL=postgresql+psycopg://user:pw@host:5432/db python scripts/perf_read_paths.py
+python scripts/perf_read_paths.py
+DATABASE_URL=sqlite:///./perf.db python scripts/perf_read_paths.py
+DATABASE_URL=postgresql+psycopg://user:pw@host:5432/db python scripts/perf_read_paths.py
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BACKEND = REPO_ROOT / "backend"
 
-# Bounds are deliberately generous: they are meant to fail on a query that
+# Bounds are generous: they are meant to fail on a query that
 # scales with the table, not to police milliseconds on a shared CI runner.
 MAX_STATEMENTS_PER_REQUEST = 15
 MAX_SECONDS_PER_REQUEST = 2.0

@@ -1,4 +1,4 @@
-/** Execution Audit (Phase 3.1.9): read-only audit history over execution_log.
+/* * Execution Audit: read-only audit history over execution_log.
  *
  * Filter -> GET only: status / direction / approval_id / page travel as query
  * parameters and the paged envelope renders as-is. derived_state is a server

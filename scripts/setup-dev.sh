@@ -2,26 +2,26 @@
 # SentinelFlow native development setup (Linux/macOS).
 #
 # Mirrors scripts/setup-dev.ps1. Prepares a local, non-Docker dev environment:
-#   1. checks Python / Node / npm (versions derived from the real project:
-#      Python >=3.10 [3.12 verified], Node >=20.19 [Vite 8], npm),
-#   2. creates backend/.venv and installs backend requirements,
-#   3. installs frontend dependencies (npm ci against package-lock.json),
-#   4. creates .env from .env.example with a RANDOM local EXECUTION_TOKEN,
-#   5. provisions the database and runs `alembic upgrade head`,
-#   6. prints how to start the backend and frontend dev servers.
+# 1. checks Python / Node / npm (versions derived from the real project:
+# Python >=3.10 [3.12 verified], Node >=20.19 [Vite 8], npm),
+# 2. creates backend/.venv and installs backend requirements,
+# 3. installs frontend dependencies (npm ci against package-lock.json),
+# 4. creates .env from .env.example with a RANDOM local EXECUTION_TOKEN,
+# 5. provisions the database and runs `alembic upgrade head`,
+# 6. prints how to start the backend and frontend dev servers.
 #
 # Database choice (DATABASE=postgres|sqlite, default postgres):
-#   postgres : use the DATABASE_URL in .env (Demo Mode / production). Needs a
-#              reachable PostgreSQL; a clear note is printed if it is not.
-#   sqlite   : provision a local SQLite file for core-chain dev. The full Demo
-#              chain's durable-dispatch execution step needs PostgreSQL/MVCC;
-#              SQLite runs the chain up to human approval and fails CLOSED at
-#              execution.
+# postgres : use the DATABASE_URL in .env (Demo Mode / production). Needs a
+# reachable PostgreSQL; a clear note is printed if it is not.
+# sqlite : provision a local SQLite file for core-chain dev. The full Demo
+# chain's durable-dispatch execution step needs PostgreSQL/MVCC;
+# SQLite runs the chain up to human approval and fails CLOSED at
+# execution.
 #
 # Usage:
-#   ./scripts/setup-dev.sh
-#   DATABASE=sqlite ./scripts/setup-dev.sh
-#   SKIP_FRONTEND=1 WITH_DEV_DEPS=1 ./scripts/setup-dev.sh
+# ./scripts/setup-dev.sh
+# DATABASE=sqlite ./scripts/setup-dev.sh
+# SKIP_FRONTEND=1 WITH_DEV_DEPS=1 ./scripts/setup-dev.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

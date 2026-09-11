@@ -17,7 +17,7 @@ def test_ready_reports_database_connected(client):
 
 
 def test_startup_config_summary_never_leaks_secret_values(monkeypatch):
-    # M5 §11: the startup summary states WHAT is enabled, never a secret
+    # the startup summary states WHAT is enabled, never a secret
     # value. Only the DB driver scheme survives; credentials/tokens/keys
     # and the full DSN must never appear.
     from app.core.config import settings

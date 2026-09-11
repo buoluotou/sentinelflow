@@ -1,12 +1,12 @@
 /** AI response-recommendation types — field-level mirror of backend
- * AIResponseRecommendationRead (Step 12.5).
+ * AIResponseRecommendationRead.
  *
  * Advisory only end-to-end: every action stays a suggestion until human
- * approval (Step 13) — nothing here is ever executable. Deliberately NO
+ * approval — nothing here is ever executable. There is no
  * risk-score field: EventRisk.score stays the single official score.
  */
 
-/** The six frozen response actions (12.1). Display-only union: the UI maps
+/** The six response actions. Display-only union: the UI maps
  * them to readable labels but never invents new action semantics. */
 export type ResponseAction =
   | 'block_source_ip'

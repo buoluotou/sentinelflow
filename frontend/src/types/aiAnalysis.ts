@@ -1,4 +1,4 @@
-/** AI analysis types — field-level mirror of backend AIAnalysisRead (Step 10.7). */
+/** AI analysis types — field-level mirror of backend AIAnalysisRead. */
 
 export interface AIAnalysis {
   id: string

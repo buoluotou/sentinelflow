@@ -6,7 +6,7 @@ if any row disappears, if a stored value changes, or if the schema does not end
 on a single head.
 
 Usage:
-    check_migration_upgrade.py [--database-url URL] [--from-revision 0009]
+check_migration_upgrade.py [--database-url URL] [--from-revision 0009]
 """
 from __future__ import annotations
 

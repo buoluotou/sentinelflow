@@ -1,7 +1,7 @@
-"""RC2 §7 — the approval auth boundary + permission separation.
+"""The approval auth boundary and the separation of approval from execution.
 
 Demo mode (default) keeps the tokenless, display-only approval UX.
-Production mode forbids tokenless approval, enforces the SEPARATE approval
+Production mode rejects tokenless approval, enforces a separate approval
 permission (viewer / executor get 403) and records the Bearer token's
 server-side principal — the request-body identity is ignored, so
 impersonation is impossible. Execution and reconcile keep their own
@@ -48,7 +48,7 @@ def production(monkeypatch):
 
 
 def _seed_pending(db_session) -> AIResponseRecommendation:
-    """Committed AlertGroup + EventRisk + one PENDING recommendation."""
+    """Committed AlertGroup + EventRisk + one pending recommendation."""
     now = datetime.now(timezone.utc)
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex,
@@ -96,7 +96,7 @@ class TestDemoModeApproval:
         )
         assert response.status_code == 201
         body = response.json()
-        # demo mode: the body reviewer stays DISPLAY-ONLY — unchanged UX.
+        # demo mode: the body reviewer is display-only metadata, UX unchanged.
         assert body["reviewer"] == "analyst-7"
         assert body["status"] == "approved"
 
@@ -126,7 +126,7 @@ class TestProductionModeApproval:
         assert response.status_code == 403
 
     def test_executor_token_cannot_approve(self, client, db_session, production):
-        """Permission separation: execution does NOT imply approval."""
+        """Permission separation: execution does not imply approval."""
         record = _seed_pending(db_session)
         response = client.post(
             _approve_url(record),
@@ -146,7 +146,7 @@ class TestProductionModeApproval:
         )
         assert response.status_code == 201
         body = response.json()
-        # the TOKEN's principal is recorded; the body identity is never trusted.
+        # the token's principal is recorded; the body identity is not trusted.
         assert body["reviewer"] == "rev-1"
         assert "mallory" not in json.dumps(body)
 

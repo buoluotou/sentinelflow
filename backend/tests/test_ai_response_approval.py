@@ -1,15 +1,15 @@
-"""Step 13.1: Approval Queue protocol / data-model freeze tests.
+"""Approval Queue protocol / data-model tests.
 
-Locks the frozen shape of AIResponseApproval before Service/API/UI land:
+Locks the shape of AIResponseApproval independently of the Service/API/UI:
 
-- vocabulary: pending / approved / rejected, with "pending" DERIVED (never
-  persisted) and execution-layer words banned from the storage vocabulary
-- at most ONE approval per recommendation (unique FK) and a decision is
-  final (INSERT-only discipline, no state machine)
+- vocabulary: pending / approved / rejected, with "pending" derived (never
+persisted) and execution-layer words banned from the storage vocabulary
+- at most one approval per recommendation (unique FK) and a decision is
+final (INSERT-only discipline, no state machine)
 - storage guard: the CHECK constraint rejects anything but the terminal
-  human decisions — even "pending"
-- Approve != Execute: the model carries no reference to execution, EventRisk
-  or Incident — a decision row is pure audit trail
+human decisions — even "pending"
+- approval is a decision, not an execution: the model carries no reference to
+execution, EventRisk or Incident — a decision row is pure audit trail
 """
 import uuid
 from datetime import datetime, timezone
@@ -74,13 +74,14 @@ class TestApprovalVocabulary:
         assert APPROVAL_STATUSES == frozenset({"pending", "approved", "rejected"})
 
     def test_persistable_decisions_exclude_pending(self):
-        # pending is a DERIVED queue state (no approval row), never a stored one
+        # pending is a derived queue state (no approval row), never a stored one
         assert APPROVAL_DECISIONS == frozenset({"approved", "rejected"})
         assert APPROVAL_DECISIONS < APPROVAL_STATUSES
         assert "pending" not in APPROVAL_DECISIONS
 
     def test_execution_layer_words_are_banned(self):
-        # Step 13 records decisions only — execution states belong to Step 14
+        # this table records decisions only — execution states belong to the
+        # execution layer (execution_log / execution_outcome)
         execution_words = {"executing", "executed", "failed", "rolled_back"}
         assert not (execution_words & APPROVAL_STATUSES)
         assert not (execution_words & APPROVAL_DECISIONS)

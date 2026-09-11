@@ -4,13 +4,13 @@ Revision ID: 0008
 Revises: 0007
 Create Date: 2026-08-26
 
-Phase 2 Step 13: human decisions over AI response recommendations.
-Approve != Execute — this table only records what a human decided; no
-response action is ever performed here or anywhere in Step 13. At most
-ONE approval per recommendation (unique recommendation_id) and a
-decision is final (INSERT-only, no state-machine UPDATEs). "pending" is
-a derived queue state and is never persisted: the CHECK constraint
-restricts stored status to the terminal decisions approved / rejected.
+Human decisions over AI response recommendations. An approval is not an
+execution: this table only records what a human decided, and no response
+action is performed here. At most one approval per recommendation (unique
+recommendation_id), and a decision is final (INSERT-only, no state-machine
+UPDATEs). "pending" is a derived queue state and is never persisted: the
+CHECK constraint restricts stored status to the terminal decisions
+approved and rejected.
 """
 from typing import Sequence, Union
 

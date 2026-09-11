@@ -1,34 +1,33 @@
-"""Phase 3.3.3.5: Cross-layer regression — the whole observability
+"""Cross-layer regression — the whole observability
 chain proven together, end to end:
 
-    Operator -> RBAC -> Approval -> Guard -> Policy -> Executor
-    -> ExecutionLog -> Metrics Read Model / Health Read Model
-    -> GET /executions/metrics / GET /executions/health
+Operator -> RBAC -> Approval -> Guard -> Policy -> Executor
+-> ExecutionLog -> Metrics Read Model / Health Read Model
+-> GET /executions/metrics / GET /executions/health
 
 This suite does NOT re-test pure read-model logic (3.3.3.1 / 3.3.3.3.1),
 the API mirrors (3.3.3.2 / 3.3.3.3.2) or the React layer (3.3.3.4).
 Every journey drives the REAL production chain — real HTTP API, real
 operator auth, real Guard + policy_from_settings, real adapters (Mock
-registry-produced; Shuffle / Wazuh / TheHive over their frozen offline
+registry-produced; Shuffle / Wazuh / TheHive over their offline
 transport seam) — and then proves the two read models and their GET
 endpoints agree with the stored facts.
 
 Journeys (acceptance gate):
 1. Successful execution -> metrics succeeded +1, health window updates
 2. Adapter failure: timeout / adapter_unavailable / adapter_error /
-   protocol_violation all land in the ADAPTER failure statistics
+protocol_violation all land in the ADAPTER failure statistics
 3. Governance flood: 1 succeeded + 20 guard_rejected -> adapter stays
-   observed healthy while guard_rejection_rate moves independently —
-   the most important cross-layer check of 3.3.3
+observed healthy while guard_rejection_rate moves independently —
+the most important cross-layer check of 3.3.3
 4. In-flight chains count toward totals only — never toward
-   success_rate or the health window denominator
+success_rate or the health window denominator
 5. Multi-adapter: mock / shuffle / wazuh / thehive land in their own
-   buckets, no cross-bucket bleed
+buckets, no cross-bucket bleed
 6. Empty state: success_rate = null, adapters = {} (UI: N/A /
-   "No adapter observations")
+"No adapter observations")
 7. Read-only invariance: executions may append facts, but GETting
-   metrics/health changes NOTHING (execution_log + Phase 2 world
-   byte-identical before/after, zero executor calls)
+metrics/health changes NOTHING
 """
 import json
 import uuid
@@ -58,13 +57,13 @@ from tests.test_execution_policy_cross_layer import (
     assert_world_unchanged,
     close_window,
     execute_body,
-    policy_on,  # noqa: F401  (fixture re-export for journey signatures)
+    policy_on,  # noqa: F401 (fixture re-export for journey signatures)
     seed_world,
     world_snapshot,
 )
 from tests.test_execution_service import BadOutcomeExecutor
 
-# M4-G §2: the multi-adapter journey drives RECOGNIZED external adapters
+# the multi-adapter journey drives RECOGNIZED external adapters
 # (shuffle / wazuh / thehive) over HTTP, so the fail-closed durable-store gate now
 # requires a store before the external request. Inject the no-DB FakeStore for the
 # real-adapter legs (real durable path); the mock leg stays on the legacy path.
@@ -75,10 +74,10 @@ HEALTH_URL = "/api/v1/executions/health"
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 
 
-# --------------------------------------------------------------------------
+#
 # Deterministic server clock (Policy judges SERVER time only) — same
-# frozen seam as 3.3.2.6.
-# --------------------------------------------------------------------------
+# seam as 3.3.2.6.
+#
 class _FrozenDatetime:
     fixed = datetime(2026, 9, 1, 10, 0, 0, tzinfo=timezone.utc)
 
@@ -109,9 +108,9 @@ def app():
     return fastapi_app
 
 
-# --------------------------------------------------------------------------
+#
 # Shared probes: read models direct + over HTTP
-# --------------------------------------------------------------------------
+#
 def get_metrics(client):
     response = client.get(METRICS_URL)
     assert response.status_code == 200
@@ -158,8 +157,8 @@ def execute_ok(client, db_session, headers, **world_kwargs) -> dict:
 
 
 def add_in_flight_row(db_session, approval_id, decisions):
-    """Crash-between-rows simulation (pattern frozen in 3.3.3.1): a
-    chain that never reached a terminal outcome."""
+    """Crash-between-rows simulation (pattern in 3.3.3.1): a
+chain that never reached a terminal outcome."""
     now = datetime.now(timezone.utc)
     execution_id = uuid.uuid4()
     for decision in decisions:
@@ -179,16 +178,16 @@ def add_in_flight_row(db_session, approval_id, decisions):
     db_session.commit()
 
 
-# --------------------------------------------------------------------------
+#
 # 1. Successful execution -> Metrics/Health
-# --------------------------------------------------------------------------
+#
 class TestSuccessJourney:
     def test_success_increments_metrics_and_updates_health_window(
         self, client, db_session, operator_auth, policy_on
     ):
         """approved -> execute -> succeeded -> metrics succeeded +1 and
-        the mock adapter's health window tracks the fact — direct read
-        models and both GET endpoints agree."""
+the mock adapter's health window tracks the fact — direct read
+models and both GET endpoints agree."""
         body = execute_ok(client, db_session, operator_auth)
         assert body["derived_state"] == "succeeded"
 
@@ -211,9 +210,9 @@ class TestSuccessJourney:
         assert over_http_health["adapters"]["mock"]["window_succeeded"] == 2
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Adapter failure -> all four classifications feed ADAPTER statistics
-# --------------------------------------------------------------------------
+#
 class TestAdapterFailureClassifications:
     @pytest.mark.parametrize(
         ("classification", "counter"),
@@ -255,8 +254,8 @@ class TestAdapterFailureClassifications:
         self, client, db_session, operator_auth, policy_on, app
     ):
         """A rogue adapter outcome (forbidden word) is judged
-        failed+protocol_violation by the platform and counted as an
-        adapter failure in its own bucket."""
+failed+protocol_violation by the platform and counted as an
+adapter failure in its own bucket."""
         world = seed_world(db_session)
         app.dependency_overrides[get_response_executor] = lambda: BadOutcomeExecutor()
         response = client.post(
@@ -273,16 +272,16 @@ class TestAdapterFailureClassifications:
         assert adapter["protocol_violation_count"] == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Governance flood never poisons adapter health (THE 3.3.3 check)
-# --------------------------------------------------------------------------
+#
 class TestGovernanceAttributionCrossLayer:
     def test_one_success_plus_twenty_rejections_stays_healthy(
         self, client, db_session, operator_auth, policy_on, monkeypatch
     ):
         """1 succeeded + 20 policy refusals -> the adapter's observed
-        status stays healthy (refusals never touched it) while the
-        governance rate moves independently."""
+status stays healthy (refusals never touched it) while the
+governance rate moves independently."""
         execute_ok(client, db_session, operator_auth)
         close_window(monkeypatch)
         for _ in range(20):
@@ -312,9 +311,9 @@ class TestGovernanceAttributionCrossLayer:
         assert adapter["all_time_guard_rejected"] == 20
 
 
-# --------------------------------------------------------------------------
+#
 # 4. In-flight chains: totals only, never outcome denominators
-# --------------------------------------------------------------------------
+#
 class TestInFlightCrossLayer:
     def test_in_flight_in_totals_not_in_rates_or_window(
         self, client, db_session, operator_auth, policy_on, app
@@ -334,7 +333,7 @@ class TestInFlightCrossLayer:
         assert response.json()["derived_state"] == "failed"
 
         # Two crash-between-rows chains: requested-only and
-        # requested+dispatched (pattern frozen in 3.3.3.1). Every chain
+        # requested+dispatched (pattern in 3.3.3.1). Every chain
         # needs its OWN approval (approval_id uniqueness, D5).
         add_in_flight_row(
             db_session, seed_world(db_session)["approval"].id, ["requested"]
@@ -360,9 +359,9 @@ class TestInFlightCrossLayer:
         assert adapter["observed_status"] == "degraded"
 
 
-# --------------------------------------------------------------------------
+#
 # 5. Multi-adapter: own buckets, no cross-bleed
-# --------------------------------------------------------------------------
+#
 class TestMultiAdapterBuckets:
     def test_four_adapters_land_in_their_own_buckets(
         self, client, db_session, operator_auth, policy_on, app
@@ -370,11 +369,11 @@ class TestMultiAdapterBuckets:
         # mock: registry-produced, zero seams.
         execute_ok(client, db_session, operator_auth)
 
-        # M4-G §2: from here the chain drives RECOGNIZED real adapters, so satisfy
+        # from here the chain drives RECOGNIZED real adapters, so satisfy
         # the fail-closed durable-store gate (real durable path, no-DB FakeStore).
         app.dependency_overrides[get_dispatch_attempt_store] = lambda: FakeStore()
 
-        # shuffle over the frozen offline transport seam.
+        # shuffle over the offline transport seam.
         shuffle_stub = StubTransport(payload={"success": True})
         app.dependency_overrides[get_response_executor] = lambda: ShuffleExecutor(
             AdapterCredentials(
@@ -402,7 +401,7 @@ class TestMultiAdapterBuckets:
         )
 
         # thehive. OutputCase shape ("_id"/"id" string reference + "caseId"
-        # number) — TheHive v0 never emits "case_id" (G3/G5 doc §3/§4).
+        # number) — TheHive v0 never emits "case_id".
         thehive_stub = StubTransport(
             payload={"_id": "case-1", "id": "case-1", "caseId": 1}
         )
@@ -438,9 +437,9 @@ class TestMultiAdapterBuckets:
         assert len(thehive_stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Empty state
-# --------------------------------------------------------------------------
+#
 class TestEmptyState:
     def test_empty_log_yields_null_rates_and_no_adapters(self, client):
         metrics = get_metrics(client)
@@ -455,14 +454,13 @@ class TestEmptyState:
         assert health["window_size"] >= 1
 
 
-# --------------------------------------------------------------------------
+#
 # 7. Read-only invariance of the two GET endpoints
-# --------------------------------------------------------------------------
+#
 class TestReadOnlyInvariance:
     def test_gets_change_nothing(self, client, db_session, operator_auth, policy_on, app):
         """Executions append facts (expected); GETting metrics/health
-        then changes NOTHING: execution_log byte-identical, Phase 2
-        world untouched, zero executor invocations."""
+then changes NOTHING: execution_log byte-identical, world untouched, zero executor invocations."""
         world = seed_world(db_session)
         before_world = world_snapshot(db_session, world)
         response = client.post(
@@ -497,7 +495,7 @@ class TestReadOnlyInvariance:
         assert log_snapshot(db_session) == before_log
         assert_world_unchanged(db_session, world, before_world)
 
-        # Multi-GET consistency (frozen 3.3.3.3.2): identical except the
+        # Multi-GET consistency (3.3.3.3.2): identical except the
         # generated_at stamp.
         assert first_metrics == second_metrics
         assert {

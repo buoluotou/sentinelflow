@@ -1,53 +1,52 @@
-"""Manual Reconcile — ReadAdapterRegistry integration + FakeReadAdapter (3.4.5-A2-C).
+"""Manual Reconcile — ReadAdapterRegistry integration with a fake read adapter.
 
-This is the A2 TURNING POINT. A2-B proved correlation + read-only external-reference
-extraction; A2-C wires that ``CorrelatedExecutionContext`` into the A1
-``ReadAdapterRegistry`` and proves the full PLATFORM chain end to end with a
-TEST-ONLY ``FakeReadAdapter``::
+Wires the ``CorrelatedExecutionContext`` built by correlation + read-only
+external-reference extraction into the ``ReadAdapterRegistry`` and proves the full
+platform chain end to end with a test-only ``FakeReadAdapter``::
 
-    execution_id -> correlate (3.4.4-C) -> ExecutionLog chain
-                 -> adapter (detail["executor"]) + external_reference   (A2-B)
-                 -> ReadAdapterRegistry.get(adapter)                     (A1)
-                 -> reader.read(AdapterReadRequest) -> AdapterReadResult (A2-C)
+    execution_id -> correlate -> ExecutionLog chain
+                 -> adapter (detail["executor"]) + external_reference
+                 -> ReadAdapterRegistry.get(adapter)
+                 -> reader.read(AdapterReadRequest) -> AdapterReadResult
 
-THE ONE RULE THAT MATTERS (spec §3 / §22): the ``FakeReadAdapter`` enters ONLY a
-test injection point — an EXPLICIT ``ReadAdapterRegistry([fake])`` instance passed
-by constructor injection. It is NEVER registered into
-``default_read_adapter_registry()``, which stays EMPTY, so production (shuffle /
-wazuh / thehive / mock / unknown) still rejects at ``registry.get`` with
-``UnsupportedAdapterRead`` -> rejected -> ZERO Outcome Fact. No test here mutates a
-global registry (spec §22: "avoid a test modifying the global production registry
-and forgetting to restore it").
+The ``FakeReadAdapter`` enters only a test injection point — an explicit
+``ReadAdapterRegistry([fake])`` instance passed by constructor injection. It is
+never registered into ``default_read_adapter_registry()``, which stays empty, so
+production (shuffle / wazuh / thehive / mock / unknown) still rejects at
+``registry.get`` with ``UnsupportedAdapterRead`` -> rejected -> zero Outcome Fact.
+No test here mutates a global registry, so there is no global state a test can
+modify and forget to restore.
 
-TWO DIFFERENT REJECTIONS, KEPT DIFFERENT (spec §9 / §25 — the crux of A2-C vs A2-D):
+Two different rejections, kept different:
 
-  * NO reader at all (``registry.get`` lookup fails) -> ``UnsupportedAdapterRead``.
-    There was NO read ATTEMPT, so it is a REJECTION with NO fact, and NEVER
-    ``reconciliation_failed``. This is EVERY adapter in the empty production registry.
-  * A reader EXISTS and ``read()`` is actually attempted but FAILS at transport level
-    (timeout / connection / transport) -> C surfaces the RAW failure signal ONLY. It
-    does NOT convert it to ``reconciliation_failed`` and writes NO fact — that mapping
-    is 3.4.5-A2-D (spec §14 / §25 / §26).
+  * No reader at all (``registry.get`` lookup fails) -> ``UnsupportedAdapterRead``.
+    There was no read attempt, so it is a rejection with no fact, and never
+    ``reconciliation_failed``. This is every adapter in the empty production registry.
+  * A reader exists and ``read()`` is actually attempted but fails at transport level
+    (timeout / connection / transport) -> the raw failure signal surfaces only. It is
+    not converted to ``reconciliation_failed`` and writes no fact; that conversion
+    belongs to the read-failure path.
 
-WHAT C DELIBERATELY DOES NOT DO (spec §2 / §14 / §15 / §23 / §24, AST- + runtime-proven
-below): NO real Shuffle/Wazuh/TheHive read, NO HTTP (urllib / requests / httpx), NO
-``normalize_external_state`` / mapping (A2-E), NO Outcome persistence / INSERT / UPDATE
-/ DELETE / COMMIT, NO executor / dispatch, NO retry, NO compensation. ``reconcile_execution``
-STOPPED at ``NotImplementedError`` after a successful fake read AT THE A2-C SEAL (spec §16
-— the pipeline reached ``AdapterReadResult`` and no further; NEVER a 200 ``accepted``). A2-E
-replaced that stub with the real mapping edge, so a SHUFFLE fake read is now REFUSED at
-3.4.3-B (``UnrecognizedExternalState`` — shuffle has NO evidenced vocabulary, §四) with the
-SAME §16 guarantee UNWEAKENED: ZERO Outcome Facts and NEVER a 200 ``accepted``. The three
-``reconcile_execution`` tests below now assert ``UnrecognizedExternalState`` (was
-``NotImplementedError``); every OTHER assertion (``call_count == 1`` / ``_outcome_count == 0``
-/ the request-attribute checks) is VERBATIM UNCHANGED.
+What this layer does not do: no real Shuffle/Wazuh/TheHive read, no HTTP (urllib /
+requests / httpx), no ``normalize_external_state`` / mapping, no Outcome persistence /
+INSERT / UPDATE / DELETE / COMMIT, no executor / dispatch, no retry, no compensation.
+``reconcile_execution`` used to stop at ``NotImplementedError`` after a successful
+fake read, with the pipeline reaching ``AdapterReadResult`` and no further, and never
+a 200 ``accepted``. The real mapping edge replaced that stub, so a shuffle fake read
+is now refused with ``UnrecognizedExternalState`` — shuffle has no evidenced
+vocabulary — and the guarantee is unweakened: zero Outcome Facts and never a 200
+``accepted``. The three ``reconcile_execution`` tests below now assert
+``UnrecognizedExternalState`` (previously ``NotImplementedError``); every other
+assertion (``call_count == 1`` / ``_outcome_count == 0`` / the request-attribute
+checks) is unchanged.
 
-Spec §17 checklist (items 1-27), §18 (no client override), §22 (structural fake
-isolation), §23 (no external I/O), §24 (no DB write), §25 (read-failure signal) are all
-covered here at the SERVICE / REGISTRY layer. The HTTP mapping of the unsupported path
-(``UnsupportedAdapterRead`` -> 404) and the missing-reference path (-> 422) is proven in
-``test_manual_reconcile_correlation.py`` (the router uses the EMPTY default registry, so
-a fake reader cannot be injected over HTTP without a global mutation — forbidden §22).
+The client-override boundary, structural fake isolation (no global registry
+mutation), the absence of external I/O, the absence of DB writes and the
+read-failure signal are all covered here at the service / registry layer. The HTTP
+mapping of the unsupported path (``UnsupportedAdapterRead`` -> 404) and the
+missing-reference path (-> 422) is proven in ``test_manual_reconcile_correlation.py``:
+the router uses the empty default registry, so a fake reader cannot be injected over
+HTTP without mutating that global.
 """
 import ast
 import inspect
@@ -89,18 +88,18 @@ from app.services.outcomes.reconciliation import (
 
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 
-#: The three real adapters plus mock and an unknown name — EVERY one of them is
-#: unsupported in the EMPTY production registry (spec §3 / §9-§13).
+# The three real adapters plus mock and an unknown name — all of them are
+# unsupported in the empty production registry.
 ALL_ADAPTERS = ("shuffle", "wazuh", "thehive", "mock", "datadog")
 
 
-# ---------------------------------------------------------------------------
-# test-only FakeReadAdapter (spec §4 / §5 / §22) — NEVER a production reader
-# ---------------------------------------------------------------------------
+#
+# test-only FakeReadAdapter — never a production reader
+#
 def _result(external_state, *, observed_at=None, raw_evidence=None):
-    """A canned ``AdapterReadResult`` carrying a RAW external state (spec §6 — an
-    external-system word / Mapping, NEVER an outcome word like ``confirmed_success``
-    / ``pending`` / ``unknown``; those are 3.4.3-B mapping, A2-E)."""
+    """A canned ``AdapterReadResult`` carrying a raw external state: an external-system
+    word / Mapping, never an outcome word like ``confirmed_success`` / ``pending`` /
+    ``unknown`` — the mapping edge produces those from this one."""
     return AdapterReadResult(
         external_state=external_state,
         observed_at=observed_at,
@@ -109,19 +108,19 @@ def _result(external_state, *, observed_at=None, raw_evidence=None):
 
 
 class FakeReadAdapter(ReadAdapter):
-    """A TEST-ONLY ``ReadAdapter`` (spec §4). Implements ONLY ``name`` + ``read``
-    — it structurally has NO ``execute`` / ``compensate`` / ``dispatch`` /
-    ``trigger`` verb (spec §4). It performs NO I/O: ``read`` returns a canned
-    ``AdapterReadResult`` (spec §5 success evidence) or raises a primed transport
-    error (spec §5 read failure) — proving the platform chain without any external
-    system (spec §23).
+    """A test-only ``ReadAdapter``. Implements only ``name`` + ``read``
+    — it structurally has no ``execute`` / ``compensate`` / ``dispatch`` /
+    ``trigger`` verb. It performs no I/O: ``read`` returns a canned
+    ``AdapterReadResult`` (success evidence) or raises a primed transport
+    error (read failure) — proving the platform chain without any external
+    system.
 
     It records every ``AdapterReadRequest`` it receives and its call count so tests
-    can prove the RIGHT execution_id / adapter / external_reference are passed
-    (spec §17 items 2-4) and that ``read()`` is invoked EXACTLY ONCE (items 5 / 27).
+    can prove the right execution_id / adapter / external_reference are passed
+    and that ``read()`` is invoked exactly once.
 
-    It is NEVER registered into ``default_read_adapter_registry()`` (spec §3 / §22):
-    tests inject it via an EXPLICIT ``ReadAdapterRegistry([fake])`` instance only.
+    It is never registered into ``default_read_adapter_registry()``:
+    tests inject it via an explicit ``ReadAdapterRegistry([fake])`` instance only.
     """
 
     def __init__(self, name="shuffle", *, result=None, error=None):
@@ -147,10 +146,10 @@ class FakeReadAdapter(ReadAdapter):
         return self.requests[-1]
 
 
-# ---------------------------------------------------------------------------
+#
 # seeding + snapshot helpers (mirror test_manual_reconcile_correlation.py; the
 # chain must be a valid execute chain so correlate_execution accepts it)
-# ---------------------------------------------------------------------------
+#
 def _seed_approval(db_session) -> AIResponseApproval:
     group = AlertGroup(
         fingerprint=uuid.uuid4().hex,
@@ -186,7 +185,7 @@ def _seed_approval(db_session) -> AIResponseApproval:
 
 
 def _seed_chain(db_session, execution_id, *, rows, operator="ops-1"):
-    """One execute chain from ``[(decision, detail), ...]`` in CHRONOLOGICAL order."""
+    """One execute chain from ``[(decision, detail), ...]`` in chronological order."""
     approval = _seed_approval(db_session)
     db_session.add_all(
         [
@@ -245,8 +244,8 @@ def _outcome_count(db_session):
 
 
 def _log_snapshot(db_session):
-    """Full-table content snapshot of execution_log INCLUDING ``detail`` (spec §24:
-    C must not mutate it). JSON-canonicalized, keyed by the unique row id."""
+    """Full-table content snapshot of execution_log including ``detail``, which the
+    read path must not mutate. JSON-canonicalized, keyed by the unique row id."""
     return sorted(
         (
             (
@@ -268,7 +267,7 @@ def _log_snapshot(db_session):
 
 
 def _service_import_surface():
-    """AST import surface of the A2-C service module (docstring-immune)."""
+    """AST import surface of the service module (docstring-immune)."""
     tree = ast.parse(inspect.getsource(reconcile_module))
     modules, names = set(), set()
     for node in ast.walk(tree):
@@ -283,30 +282,30 @@ def _service_import_surface():
     return modules, names
 
 
-# ---------------------------------------------------------------------------
-# spec §3 / §17 items 7-8 / §22 — the PRODUCTION registry stays EMPTY
-# ---------------------------------------------------------------------------
+#
+# the production registry stays empty
+#
 class TestProductionRegistryEmpty:
     def test_08_default_registry_is_empty(self):
-        # §3 / §17.8: the production default registry has ZERO readers.
+        # The production default registry has zero readers.
         assert default_read_adapter_registry().registered_adapters() == ()
 
     def test_07_no_default_fake_reader(self):
-        # §3 / §17.7: NO FakeReadAdapter (nor any reader) is in the production default.
+        # No FakeReadAdapter (nor any reader) is in the production default.
         registry = default_read_adapter_registry()
         for adapter in ALL_ADAPTERS + ("fake",):
             assert not registry.is_supported(adapter)
 
     @pytest.mark.parametrize("adapter", ALL_ADAPTERS)
     def test_default_registry_rejects_every_adapter(self, adapter):
-        # §3 / §8: EVERY adapter — real, mock, unknown — rejects at the empty registry.
+        # Every adapter — real, mock, unknown — rejects at the empty registry.
         with pytest.raises(UnsupportedAdapterRead) as excinfo:
             default_read_adapter_registry().get(adapter)
         assert excinfo.value.adapter == adapter
 
     def test_default_registry_unmutated_by_fake_injection(self, db_session):
-        # §22: injecting a fake into an EXPLICIT registry instance NEVER touches the
-        # production default (no global mutation to forget to restore).
+        # Injecting a fake into an explicit registry instance never touches the
+        # production default, so there is no global state to restore.
         before = default_read_adapter_registry().registered_adapters()
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -315,9 +314,9 @@ class TestProductionRegistryEmpty:
         assert before == after == ()
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 9-13 — registry lookup is unsupported for every adapter
-# ---------------------------------------------------------------------------
+#
+# registry lookup is unsupported for every adapter
+#
 class TestRegistryLookupUnsupported:
     def test_09_shuffle_lookup_unsupported(self):
         with pytest.raises(UnsupportedAdapterRead):
@@ -332,7 +331,7 @@ class TestRegistryLookupUnsupported:
             default_read_adapter_registry().get("thehive")
 
     def test_12_mock_lookup_unsupported(self):
-        # §11: mock is NEVER reconcilable — no FakeMockReader is registered in production.
+        # mock is never reconcilable — no reader for it is registered in production.
         with pytest.raises(UnsupportedAdapterRead):
             default_read_adapter_registry().get("mock")
 
@@ -341,17 +340,16 @@ class TestRegistryLookupUnsupported:
             default_read_adapter_registry().get("datadog")
 
     def test_unsupported_message_does_not_echo_reference(self):
-        # A1 non-echo discipline: the message names the adapter (not a secret) but
-        # NEVER an external_reference.
+        # The message names the adapter (not a secret) but never an external_reference.
         with pytest.raises(UnsupportedAdapterRead) as excinfo:
             default_read_adapter_registry().get("shuffle")
         assert "sf-exec" not in str(excinfo.value)
         assert excinfo.value.adapter == "shuffle"
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 9-16 (service level) — unsupported adapter via read_external_state
-# ---------------------------------------------------------------------------
+#
+# unsupported adapter via read_external_state (service level)
+#
 class TestUnsupportedViaPipeline:
     @pytest.mark.parametrize(
         "rows",
@@ -359,8 +357,8 @@ class TestUnsupportedViaPipeline:
         ids=["shuffle", "wazuh", "thehive", "mock"],
     )
     def test_read_external_state_rejects_at_empty_registry(self, db_session, rows):
-        # §8 / §9: a correlated, reference-bearing chain (or mock) still rejects at
-        # the EMPTY production registry — NO read attempt, NO fact.
+        # A correlated, reference-bearing chain (or mock) still rejects at the empty
+        # production registry — no read attempt, no fact.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=rows)
         with pytest.raises(UnsupportedAdapterRead):
@@ -368,7 +366,7 @@ class TestUnsupportedViaPipeline:
         assert _outcome_count(db_session) == 0
 
     def test_16_unsupported_produces_zero_fact(self, db_session):
-        # §17.16: UnsupportedAdapterRead -> rejected -> ZERO Outcome Fact, and the
+        # UnsupportedAdapterRead -> rejected -> zero Outcome Fact, and the
         # execution_log is byte-identical (no write on the rejection path).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -379,7 +377,7 @@ class TestUnsupportedViaPipeline:
         assert _log_snapshot(db_session) == before
 
     def test_unsupported_is_not_reconciliation_failed(self, db_session):
-        # §9: a registry LOOKUP failure is NOT a read attempt, so it is NEVER
+        # A registry lookup failure is not a read attempt, so it is never
         # reconciliation_failed — no outcome word of any kind is produced.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
@@ -390,14 +388,14 @@ class TestUnsupportedViaPipeline:
         assert all(r.outcome_status not in OUTCOME_STATUSES for r in rows)
 
 
-# ---------------------------------------------------------------------------
-# spec §17 item 14 / §10 — missing reference happens BEFORE the registry
-# ---------------------------------------------------------------------------
+#
+# missing reference happens before the registry is consulted
+#
 class TestMissingReferenceBeforeRegistry:
     def test_14_missing_reference_rejects_before_registry_read(self, db_session):
-        # §10 / §17.14: even when a reader EXISTS for the adapter, a chain with NO
-        # reconcilable reference rejects with MissingExternalReference FIRST — the
-        # registry's read() is NEVER reached (the fake records zero calls).
+        # Even when a reader exists for the adapter, a chain with no reconcilable
+        # reference rejects with MissingExternalReference first — the registry's
+        # read() is never reached (the fake records zero calls).
         eid = uuid.uuid4()
         _seed_chain(
             db_session,
@@ -411,12 +409,12 @@ class TestMissingReferenceBeforeRegistry:
         fake = FakeReadAdapter("shuffle")
         with pytest.raises(MissingExternalReference):
             read_external_state(db_session, eid, ReadAdapterRegistry([fake]))
-        assert fake.call_count == 0  # extraction gate ran BEFORE registry.get/read
+        assert fake.call_count == 0  # extraction gate ran before registry.get/read
         assert _outcome_count(db_session) == 0
 
     def test_missing_reference_not_downgraded_to_unsupported(self, db_session):
-        # §10: a no-reference shuffle chain is MissingExternalReference (422 family),
-        # NOT UnsupportedAdapterRead — the two rejections stay distinct even when the
+        # A no-reference shuffle chain is MissingExternalReference (422 family), not
+        # UnsupportedAdapterRead — the two rejections stay distinct even when the
         # adapter would be unsupported anyway.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=[("requested", {"executor": "shuffle"}), ("failed", {})])
@@ -424,12 +422,12 @@ class TestMissingReferenceBeforeRegistry:
             read_external_state(db_session, eid, default_read_adapter_registry())
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 1-6 / 27 / §1 / §7 — the FakeReadAdapter platform chain
-# ---------------------------------------------------------------------------
+#
+# the FakeReadAdapter platform chain
+#
 class TestFakeReaderIntegration:
     def test_01_existing_execution_with_fake_reader(self, db_session):
-        # §17.1: an existing execution + an injected fake reader -> an AdapterReadResult.
+        # An existing execution plus an injected fake reader yields an AdapterReadResult.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", result=_result("succeeded"))
@@ -437,7 +435,7 @@ class TestFakeReaderIntegration:
         assert isinstance(result, AdapterReadResult)
 
     def test_02_correct_adapter_passed(self, db_session):
-        # §17.2 / §18: the reader receives the HISTORICAL adapter (from ExecutionLog).
+        # The reader receives the historical adapter (from ExecutionLog).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
@@ -445,7 +443,7 @@ class TestFakeReaderIntegration:
         assert fake.last_request.adapter == "shuffle"
 
     def test_03_correct_external_reference_passed(self, db_session):
-        # §17.3 / §18: the reader receives the HISTORICAL external_reference.
+        # The reader receives the historical external_reference.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-historical-real"))
         fake = FakeReadAdapter("shuffle")
@@ -453,7 +451,7 @@ class TestFakeReaderIntegration:
         assert fake.last_request.external_reference == "sf-historical-real"
 
     def test_04_correct_execution_id_passed(self, db_session):
-        # §17.4: the reader receives the SAME execution_id (a UUID).
+        # The reader receives the same execution_id (a UUID).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
@@ -462,7 +460,7 @@ class TestFakeReaderIntegration:
         assert isinstance(fake.last_request.execution_id, uuid.UUID)
 
     def test_05_reader_read_called_exactly_once(self, db_session):
-        # §17.5: read() is invoked EXACTLY once per reconcile read.
+        # read() is invoked exactly once per reconcile read.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
@@ -471,8 +469,8 @@ class TestFakeReaderIntegration:
         assert len(fake.requests) == 1
 
     def test_06_fake_result_returned_intact(self, db_session):
-        # §17.6 / §6: the reader's AdapterReadResult is returned INTACT — the exact
-        # object, unmodified, unmapped (no outcome word added).
+        # The reader's AdapterReadResult is returned intact — the exact object,
+        # unmodified, unmapped (no outcome word added).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         canned = _result(
@@ -487,11 +485,11 @@ class TestFakeReaderIntegration:
         assert not hasattr(result, "outcome_status")
 
     def test_27_reader_invoked_exactly_once_through_reconcile(self, db_session):
-        # §17.27: through the full reconcile_execution entrypoint the reader is still
-        # invoked EXACTLY once. A2-E FLAG: the entrypoint no longer stops at the A2-C
-        # NotImplementedError stub — a SHUFFLE read now reaches 3.4.3-B mapping, which
-        # REFUSES it (shuffle has no evidenced vocabulary, §四) with
-        # UnrecognizedExternalState -> ZERO facts. The call_count invariant is UNCHANGED.
+        # Through the full reconcile_execution entrypoint the reader is still invoked
+        # exactly once. The entrypoint no longer stops at the NotImplementedError stub:
+        # a shuffle read reaches the external-state mapping, which refuses it (shuffle
+        # has no evidenced vocabulary) with UnrecognizedExternalState -> zero facts.
+        # The call_count invariant is unchanged.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
@@ -500,7 +498,7 @@ class TestFakeReaderIntegration:
         assert fake.call_count == 1
 
     def test_wazuh_reader_receives_command_id(self, db_session):
-        # §17.3 (wazuh): the §6.2 wazuh key (command_id) is the reference passed.
+        # For wazuh the adapter-specific key command_id is the reference passed.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_wazuh_rows("cmd-999"))
         fake = FakeReadAdapter("wazuh")
@@ -509,7 +507,7 @@ class TestFakeReaderIntegration:
         assert fake.last_request.external_reference == "cmd-999"
 
     def test_thehive_reader_receives_case_id(self, db_session):
-        # §17.3 (thehive): the §6.2 thehive key (case_id) is the reference passed.
+        # For thehive the adapter-specific key case_id is the reference passed.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_thehive_rows("case-777"))
         fake = FakeReadAdapter("thehive")
@@ -518,9 +516,9 @@ class TestFakeReaderIntegration:
         assert fake.last_request.external_reference == "case-777"
 
 
-# ---------------------------------------------------------------------------
-# spec §5 success evidence + §6 — raw external states, NEVER outcome words
-# ---------------------------------------------------------------------------
+#
+# raw external states, never outcome words
+#
 class TestReadResultBoundary:
     @pytest.mark.parametrize(
         "raw_state",
@@ -528,9 +526,9 @@ class TestReadResultBoundary:
         ids=["confirmed-success-evidence", "pending-evidence", "unknown-evidence"],
     )
     def test_success_evidence_is_raw_not_an_outcome_word(self, db_session, raw_state):
-        # §5 / §6: the fake returns RAW external evidence for the success / pending /
-        # unknown cases; the AdapterReadResult NEVER carries an outcome word (that is
-        # 3.4.3-B mapping, A2-E) and has NO outcome_status field.
+        # The fake returns raw external evidence for the success / pending / unknown
+        # cases; the AdapterReadResult never carries an outcome word (the mapping edge
+        # produces those) and has no outcome_status field.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", result=_result(raw_state))
@@ -540,7 +538,7 @@ class TestReadResultBoundary:
         assert not hasattr(result, "outcome_status")
 
     def test_result_can_carry_structured_external_state(self, db_session):
-        # §6: external_state may be a small structured Mapping, still RAW (unmapped).
+        # external_state may be a small structured Mapping, still raw (unmapped).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         canned = _result({"status": "completed", "steps": 3})
@@ -549,8 +547,8 @@ class TestReadResultBoundary:
         assert result.external_state == {"status": "completed", "steps": 3}
 
     def test_adapter_read_result_has_no_outcome_status_field(self):
-        # §13: the frozen A1 result shape carries external_state / observed_at /
-        # raw_evidence and NOTHING interpreted.
+        # The read result shape carries external_state / observed_at / raw_evidence
+        # and nothing interpreted.
         assert set(AdapterReadResult.__dataclass_fields__) == {
             "external_state",
             "observed_at",
@@ -558,28 +556,28 @@ class TestReadResultBoundary:
         }
 
 
-# ---------------------------------------------------------------------------
-# spec §17 item 17 / §25 — a read FAILURE is a SIGNAL only (A2-D maps it)
-# ---------------------------------------------------------------------------
+#
+# a read failure is a signal only; the read-failure path maps it
+#
 class TestReadFailureSignal:
     @pytest.mark.parametrize("exc_cls", [TimeoutError, ConnectionError, OSError])
     def test_17_read_failure_propagates_and_creates_no_outcome(self, db_session, exc_cls):
-        # §5 / §17.17 / §25: a fake reader that FAILS at transport level (timeout /
-        # connection / transport) — C surfaces the RAW failure, creates NO Outcome
-        # Fact, and does NOT convert it to reconciliation_failed (that is A2-D).
+        # A fake reader that fails at transport level (timeout / connection /
+        # transport): the raw failure surfaces, no Outcome Fact is created, and it is
+        # not converted to reconciliation_failed (the read-failure path does that).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", error=exc_cls("simulated read failure"))
         before = _log_snapshot(db_session)
         with pytest.raises(exc_cls):
             read_external_state(db_session, eid, ReadAdapterRegistry([fake]))
-        assert fake.call_count == 1  # the read WAS attempted (unlike unsupported)
+        assert fake.call_count == 1  # the read was attempted (unlike unsupported)
         assert _outcome_count(db_session) == 0
         assert _log_snapshot(db_session) == before
 
     def test_read_failure_is_not_reconciliation_failed(self, db_session):
-        # §25: a real read() failing is NOT reconciliation_failed in C — no outcome
-        # word of any kind is written; the failure stays an ephemeral signal.
+        # A real read() failing is not reconciliation_failed here — no outcome word of
+        # any kind is written; the failure stays an ephemeral signal.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", error=TimeoutError("timed out"))
@@ -590,25 +588,25 @@ class TestReadFailureSignal:
         assert all(r.outcome_status != "reconciliation_failed" for r in rows)
 
     def test_read_failure_is_distinct_from_unsupported(self, db_session):
-        # §9: a read FAILURE (reader exists, read attempted) is a DIFFERENT signal
-        # from UnsupportedAdapterRead (no reader, no attempt). Prove they diverge.
+        # A read failure (reader exists, read attempted) is a different signal from
+        # UnsupportedAdapterRead (no reader, no attempt). Prove they diverge.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", error=ConnectionError("refused"))
         with pytest.raises(ConnectionError):
             read_external_state(db_session, eid, ReadAdapterRegistry([fake]))
-        # the SAME chain, but with the EMPTY registry, is UnsupportedAdapterRead —
+        # the same chain, but with the empty registry, is UnsupportedAdapterRead —
         # a lookup rejection, not a transport failure.
         with pytest.raises(UnsupportedAdapterRead):
             read_external_state(db_session, eid, default_read_adapter_registry())
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 18-23 / §2 / §14 / §15 / §23 — no side capabilities
-# ---------------------------------------------------------------------------
+#
+# no side capabilities
+#
 class TestNoSideCapabilities:
     def test_18_no_mapping(self):
-        # §15 / §17.18: C never maps an external_state onto an outcome word.
+        # The read path never maps an external_state onto an outcome word.
         modules, names = _service_import_surface()
         assert "normalize_external_state" not in names
         assert "map_external_state" not in names
@@ -616,8 +614,8 @@ class TestNoSideCapabilities:
         assert "normalize_external_state" not in source
 
     def test_19_no_persistence(self, db_session):
-        # §14 / §17.19: no Outcome Fact is imported, constructed, or written — even
-        # WITH a fake reader that returns successfully.
+        # No Outcome Fact is imported, constructed, or written — even with a fake
+        # reader that returns successfully.
         _, names = _service_import_surface()
         assert "ExecutionOutcome" not in names
         assert "ExecutionOutcome(" not in inspect.getsource(reconcile_module)
@@ -627,34 +625,34 @@ class TestNoSideCapabilities:
         assert _outcome_count(db_session) == 0
 
     def test_20_no_executor(self):
-        # §2 / §17.20 / §21: no write-side executor / dispatch is imported.
+        # No write-side executor / dispatch is imported.
         modules, names = _service_import_surface()
         assert not any(m.startswith("app.services.executions") for m in modules)
         for forbidden in ("execute_response", "ResponseExecutor", "create_executor"):
             assert forbidden not in names
 
     def test_21_no_retry(self):
-        # §2 / §17.21: C never retries a read. AST-only — the service docstring NAMES
-        # "retry" in its FORBIDDEN prose, so a source-substring check would
-        # false-positive; only the import surface is trustworthy (docstring-immune).
+        # The read path never retries a read. AST-only: the service docstring names
+        # "retry" in prose, so a source-substring check would false-positive; only the
+        # import surface is trustworthy (docstring-immune).
         modules, names = _service_import_surface()
         assert not any("retry" in m.lower() for m in modules)
         assert not any("retry" in n.lower() for n in names)
 
     def test_22_no_compensation(self):
-        # §2 / §17.22: C never compensates.
+        # The read path never compensates.
         modules, names = _service_import_surface()
         assert not any("compensat" in m.lower() for m in modules)
         assert not any("compensat" in n.lower() for n in names)
 
     def test_23_no_http_transport_in_service(self):
-        # §2 / §17.23 / §23: the service module imports NO HTTP client.
+        # The service module imports no HTTP client.
         modules, _ = _service_import_surface()
         assert not any(f in m for m in modules for f in ("httpx", "requests", "urllib"))
         assert not any("app.integrations" in m for m in modules)
 
     def test_23_no_http_transport_in_this_test_module(self):
-        # §23: this test harness (which owns the FakeReadAdapter) is offline too — it
+        # This test harness (which owns the FakeReadAdapter) is offline too — it
         # imports no HTTP client and the fake does no network I/O.
         tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
         roots = set()
@@ -666,19 +664,19 @@ class TestNoSideCapabilities:
         assert not any(f in r for r in roots for f in ("httpx", "requests", "urllib", "socket"))
 
     def test_fake_reader_is_not_a_production_reader(self):
-        # §22: the FakeReadAdapter is a ReadAdapter (structurally valid) but is NOT
-        # in the production default registry — proven structurally.
+        # The FakeReadAdapter is a ReadAdapter (structurally valid) but is not in the
+        # production default registry — proven structurally.
         assert issubclass(FakeReadAdapter, ReadAdapter)
         assert default_read_adapter_registry().registered_adapters() == ()
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 19-22 (runtime) / §24 — no DB write even with a fake reader
-# ---------------------------------------------------------------------------
+#
+# no DB write even with a fake reader (runtime)
+#
 class TestNoDatabaseWrite:
     def test_read_with_fake_reader_writes_nothing(self, db_session):
-        # §24: a SUCCESSFUL fake read leaves execution_log byte-identical, stages
-        # nothing, and writes zero Outcome Facts.
+        # A successful fake read leaves execution_log byte-identical, stages nothing,
+        # and writes zero Outcome Facts.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         before = _log_snapshot(db_session)
@@ -692,8 +690,8 @@ class TestNoDatabaseWrite:
         assert not list(db_session.deleted)
 
     def test_read_never_commits(self, db_session, monkeypatch):
-        # §24: read-only means NO COMMIT — patch commit to explode; the fake-reader
-        # read must still return without triggering it.
+        # Read-only means no commit — patch commit to explode; the fake-reader read
+        # must still return without triggering it.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
 
@@ -705,7 +703,7 @@ class TestNoDatabaseWrite:
         assert isinstance(result, AdapterReadResult)
 
     def test_read_creates_no_execution_log_row(self, db_session):
-        # §24: reading never CREATES an execution_log row.
+        # Reading never creates an execution_log row.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         count_before = len(_all_log_rows(db_session))
@@ -713,12 +711,12 @@ class TestNoDatabaseWrite:
         assert len(_all_log_rows(db_session)) == count_before
 
 
-# ---------------------------------------------------------------------------
-# spec §17 items 24-25 / §12 / §13 — request + result are immutable
-# ---------------------------------------------------------------------------
+#
+# request and result are immutable
+#
 class TestImmutability:
     def test_24_request_is_immutable(self, db_session):
-        # §17.24: the AdapterReadRequest handed to the reader is frozen.
+        # The AdapterReadRequest handed to the reader is frozen.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle")
@@ -729,15 +727,15 @@ class TestImmutability:
         assert request.adapter == "shuffle"
 
     def test_25_result_is_immutable(self):
-        # §17.25: the AdapterReadResult is frozen — no post-hoc outcome_status.
+        # The AdapterReadResult is — no post-hoc outcome_status.
         result = _result("in_progress")
         with pytest.raises(FrozenInstanceError):
             result.external_state = "succeeded"  # type: ignore[misc]
         assert result.external_state == "in_progress"
 
     def test_request_fields_are_exact(self):
-        # §12: the frozen A1 request carries execution_id / adapter /
-        # external_reference and NO operator / credential / outcome field.
+        # The read request carries execution_id / adapter / external_reference and no
+        # operator / credential / outcome field.
         assert set(AdapterReadRequest.__dataclass_fields__) == {
             "execution_id",
             "adapter",
@@ -745,12 +743,12 @@ class TestImmutability:
         }
 
 
-# ---------------------------------------------------------------------------
-# spec §17 item 26 / §22 — deterministic lookup + constructor injection
-# ---------------------------------------------------------------------------
+#
+# deterministic lookup + constructor injection
+#
 class TestDeterministicLookup:
     def test_26_repeated_lookup_is_deterministic(self):
-        # §17.26: a name always resolves to the SAME reader object; order is stable.
+        # A name always resolves to the same reader object; order is stable.
         fake = FakeReadAdapter("shuffle")
         registry = ReadAdapterRegistry([fake])
         assert registry.get("shuffle") is registry.get("shuffle") is fake
@@ -758,21 +756,21 @@ class TestDeterministicLookup:
         assert registry.registered_adapters() == ("shuffle",)
 
     def test_injected_registry_resolves_only_its_reader(self):
-        # §22: an explicit registry supports exactly the injected adapters.
+        # An explicit registry supports exactly the injected adapters.
         registry = ReadAdapterRegistry([FakeReadAdapter("shuffle")])
         assert registry.is_supported("shuffle")
         assert not registry.is_supported("wazuh")
         assert not registry.is_supported("mock")
 
     def test_duplicate_registration_is_a_construction_error(self):
-        # A1 invariant (the fake integrates cleanly): two readers with one name ->
-        # ValueError, never a silent overwrite.
+        # Registry invariant: two readers with one name -> ValueError, never a silent
+        # overwrite.
         with pytest.raises(ValueError):
             ReadAdapterRegistry([FakeReadAdapter("shuffle"), FakeReadAdapter("shuffle")])
 
     def test_repeated_read_is_deterministic(self, db_session):
-        # §17.26 (pipeline): repeated reads over an unchanged chain yield equal
-        # results and leave the chain byte-identical.
+        # Repeated reads over an unchanged chain yield equal results and leave the
+        # chain byte-identical.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-stable"))
         before = _log_snapshot(db_session)
@@ -785,25 +783,25 @@ class TestDeterministicLookup:
         assert _log_snapshot(db_session) == before
 
 
-# ---------------------------------------------------------------------------
-# spec §18 — the client can NEVER override adapter / reference / credential
-# ---------------------------------------------------------------------------
+#
+# the client can never override adapter / reference / credential
+#
 class TestNoClientOverride:
     def test_read_external_state_takes_no_operator_or_client_value(self):
-        # §18: STRUCTURAL — read_external_state(session, execution_id, registry) has
-        # NO adapter / operator / external_reference parameter, so a client value can
-        # never enter the read; adapter + reference come ONLY from ExecutionLog.
+        # Structural: read_external_state(session, execution_id, registry) has no
+        # adapter / operator / external_reference parameter, so a client value can
+        # never enter the read; adapter + reference come only from ExecutionLog.
         params = list(inspect.signature(read_external_state).parameters)
         assert params == ["session", "execution_id", "registry"]
         for forbidden in ("operator", "adapter", "external_reference", "reference", "token", "credential"):
             assert forbidden not in params
 
     def test_operator_never_reaches_the_read(self, db_session):
-        # §18: reconcile_execution carries an operator, but it NEVER reaches the read
-        # — the request the fake receives has no operator / credential attribute, and
-        # the adapter + reference are the HISTORICAL ones regardless of the operator.
-        # A2-E FLAG: the shuffle read is now REFUSED at 3.4.3-B (UnrecognizedExternalState,
-        # §四) instead of the A2-C NotImplementedError stub; every assertion below is VERBATIM.
+        # reconcile_execution carries an operator, but it never reaches the read — the
+        # request the fake receives has no operator / credential attribute, and the
+        # adapter + reference are the historical ones regardless of the operator. The
+        # shuffle read is now refused with UnrecognizedExternalState instead of the
+        # NotImplementedError stub; every assertion below is unchanged.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-truth"))
         fake = FakeReadAdapter("shuffle")
@@ -816,8 +814,8 @@ class TestNoClientOverride:
             assert not hasattr(request, forbidden)
 
     def test_adapter_and_reference_come_from_history(self, db_session):
-        # §18: with a shuffle chain in history, the fake reader receives the shuffle
-        # adapter + the historical handle — there is no channel for a client override.
+        # With a shuffle chain in history, the fake reader receives the shuffle adapter
+        # + the historical handle — there is no channel for a client override.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows("sf-historical"))
         fake = FakeReadAdapter("shuffle")
@@ -829,17 +827,17 @@ class TestNoClientOverride:
         assert fake.last_request.execution_id == eid
 
 
-# ---------------------------------------------------------------------------
-# spec §16 — reconcile_execution never fabricates a 200 for an unevidenced read
-# ---------------------------------------------------------------------------
+#
+# reconcile_execution never fabricates a 200 for an unevidenced read
+#
 class TestReconcileStopsAtResult:
     def test_reconcile_with_fake_reader_reads_then_not_implemented(self, db_session):
-        # §16: even WITH a reader that returns successfully, reconcile_execution NEVER
-        # fabricates a 200 for a SHUFFLE read. A2-E FLAG: the A2-C NotImplementedError
-        # stub is GONE — the read now reaches 3.4.3-B mapping, which REFUSES the shuffle
-        # state ("succeeded" is unevidenced for shuffle, §四) with UnrecognizedExternalState.
-        # The §16 invariant is UNWEAKENED: the read happened exactly once and ZERO facts
-        # were persisted (call_count / _outcome_count VERBATIM UNCHANGED).
+        # Even with a reader that returns successfully, reconcile_execution never
+        # fabricates a 200 for a shuffle read. The NotImplementedError stub is gone:
+        # the read reaches the external-state mapping, which refuses the shuffle state
+        # ("succeeded" is unevidenced for shuffle) with UnrecognizedExternalState. The
+        # guarantee is unchanged: the read happened exactly once and zero facts were
+        # persisted (call_count / _outcome_count unchanged).
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         fake = FakeReadAdapter("shuffle", result=_result("succeeded"))
@@ -849,8 +847,8 @@ class TestReconcileStopsAtResult:
         assert _outcome_count(db_session) == 0
 
     def test_reconcile_default_registry_is_unsupported(self, db_session):
-        # §3 / §16: with NO explicit registry (the production default, EMPTY), a
-        # reference-bearing chain rejects with UnsupportedAdapterRead — never a read.
+        # With no explicit registry (the empty production default), a reference-bearing
+        # chain rejects with UnsupportedAdapterRead — never a read.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         with pytest.raises(UnsupportedAdapterRead):
@@ -858,8 +856,8 @@ class TestReconcileStopsAtResult:
         assert _outcome_count(db_session) == 0
 
     def test_read_external_state_returns_internal_result(self, db_session):
-        # §16: read_external_state yields the INTERNAL AdapterReadResult (the platform
-        # chain's terminal artifact in C) — this is as far as C goes.
+        # read_external_state yields the internal AdapterReadResult, the terminal
+        # artifact of this layer's platform chain — nothing further is produced here.
         eid = uuid.uuid4()
         _seed_chain(db_session, eid, rows=_shuffle_rows())
         canned = _result("succeeded", raw_evidence={"external_status": "succeeded"})
@@ -868,13 +866,13 @@ class TestReconcileStopsAtResult:
         assert result is canned
 
     def test_reconcile_registry_defaults_to_none(self):
-        # §22: reconcile_execution's registry parameter DEFAULTS to None (resolved to
-        # the empty production default) — a test must pass an EXPLICIT instance.
+        # reconcile_execution's registry parameter defaults to None (resolved to the
+        # empty production default) — a test must pass an explicit instance.
         signature = inspect.signature(reconcile_execution)
         assert signature.parameters["registry"].default is None
 
     def test_read_external_state_requires_explicit_registry(self):
-        # §22: read_external_state has NO default registry — the caller MUST inject
-        # one, so production can never accidentally resolve a reader.
+        # read_external_state has no default registry — the caller must inject one, so
+        # production can never accidentally resolve a reader.
         signature = inspect.signature(read_external_state)
         assert signature.parameters["registry"].default is inspect.Parameter.empty

@@ -1,5 +1,5 @@
 /**
- * TypeScript mirror of GET /api/v1/dashboard/summary (Phase 1 Step 7.5).
+ * TypeScript mirror of GET /api/v1/dashboard/summary.
  *
  * Field-for-field copy of the backend schema — the console never derives
  * these numbers itself; the backend is the single source of truth.

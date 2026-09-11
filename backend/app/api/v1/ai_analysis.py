@@ -1,16 +1,16 @@
-"""AI analysis API (Phase 2 Step 10.5).
+"""AI analysis API.
 
 Explicit-trigger alert explanation for one event — thin HTTP layer over
-AIAnalysisService; the frozen error contract is mapped here:
+AIAnalysisService; the service's error types map to HTTP as follows:
 
-    AIEventNotFound             -> 404
-    AIProviderConfigError       -> 503
-    AIProviderUnavailable       -> 503
-    AIResponseParseError        -> 502
+AIEventNotFound             -> 404
+AIProviderConfigError       -> 503
+AIProviderUnavailable       -> 503
+AIResponseParseError        -> 502
 
-A failed analysis NEVER produces a row: the service raises before any
-add(), so a 5xx response always leaves ai_analyses untouched. Analysis is
-advisory only — this endpoint cannot alter risk, status or incidents.
+A failed analysis writes no row: the service raises before any add(), so a
+5xx response leaves ai_analyses untouched. Analysis is advisory only — this
+endpoint cannot alter risk, status or incidents.
 """
 import uuid
 
@@ -33,8 +33,8 @@ router = APIRouter(prefix="/events", tags=["ai-analysis"])
 
 def get_ai_analysis_service() -> AIAnalysisService:
     """Deployment seam: the service builds its provider from settings
-    (AI_PROVIDER, default mock). Tests override this dependency to inject
-    failing providers."""
+(AI_PROVIDER, default mock). Tests override this dependency to inject
+failing providers."""
     return AIAnalysisService()
 
 
@@ -45,7 +45,7 @@ def ai_analysis_create(
     service: AIAnalysisService = Depends(get_ai_analysis_service),
 ) -> AIAnalysisRead:
     """Run one AI alert-explanation of the event and append it to the
-    event's analysis history (repeated calls keep every record)."""
+event's analysis history (repeated calls keep every record)."""
     record = _explain(db, service, event_id)
     db.commit()
     db.refresh(record)
@@ -59,7 +59,7 @@ def ai_analysis_latest(
     service: AIAnalysisService = Depends(get_ai_analysis_service),
 ) -> AIAnalysisRead:
     """Most recent analysis of the event; 404 when the event is unknown or
-    has never been analysed (the history listing is deferred)."""
+has never been analysed (the history listing is deferred)."""
     _validate_event(db, event_id)
     record = service.latest_analysis(db, _to_uuid(event_id))
     if record is None:
@@ -70,7 +70,7 @@ def ai_analysis_latest(
 
 
 def _explain(db: Session, service: AIAnalysisService, event_id: str):
-    """Call the service and translate the frozen error taxonomy to HTTP."""
+    """Call the service and translate its error types to HTTP status codes."""
     try:
         return service.explain_event(db, _to_uuid(event_id))
     except AIEventNotFound as exc:

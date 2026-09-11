@@ -1,4 +1,4 @@
-"""RC2 / C-1 — durable compensation integration (the reverse of test_dispatch_durable_integration).
+"""/ C-1 — durable compensation integration (the reverse of test_dispatch_durable_integration).
 
 WHAT THIS PROVES. The compensation path now has the SAME durable protection as
 forward dispatch: the immutable reverse binding commits on its OWN transaction
@@ -13,11 +13,11 @@ an external-effect confirmation.
 LAYERS (mirroring the forward suite):
 - ``TestCompensationBinding`` — the typed binding build/parse/whitelist.
 - ``TestDurableCompensationStore`` — the REAL store on a FILE-backed engine
-  (an independent commit needs a second connection, so the in-memory StaticPool
-  harness cannot drive it — same rule as the forward store tests).
+(an independent commit needs a second connection, so the in-memory StaticPool
+harness cannot drive it — same rule as the forward store tests).
 - ``TestCompensationServiceWiring`` — service sequencing on the in-memory
-  harness with the FakeStore seam (record-before-wire ordering, fail-closed
-  gate, duplicate refusal, single external call).
+harness with the FakeStore seam (record-before-wire ordering, fail-closed
+gate, duplicate refusal, single external call).
 - ``TestCompensationRecoveryReads`` — the read-only recovery classification.
 
 PostgreSQL concurrency lives in ``test_compensation_durable_postgres.py``
@@ -121,9 +121,9 @@ def _compensate(db_session, forward, *, executor, store=None):
     )
 
 
-# --------------------------------------------------------------------------
+#
 # 1. The typed binding (unit)
-# --------------------------------------------------------------------------
+#
 class TestCompensationBinding:
     def test_roundtrip_via_detail(self):
         execution_id = uuid.uuid4()
@@ -180,9 +180,9 @@ class TestCompensationBinding:
         assert detail["execution_id"] == binding.execution_id  # platform fact intact
 
 
-# --------------------------------------------------------------------------
+#
 # 2. The REAL store on a FILE-backed engine (independent connection)
-# --------------------------------------------------------------------------
+#
 @pytest.fixture()
 def file_engine(tmp_path):
     engine = create_engine(
@@ -236,9 +236,9 @@ class TestDurableCompensationStore:
             assert fresh.query(CompensationAttempt).count() == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Service wiring (in-memory harness + FakeStore seam)
-# --------------------------------------------------------------------------
+#
 class TestCompensationServiceWiring:
     def test_store_records_before_the_external_reverse_request(self, db_session):
         events = _Events()
@@ -329,7 +329,7 @@ class TestCompensationServiceWiring:
     def test_recognized_adapter_without_a_durable_store_is_refused_before_dispatch(
         self, db_session
     ):
-        # RC2 / C-1 FAIL-CLOSED GATE (the reverse mirror of M4-G §2): a
+        # / C-1 FAIL-CLOSED GATE: a
         # RECOGNIZED real external adapter presented with store=None MUST be
         # refused BEFORE the external reverse request. The adapter is NEVER
         # invoked.
@@ -401,9 +401,9 @@ class TestCompensationServiceWiring:
         assert len(store.recorded) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 4. Recovery reads (read-only classification)
-# --------------------------------------------------------------------------
+#
 def _attempt_row(**kw):
     now = datetime.now(timezone.utc)
     defaults = dict(
@@ -504,7 +504,7 @@ class TestCompensationRecoveryReads:
         attempt = _attempt_row()
         db_session.add(attempt)
         # a terminal that merely REFERENCES this attempt id but lives in a
-        # DIFFERENT execution cannot settle it (the M4-GR lesson).
+        # DIFFERENT execution cannot settle it.
         db_session.add(
             _terminal_row(attempt, "compensation_succeeded", execution_id=uuid.uuid4())
         )

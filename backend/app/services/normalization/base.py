@@ -13,7 +13,7 @@ class UnknownSourceError(NormalizationError):
 
 
 class AdapterNotImplementedError(NormalizationError):
-    """An adapter exists but is still a placeholder (e.g. Wazuh in Phase 1)."""
+    """An adapter exists but is still a placeholder."""
 
 
 class MalformedRawEventError(NormalizationError):
@@ -23,17 +23,17 @@ class MalformedRawEventError(NormalizationError):
 class BaseAdapter(ABC):
     """Contract every source adapter must implement.
 
-    An adapter only knows about its own raw format and produces the unified
-    NormalizedAlert model. It never touches the database.
-    """
+An adapter only knows about its own raw format and produces the unified
+NormalizedAlert model. It never touches the database.
+"""
 
-    #: identifier used in POST /api/v1/normalize {"source": ...}
+    # identifier used in POST /api/v1/normalize {"source": ...}
     source: str = "unknown"
 
     @abstractmethod
     def normalize(self, raw_data: dict) -> NormalizedAlert:
         """Convert one raw source event into a NormalizedAlert.
 
-        Must raise MalformedRawEventError when the payload is not parseable.
-        """
+Must raise MalformedRawEventError when the payload is not parseable.
+"""
         raise NotImplementedError

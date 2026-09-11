@@ -1,4 +1,4 @@
-/** AI Alert Explanation panel (Step 10.7): display + explicit trigger, no chat.
+/** AI Alert Explanation panel: display + explicit trigger, no chat.
  *
  * Reads the latest analysis on mount; "Analyze with AI" POSTs a new one.
  * The backend appends a history row per trigger — the panel always renders

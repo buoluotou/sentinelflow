@@ -1,9 +1,9 @@
-"""Step 9: AI Provider Architecture — contract tests, written red-first.
+"""AI Provider Architecture — contract tests.
 
-Scope frozen by the user: unified interface, configuration, error handling,
-the structured-output protocol and a Mock Provider. No real model is called
-anywhere in these tests: network providers run against an injected fake
-transport. Ollama stays an interface target until Step 10.
+Scope: unified interface, configuration, error handling, the structured-output
+protocol and a Mock Provider. No real model is called anywhere in these tests:
+network providers run against an injected fake transport, and a live Ollama is
+only exercised by the ``ollama``-marked end-to-end suite.
 """
 import json
 
@@ -55,7 +55,7 @@ def _analysis_dict(**overrides) -> dict:
     return base
 
 
-# ---------------------------------------------------------------- protocol
+# protocol
 
 
 class TestProtocol:
@@ -93,7 +93,7 @@ class TestProtocol:
             AIAnalysis(summary="s", attack_type="t", why_risky=[], confidence=0.5, extra=1)
 
 
-# ------------------------------------------------------------- mock provider
+# mock provider
 
 
 class TestMockProvider:
@@ -116,12 +116,12 @@ class TestMockProvider:
             provider.explain(_request())
 
 
-# ----------------------------------------------------------- ollama provider
+# ollama provider
 
 
 class FakeTransport:
     """Injected stand-in for the HTTP layer: captures the request, returns
-    a canned body or raises. Contract: (url, payload, headers) -> body str."""
+a canned body or raises. Contract: (url, payload, headers) -> body str."""
 
     def __init__(self, body: str | None = None, exc: Exception | None = None):
         self.body = body
@@ -182,7 +182,7 @@ class TestOllamaProvider:
             provider.explain(_request())
 
 
-# -------------------------------------------------- openai-compatible provider
+# openai-compatible provider
 
 
 class TestOpenAICompatibleProvider:
@@ -224,7 +224,7 @@ class TestOpenAICompatibleProvider:
             OpenAICompatibleProvider(model="m", api_key="k")
 
 
-# ------------------------------------------------------------------ registry
+# registry
 
 
 class TestRegistry:

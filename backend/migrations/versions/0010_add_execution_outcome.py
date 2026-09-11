@@ -4,33 +4,29 @@ Revision ID: 0010
 Revises: 0009
 Create Date: 2026-09-03
 
-Phase 3.4.1: append-only external-outcome fact layer (design doc
-docs/design/phase3.4-execution-outcome-lifecycle.md §4, adjudications
-O1/O2/O5). INDEPENDENT layer over execution_log — the dispatch log's
-eight decision words and its table shape are NOT touched by this
-migration (D3.4-05: dispatch history semantics never change).
+Append-only external-outcome fact layer, independent of the dispatch log:
+the dispatch log's eight decision words and its table shape are untouched
+by this migration, and dispatch history semantics never change.
 
 Constraints mirrored 1:1 from app/models/execution_outcome.py:
-- CHECK ck_execution_outcome_status: the five frozen outcome words
-  (unknown / pending / confirmed_success / confirmed_failure /
-  reconciliation_failed). Dispatch words like 'succeeded' / 'failed'
-  are deliberately NOT legal here — the two vocabularies never
-  cross-contaminate (D3.4-04).
-- CHECK ck_execution_outcome_source: exactly the two frozen ingress
-  channels (webhook / manual_reconcile). No third channel exists —
-  background polling is forbidden (D3.4-03).
+- CHECK ck_execution_outcome_status: the five outcome words
+(unknown / pending / confirmed_success / confirmed_failure /
+reconciliation_failed). Dispatch words such as 'succeeded' / 'failed'
+are not legal here, so the two vocabularies cannot cross-contaminate.
+- CHECK ck_execution_outcome_source: exactly the two ingress channels
+(webhook / manual_reconcile). There is no third channel — background
+polling is forbidden.
 - Index ix_execution_outcome_execution_id: chain lookup.
 - Index ix_execution_outcome_execution_id_observed_at: the derivation
-  query path (O2 — latest observation wins). NON-unique BY DESIGN:
-  multiple facts per execution form the append-only time series
-  (D3.4-06); late/reordered facts are appended, never rejected.
+query path; the latest observation wins. Non-unique, because multiple
+facts per execution form the append-only time series and late or
+reordered facts are appended, never rejected.
 
-No foreign keys, deliberately: execution_id is a caller-supplied chain
-key spread over multiple dispatch-log rows, not a primary key (same
-precedent as execution_log.compensates_execution_id, which is a plain
-column too). The link is read-only — outcome facts never write back
-into the dispatch log, and no deletion semantics exist between the two
-tables (both are append-only audit; neither is ever deleted).
+No foreign keys: execution_id is a caller-supplied chain key spread over
+multiple dispatch-log rows, not a primary key — the same precedent as
+execution_log.compensates_execution_id, which is a plain column too. The
+link is read-only: outcome facts never write back into the dispatch log,
+and neither table is ever deleted.
 """
 from typing import Sequence, Union
 
@@ -79,8 +75,8 @@ def upgrade() -> None:
         "execution_outcome",
         ["execution_id"],
     )
-    # Derivation query path (O2). Plain index — uniqueness would forbid
-    # the append-only time series and is deliberately absent.
+    # Derivation query path. Plain index — uniqueness would forbid the
+    # append-only time series.
     op.create_index(
         "ix_execution_outcome_execution_id_observed_at",
         "execution_outcome",

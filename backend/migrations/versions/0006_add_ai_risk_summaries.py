@@ -4,10 +4,10 @@ Revision ID: 0006
 Revises: 0005
 Create Date: 2026-08-26
 
-Phase 2 Step 11: AI risk-summary history. alert_group_id is indexed but
-NOT unique — every summary run appends a record (models/prompts change,
-re-summarising is expected), exactly like ai_analyses. analyst_priority is
-advisory only; event_risk stays the single source of truth for scores.
+AI risk-summary history. alert_group_id is indexed but not unique: every
+summary run appends a record (models and prompts change, re-summarising is
+expected), exactly like ai_analyses. analyst_priority is advisory only;
+event_risk stays the source of truth for scores.
 """
 from typing import Sequence, Union
 

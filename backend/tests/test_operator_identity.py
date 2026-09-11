@@ -1,4 +1,4 @@
-"""Phase 3.3.1 — Operator Identity & RBAC tests.
+"""Operator Identity & RBAC tests.
 
 Locks the server-side identity binding:
 
@@ -48,23 +48,23 @@ EXECUTE = "/api/v1/executions"
 COMPENSATE = "/api/v1/executions/compensate"
 RECONCILE = "/api/v1/executions/{execution_id}/reconcile"
 
-#: A credential containing a non-ASCII character. ``secrets.compare_digest``
-#: REJECTS a non-ASCII ``str`` with a TypeError, and a raw header byte >= 0x80
-#: is decoded latin-1 by the ASGI server — so without encoding, an
-#: UNAUTHENTICATED caller turns the promised 401 into an unhandled 500.
-#: Mirrors tests/test_webhook_authentication.py (same input class; the
-#: callback gate in api/v1/webhooks.py carries the same byte encoding).
+# A credential containing a non-ASCII character. ``secrets.compare_digest``
+# REJECTS a non-ASCII ``str`` with a TypeError, and a raw header byte >= 0x80
+# is decoded latin-1 by the ASGI server — so without encoding, an
+# UNAUTHENTICATED caller turns the promised 401 into an unhandled 500.
+# Mirrors tests/test_webhook_authentication.py (same input class; the
+# callback gate in api/v1/webhooks.py carries the same byte encoding).
 NON_ASCII_CREDENTIAL = "caf" + chr(233)
 NON_ASCII_BEARER = "Bearer " + NON_ASCII_CREDENTIAL
-#: The same credential as it actually arrives on the wire. httpx refuses a
-#: non-ASCII *str* header (UnicodeEncodeError), so the client-level tests send
-#: raw bytes — which is also the true attacker shape.
+# The same credential as it actually arrives on the wire. httpx refuses a
+# non-ASCII *str* header (UnicodeEncodeError), so the client-level tests send
+# raw bytes — which is also the true attacker shape.
 NON_ASCII_HEADER = [(b"authorization", b"Bearer caf\xe9")]
 
 
-# --------------------------------------------------------------------------
+#
 # Fixtures
-# --------------------------------------------------------------------------
+#
 @pytest.fixture(autouse=True)
 def _reset_registry():
     """Force a fresh registry for every test (the registry is a module-
@@ -89,9 +89,9 @@ def auth_header():
     return {"Authorization": "Bearer tok-alice-001"}
 
 
-# --------------------------------------------------------------------------
-# OperatorRole — frozen vocabulary
-# --------------------------------------------------------------------------
+#
+# OperatorRole — vocabulary
+#
 class TestOperatorRole:
     def test_four_roles_frozen(self):
         assert VALID_ROLES == {"viewer", "reviewer", "executor", "admin"}
@@ -109,9 +109,9 @@ class TestOperatorRole:
         assert OperatorRole.ADMIN.value == "admin"
 
 
-# --------------------------------------------------------------------------
+#
 # Operator — immutable, token-free
-# --------------------------------------------------------------------------
+#
 class TestOperator:
     def test_immutable_dataclass(self):
         op = Operator(name="alice", role=OperatorRole.EXECUTOR)
@@ -129,9 +129,9 @@ class TestOperator:
         assert "EXECUTOR" in repr(op) or "executor" in repr(op)
 
 
-# --------------------------------------------------------------------------
+#
 # OperatorRegistry — token -> Operator lookup
-# --------------------------------------------------------------------------
+#
 class TestOperatorRegistry:
     def test_lookup_returns_correct_operator(self):
         ops = [
@@ -206,9 +206,9 @@ class TestOperatorRegistry:
         assert "super-secret-token" not in r
 
 
-# --------------------------------------------------------------------------
+#
 # build_registry — OPERATORS_JSON parsing & validation
-# --------------------------------------------------------------------------
+#
 class TestBuildRegistry:
     def _settings(self, **kw):
         return Settings(**kw)
@@ -305,9 +305,9 @@ class TestBuildRegistry:
         assert secret_tok not in str(exc.value)
 
 
-# --------------------------------------------------------------------------
+#
 # get_operator_registry — module-level singleton
-# --------------------------------------------------------------------------
+#
 class TestGetOperatorRegistry:
     def test_returns_registry(self):
         reg = get_operator_registry()
@@ -330,9 +330,9 @@ class TestGetOperatorRegistry:
         assert r2.operator_count == 2
 
 
-# --------------------------------------------------------------------------
+#
 # authenticate_operator — API dependency
-# --------------------------------------------------------------------------
+#
 class TestAuthenticateOperatorDependency:
     def test_valid_executor_token(self, monkeypatch, auth_header):
         monkeypatch.setattr(settings, "OPERATORS_JSON", json.dumps([
@@ -432,9 +432,9 @@ class TestAuthenticateOperatorDependency:
         assert "not configured" in exc.value.detail
 
 
-# --------------------------------------------------------------------------
-# RC2 regression — a non-ASCII credential is a uniform 401, never a 500
-# --------------------------------------------------------------------------
+#
+# regression — a non-ASCII credential is a uniform 401, never a 500
+#
 class TestNonAsciiCredentialIs401NeverFiveHundred:
     """A non-ASCII Bearer credential collapses to the SAME uniform 401 on every
     protected write path: no TypeError, no traceback, no 500, zero writes.
@@ -452,7 +452,7 @@ class TestNonAsciiCredentialIs401NeverFiveHundred:
         reset_operator_registry()
         return "tok-real"
 
-    # -- unit level: the comparison itself must never raise ----------------
+    # unit level: the comparison itself must never raise ----------------
 
     def test_registry_lookup_does_not_raise(self, executor_configured):
         registry = get_operator_registry()
@@ -472,7 +472,7 @@ class TestNonAsciiCredentialIs401NeverFiveHundred:
         # The fix must not weaken the happy path.
         assert get_operator_registry().lookup("tok-real").name == "alice"
 
-    # -- dependency level --------------------------------------------------
+    # dependency level --------------------------------------------------
 
     def test_dependency_non_ascii_is_401(self, executor_configured):
         from fastapi import HTTPException
@@ -492,7 +492,7 @@ class TestNonAsciiCredentialIs401NeverFiveHundred:
             authenticate_operator(authorization=NON_ASCII_BEARER)
         assert exc.value.status_code == 401
 
-    # -- over real HTTP, with raw wire bytes -------------------------------
+    # over real HTTP, with raw wire bytes -------------------------------
 
     def test_http_execute_non_ascii_401_zero_rows(
         self, client, db_session, executor_configured
@@ -559,9 +559,9 @@ class TestNonAsciiCredentialIs401NeverFiveHundred:
         assert len(seen) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # API integration — operator from token, not body
-# --------------------------------------------------------------------------
+#
 def _seed_approval(db_session, *, status="approved"):
     now = datetime.now(timezone.utc)
     group = AlertGroup(
@@ -757,9 +757,9 @@ class TestAPIOperatorIntegration:
         assert list(db_session.query(ExecutionLog)) == []
 
 
-# --------------------------------------------------------------------------
+#
 # Token security — never in response / DB / repr / audit
-# --------------------------------------------------------------------------
+#
 class TestOperatorTokenSecurity:
     def test_token_never_in_response(
         self, client, db_session, monkeypatch
@@ -824,11 +824,11 @@ class TestOperatorTokenSecurity:
         assert "secret" not in str(s)
 
 
-# --------------------------------------------------------------------------
+#
 # Frozen clause: RBAC is authorization, not automation
-# --------------------------------------------------------------------------
+#
 class TestRBACIsNotAutomation:
-    """Phase 3.3 frozen principle: RBAC grants or denies access; it
+    """principle: RBAC grants or denies access; it
     never auto-approves or auto-executes. This test locks the invariant
     at the source-code level — no endpoint or service path calls
     execute_response / compensate_response without an explicit HTTP

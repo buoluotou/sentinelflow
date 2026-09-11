@@ -1,19 +1,19 @@
-"""AI response-recommendation API (Phase 2 Step 12.3).
+"""AI response-recommendation API.
 
 Explicit-trigger response advice for one event — thin HTTP layer over
-AIResponseRecommendationService; the frozen error contract (identical to
-the Step 10/11 AI APIs) is mapped here:
+AIResponseRecommendationService; the error contract (identical to the AI
+analysis and risk-summary APIs) is mapped here:
 
-    AIEventNotFound             -> 404
-    AIProviderConfigError       -> 503
-    AIProviderUnavailable       -> 503
-    AIResponseParseError        -> 502
+AIEventNotFound             -> 404
+AIProviderConfigError       -> 503
+AIProviderUnavailable       -> 503
+AIResponseParseError        -> 502
 
-A failed recommendation NEVER produces a row: the service raises before
-any add(), so a 5xx response always leaves ai_response_recommendations
-untouched. Advisory only — this endpoint cannot alter EventRisk.score /
-level or Incident.status / disposition, and never executes anything:
-every action stays a suggestion until human approval (Step 13).
+A failed recommendation writes no row: the service raises before any add(),
+so a 5xx response leaves ai_response_recommendations untouched. Advisory
+only — this endpoint cannot alter EventRisk.score / level or
+Incident.status / disposition, and never executes anything: every action
+stays a suggestion until an operator approves it.
 """
 import uuid
 
@@ -36,8 +36,8 @@ router = APIRouter(prefix="/events", tags=["response-recommendation"])
 
 def get_ai_response_recommendation_service() -> AIResponseRecommendationService:
     """Deployment seam: the service builds its provider from settings
-    (AI_PROVIDER, default mock). Tests override this dependency to inject
-    failing providers."""
+(AI_PROVIDER, default mock). Tests override this dependency to inject
+failing providers."""
     return AIResponseRecommendationService()
 
 
@@ -54,7 +54,7 @@ def response_recommendation_create(
     ),
 ) -> AIResponseRecommendationRead:
     """Run one AI response recommendation of the event and append it to the
-    event's recommendation history (repeated calls keep every record)."""
+event's recommendation history (repeated calls keep every record)."""
     record = _generate(db, service, event_id)
     db.commit()
     db.refresh(record)
@@ -73,7 +73,7 @@ def response_recommendation_latest(
     ),
 ) -> AIResponseRecommendationRead:
     """Most recent recommendation of the event; 404 when the event is
-    unknown or has never received advice (the history listing is deferred)."""
+unknown or has never received advice (the history listing is deferred)."""
     _validate_event(db, event_id)
     record = service.latest_recommendation(db, _to_uuid(event_id))
     if record is None:
@@ -84,7 +84,7 @@ def response_recommendation_latest(
 
 
 def _generate(db: Session, service: AIResponseRecommendationService, event_id: str):
-    """Call the service and translate the frozen error taxonomy to HTTP."""
+    """Call the service and translate its error types to HTTP status codes."""
     try:
         return service.generate_response_recommendation(db, _to_uuid(event_id))
     except AIEventNotFound as exc:

@@ -1,18 +1,18 @@
-"""AI risk-summary API (Phase 2 Step 11.4).
+"""AI risk-summary API.
 
 Explicit-trigger SOC-level risk summary for one event — thin HTTP layer
-over AIRiskSummaryService; the frozen error contract (identical to the
-Step 10 analysis API) is mapped here:
+over AIRiskSummaryService; the error contract (identical to the AI analysis
+API) is mapped here:
 
-    AIEventNotFound             -> 404
-    AIProviderConfigError       -> 503
-    AIProviderUnavailable       -> 503
-    AIResponseParseError        -> 502
+AIEventNotFound             -> 404
+AIProviderConfigError       -> 503
+AIProviderUnavailable       -> 503
+AIResponseParseError        -> 502
 
-A failed summary NEVER produces a row: the service raises before any
-add(), so a 5xx response always leaves ai_risk_summaries untouched. The
-summary is advisory only — this endpoint cannot alter EventRisk.score /
-level, Incident.status / disposition, and never produces execution actions.
+A failed summary writes no row: the service raises before any add(), so a
+5xx response leaves ai_risk_summaries untouched. The summary is advisory
+only — this endpoint cannot alter EventRisk.score / level, Incident.status /
+disposition, and never produces execution actions.
 """
 import uuid
 
@@ -35,8 +35,8 @@ router = APIRouter(prefix="/events", tags=["ai-risk-summary"])
 
 def get_ai_risk_summary_service() -> AIRiskSummaryService:
     """Deployment seam: the service builds its provider from settings
-    (AI_PROVIDER, default mock). Tests override this dependency to inject
-    failing providers."""
+(AI_PROVIDER, default mock). Tests override this dependency to inject
+failing providers."""
     return AIRiskSummaryService()
 
 
@@ -47,7 +47,7 @@ def ai_risk_summary_create(
     service: AIRiskSummaryService = Depends(get_ai_risk_summary_service),
 ) -> AIRiskSummaryRead:
     """Run one AI risk summary of the event and append it to the event's
-    summary history (repeated calls keep every record)."""
+summary history (repeated calls keep every record)."""
     record = _generate(db, service, event_id)
     db.commit()
     db.refresh(record)
@@ -61,7 +61,7 @@ def ai_risk_summary_latest(
     service: AIRiskSummaryService = Depends(get_ai_risk_summary_service),
 ) -> AIRiskSummaryRead:
     """Most recent risk summary of the event; 404 when the event is unknown
-    or has never been summarised (the history listing is deferred)."""
+or has never been summarised (the history listing is deferred)."""
     _validate_event(db, event_id)
     record = service.latest_summary(db, _to_uuid(event_id))
     if record is None:
@@ -72,7 +72,7 @@ def ai_risk_summary_latest(
 
 
 def _generate(db: Session, service: AIRiskSummaryService, event_id: str):
-    """Call the service and translate the frozen error taxonomy to HTTP."""
+    """Call the service and translate its error types to HTTP status codes."""
     try:
         return service.generate_risk_summary(db, _to_uuid(event_id))
     except AIEventNotFound as exc:

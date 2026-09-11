@@ -1,5 +1,5 @@
-"""Phase 3.3.2.4: Service Integration — the Execution Policy wired into
-the frozen forward chain (design B-3):
+"""Service Integration — the Execution Policy wired into
+the forward chain (design B-3):
 
     requested -> Guard -> Policy -> dispatched -> Executor
 
@@ -20,7 +20,7 @@ Locks the acceptance gate row by row:
   severity / timestamp fields stay a 422 at the schema boundary; a
   misconfigured policy fails closed with 503 and zero executor calls
 
-Service-level verdicts are driven with a frozen server clock (the Policy
+Service-level verdicts are driven with a server clock (the Policy
 judges the SERVER time — datetime.now in the service module is patched,
 so every assertion is clock-deterministic). No React, no real external
 systems.
@@ -47,9 +47,9 @@ from app.services.executions.policy import ExecutionPolicy
 from app.services.executions.service import execute_response
 
 
-# --------------------------------------------------------------------------
+#
 # Deterministic server clock — the Policy judges the SERVER time only
-# --------------------------------------------------------------------------
+#
 class _FrozenDatetime:
     """Stands in for datetime inside the service module; now() returns a
     fixed instant so every policy verdict is clock-deterministic."""
@@ -75,9 +75,9 @@ def at(hour: int, minute: int) -> None:
     _FrozenDatetime.fixed = datetime(2026, 9, 1, hour, minute, 0, tzinfo=timezone.utc)
 
 
-# --------------------------------------------------------------------------
+#
 # Seeding + canary executor + policies
-# --------------------------------------------------------------------------
+#
 def seed_approved(db_session, *, risk_score: int | None = 85):
     """alert_group -> recommendation -> approval (+ optional EventRisk,
     the Policy's ONLY risk fact). Returns (approval, recommendation)."""
@@ -165,12 +165,12 @@ class NoCapabilityExecutor:
 
 
 def business_hours(**overrides) -> ExecutionPolicy:
-    """Enabled policy allowing the frozen 10:00 default instant with the
-    frozen default thresholds (block_source_ip needs >= 70)."""
+    """Enabled policy allowing the 10:00 default instant with the
+    default thresholds (block_source_ip needs >= 70)."""
     return ExecutionPolicy(enabled=True, **overrides)
 
 
-#: Window 23:00-23:59 UTC — the frozen 22:15 instant sits OUTSIDE it.
+# Window 23:00-23:59 UTC — the 22:15 instant sits OUTSIDE it.
 DENY_WINDOW = ExecutionPolicy(enabled=True, window_start="23:00", window_end="23:59")
 DENY_RISK = ExecutionPolicy(enabled=True, window_start="00:00", window_end="23:59")
 FULL_ALLOW = ExecutionPolicy(enabled=True, window_start="00:00", window_end="23:59")
@@ -186,9 +186,9 @@ def rows_asc(db_session, execution_id):
     )
 
 
-# --------------------------------------------------------------------------
+#
 # Allow path: Policy -> dispatched -> Executor
-# --------------------------------------------------------------------------
+#
 class TestPolicyAllowDispatches:
     def test_allow_chain_calls_executor_exactly_once(self, db_session):
         approval, _ = seed_approved(db_session, risk_score=85)
@@ -208,7 +208,7 @@ class TestPolicyAllowDispatches:
         self, db_session, monkeypatch
     ):
         """Disabled policy = ALLOW regardless of the risk fact — the
-        exact frozen 3.1/3.2 behavior (regression gate)."""
+        exact 3.1/3.2 behavior (regression gate)."""
         monkeypatch.setattr(settings, "EXECUTION_POLICY_ENABLED", False)
         approval, _ = seed_approved(db_session, risk_score=None)
         result = execute_response(
@@ -221,9 +221,9 @@ class TestPolicyAllowDispatches:
         assert result.chain == ("requested", "dispatched", "succeeded")
 
 
-# --------------------------------------------------------------------------
+#
 # Deny paths: requested -> guard_rejected, Executor at ZERO calls
-# --------------------------------------------------------------------------
+#
 class TestPolicyDenyLandsGuardRejected:
     def test_window_denial_chain_and_detail(self, db_session):
         at(22, 15)  # outside 09:00-18:00 UTC
@@ -307,9 +307,9 @@ class TestPolicyDenyLandsGuardRejected:
         assert details[0] == details[1]
 
 
-# --------------------------------------------------------------------------
+#
 # Chain order: requested -> Guard -> Policy -> Executor
-# --------------------------------------------------------------------------
+#
 class TestGuardRunsBeforePolicy:
     def test_guard_rejection_wins_over_policy_denial(self, db_session):
         """A capability miss is judged by the Guard stage and carries
@@ -333,9 +333,9 @@ class TestGuardRunsBeforePolicy:
         assert detail["code"] == "executor_unsupported"
 
 
-# --------------------------------------------------------------------------
+#
 # Facts immutable: a policy refusal changes NOTHING but the audit rows
-# --------------------------------------------------------------------------
+#
 class TestFactsImmutableOnDenial:
     def test_denial_leaves_every_entity_untouched(self, db_session):
         at(22, 15)
@@ -385,9 +385,9 @@ class TestFactsImmutableOnDenial:
         assert len(db_session.scalars(select(EventRisk)).all()) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # .env -> Settings -> Policy (the policy_from_settings seam)
-# --------------------------------------------------------------------------
+#
 class TestPolicyFromSettingsWiring:
     def test_enabled_settings_allow_inside_window(self, db_session, monkeypatch):
         monkeypatch.setattr(settings, "EXECUTION_POLICY_ENABLED", True)
@@ -460,9 +460,9 @@ class TestPolicyFromSettingsWiring:
         assert result.chain == ("requested", "dispatched", "succeeded")
 
 
-# --------------------------------------------------------------------------
+#
 # HTTP surface: legacy token + registry operators + RBAC + smuggling
-# --------------------------------------------------------------------------
+#
 EXECUTE_URL = "/api/v1/executions"
 TOKEN = "exec-secret-policy-integration-01"
 OPERATORS_JSON = json.dumps(
@@ -489,7 +489,7 @@ def _seed_api_approval(db_session):
 class TestHttpPolicyIntegration:
     def test_legacy_token_denied_by_policy(self, client, db_session, monkeypatch):
         """The legacy EXECUTION_TOKEN path goes through the Policy like
-        any registry operator (spec §11)."""
+        any registry operator."""
         monkeypatch.setattr(settings, "EXECUTION_TOKEN", TOKEN)
         monkeypatch.setattr(settings, "EXECUTION_POLICY_ENABLED", True)
         # Empty window [05:00, 05:00) denies at ANY real clock time.

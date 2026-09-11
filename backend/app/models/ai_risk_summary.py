@@ -9,26 +9,26 @@ from app.models.types import JSONVariant
 
 
 class AIRiskSummary(Base):
-    """One AI risk summary of an event (Phase 2 Step 11).
+    """One AI risk summary of an event.
 
-    Fourth advisory artefact next to EventRisk / AIAnalysis / Incident —
-    responsibilities stay isolated, nothing overwrites anything else:
+Fourth advisory artefact next to EventRisk / AIAnalysis / Incident;
+responsibilities stay isolated, so nothing overwrites anything else:
 
-        EventRisk     = the rule engine's objective score (ONLY official score)
-        AIAnalysis    = the AI's explanation of the event (Step 10)
-        AIRiskSummary = the AI's SOC-level synthesis: what deserves attention
-        Incident      = the SOC's human case
+EventRisk     = the rule engine's objective score (the official score)
+AIAnalysis    = the AI's explanation of the event
+AIRiskSummary = the AI's SOC-level synthesis: what deserves attention
+Incident      = the SOC's human case
 
-    analyst_priority is advisory triage guidance, never a recomputed risk
-    score. History, not a snapshot: alert_group_id is indexed but NOT unique,
-    so every summary run (model/prompt/event-state changes) appends a record.
-    """
+analyst_priority is advisory triage guidance, not a recomputed risk
+score. History, not a snapshot: alert_group_id is indexed but not unique,
+so every summary run (model/prompt/event-state changes) appends a record.
+"""
 
     __tablename__ = "ai_risk_summaries"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
 
-    # The "event_id" of the summary — an event IS an AlertGroup. No unique
+    # The "event_id" of the summary — an event is an AlertGroup. No unique
     # constraint: repeated summaries are kept as a history.
     alert_group_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -41,9 +41,9 @@ class AIRiskSummary(Base):
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
 
-    # Frozen risk-summary protocol (Step 11): summary / key_findings /
-    # risk_drivers / analyst_priority / confidence — exactly what the
-    # RiskSummary pydantic model validated.
+    # Risk-summary protocol: summary / key_findings / risk_drivers /
+    # analyst_priority / confidence — the fields the RiskSummary schema
+    # validates.
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     key_findings: Mapped[list] = mapped_column(JSONVariant, nullable=False)
     risk_drivers: Mapped[list] = mapped_column(JSONVariant, nullable=False)

@@ -69,5 +69,5 @@ class NormalizationEngine:
         )
 
 
-#: engine shared by the API layer
+# engine shared by the API layer
 engine = NormalizationEngine([SimulatorAdapter(), WazuhAdapter()])

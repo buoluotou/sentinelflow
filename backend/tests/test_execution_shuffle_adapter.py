@@ -1,26 +1,26 @@
-"""Phase 3.2.3 — Shuffle Adapter regression.
+"""Shuffle adapter regression tests.
 
 Locks the complete offline chain:
 
     ResponseExecutor -> ShuffleExecutor -> (stubbed) Shuffle API
-    -> workflow trigger -> ExecutionOutcome -> D9 protocol parser
+    -> workflow trigger -> ExecutionOutcome -> platform protocol parser
     -> execution_log
 
-Frozen semantics under test (design §4/§5/§6/§7):
-- succeeded == "workflow trigger confirmed" (E4) — never "fully done";
+Fixed semantics under test:
+- succeeded == "workflow trigger confirmed" — never "fully done";
 - 202 without confirmation -> failed (fail-closed);
-- duplicate / already triggered -> succeeded (idempotency hit, §5.3);
+- duplicate / already triggered -> succeeded (idempotency hit);
 - classification table: timeout / unreachable / 4xx / 5xx / malformed;
-- protocol_violation judged ONLY by the platform parse (D9);
-- execution_id rides the request BODY (outbound idempotency, §5.2);
-- ZERO automatic retry (E5): the transport is invoked exactly once;
+- protocol_violation judged only by the platform parse;
+- execution_id rides the request body (outbound idempotency);
+- no automatic retry: the transport is invoked exactly once;
 - secret discipline: a hostile stub echoing the API key back stays ***
   in detail / exceptions / logs / request bodies.
 
-Default run: REAL EXTERNAL NETWORK = 0 — every HTTP exchange goes
-through an injected transport double. The ONE test touching a real
-Shuffle instance carries @pytest.mark.external and is DESELECTED unless
-the run opts in with `-m external`.
+Default run: no external network — every HTTP exchange goes through an
+injected transport double. The one test touching a live Shuffle instance
+carries @pytest.mark.external and is deselected unless the run opts in
+with `-m external`.
 """
 import json
 import socket
@@ -42,9 +42,9 @@ from app.services.executions.protocol import parse_execution_outcome
 from app.services.executions.secrets import AdapterCredentials
 from app.services.executions.service import execute_response
 
-# M4-G §2: these service-chain tests drive the REAL durable path — a RECOGNIZED
-# adapter (shuffle) with store=None is now refused before dispatch by the
-# fail-closed gate. They inject the shared no-DB recording store double.
+# These service-chain tests drive the durable dispatch path: a recognized
+# adapter (shuffle) with store=None is refused before dispatch by the
+# fail-closed gate, so they inject the shared no-DB recording store double.
 from tests.test_dispatch_durable_integration import FakeStore
 
 FAKE_SECRET = "s3cr3t-PHASE32-TEST-ONLY"
@@ -155,9 +155,9 @@ def _shuffle_settings(**overrides) -> Settings:
     return Settings(**base)
 
 
-# --------------------------------------------------------------------------
-# 1. Capability surface (frozen §4 Shuffle column)
-# --------------------------------------------------------------------------
+#
+# 1. Capability surface (fixed Shuffle action set)
+#
 class TestCapability:
     def test_name_is_shuffle(self):
         assert _executor(StubTransport()).name == "shuffle"
@@ -181,8 +181,8 @@ class TestCapability:
         assert executor.supports("isolate_host") is False
 
     def test_compensation_is_workflow_dependent(self):
-        # Frozen §4: reverse workflow configured -> supported; otherwise
-        # False (disable_account has NO reverse slot by design).
+        # Reverse workflow configured -> compensation supported; otherwise
+        # False (disable_account has no reverse workflow).
         executor = _executor(StubTransport())
         assert executor.supports_compensation("block_source_ip") is True
         assert executor.supports_compensation("isolate_host") is False
@@ -190,9 +190,9 @@ class TestCapability:
         assert executor.supports_compensation("escalate_to_incident") is False
 
 
-# --------------------------------------------------------------------------
+#
 # 2. Registry construction (fail-closed)
-# --------------------------------------------------------------------------
+#
 class TestRegistry:
     def test_create_executor_returns_shuffle(self):
         executor = create_executor(_shuffle_settings())
@@ -223,9 +223,9 @@ class TestRegistry:
             )
 
 
-# --------------------------------------------------------------------------
+#
 # 3. Outbound request discipline
-# --------------------------------------------------------------------------
+#
 class TestOutboundDiscipline:
     def test_url_is_base_plus_workflow_never_carries_secret(self):
         stub = StubTransport(payload={"success": True})
@@ -255,9 +255,9 @@ class TestOutboundDiscipline:
         assert stub.last["timeout"] == 2.5
 
 
-# --------------------------------------------------------------------------
-# 4. HTTP semantics table (frozen §6/§7 — no string-sniffing, table only)
-# --------------------------------------------------------------------------
+#
+# 4. HTTP semantics table (fixed status -> classification table, no string sniffing)
+#
 class TestHttpSemanticsTable:
     @pytest.mark.parametrize(
         "transport, expected_status, expected_classification",
@@ -281,7 +281,7 @@ class TestHttpSemanticsTable:
             # 500 -> adapter_error; 503 -> adapter_unavailable
             (StubTransport(status=500, body=b"boom"), "failed", "adapter_error"),
             (StubTransport(status=503, body=b"down"), "failed", "adapter_unavailable"),
-            # 202 accepted-without-confirmation -> fail-closed (E4/D10)
+            # 202 accepted-without-confirmation -> fail-closed
             (
                 StubTransport(status=202, payload={"message": "accepted"}),
                 "failed",
@@ -311,7 +311,7 @@ class TestHttpSemanticsTable:
         self, transport, expected_status, expected_classification
     ):
         outcome = _executor(transport).execute(_dispatch())
-        parse_execution_outcome(outcome)  # D9 accepts every self-report
+        parse_execution_outcome(outcome)  # the platform parser accepts every self-report
         assert outcome.status == expected_status
         assert outcome.detail["classification"] == expected_classification
         assert outcome.raw_response is None
@@ -325,7 +325,7 @@ class TestHttpSemanticsTable:
         assert outcome.detail["result"] == "workflow triggered"
         assert outcome.detail["workflow_id"] == "wf-block"
         assert outcome.detail["external_execution_id"] == "shuffle-run-42"
-        # E4: trigger confirmation — NOT workflow completion.
+        # trigger confirmation, not workflow completion.
         assert "classification" not in outcome.detail
 
     def test_201_created_with_confirmation_is_succeeded(self):
@@ -355,9 +355,9 @@ class TestHttpSemanticsTable:
             _executor(StubTransport(payload=["success"])).execute(_dispatch())
 
 
-# --------------------------------------------------------------------------
-# 5. Idempotency (frozen §5)
-# --------------------------------------------------------------------------
+#
+# 5. Idempotency
+#
 class TestIdempotency:
     @pytest.mark.parametrize(
         "body",
@@ -389,9 +389,9 @@ class TestIdempotency:
         assert len(stub.calls) == 1
 
 
-# --------------------------------------------------------------------------
+#
 # 6. Secret leakage (stub echoes the key back — everything stays ***)
-# --------------------------------------------------------------------------
+#
 class TestSecretLeakage:
     def test_secret_in_error_body_never_reaches_detail(self):
         body = json.dumps({"error": f"Authorization Bearer {FAKE_SECRET}"}).encode()
@@ -401,8 +401,8 @@ class TestSecretLeakage:
         assert FAKE_SECRET not in str(outcome)
 
     def test_five_check_request_detail_exception_log_api(self):
-        """The five-check mirror (frozen §8 rule 5): request body /
-        audit detail / exception strings / captured logs / API surface."""
+        """The five leak checks: request body, audit detail, exception
+        strings, captured logs, API surface."""
         import logging
 
         body = json.dumps({"error": f"Bearer {FAKE_SECRET}"}).encode()
@@ -412,7 +412,7 @@ class TestSecretLeakage:
         # 2/3. outcome detail + exception strings
         outcome = executor.execute(_dispatch())
 
-        # 1. outbound request body (Authorization header is the ONLY ride)
+        # 1. outbound request body (the key rides only in the Authorization header)
         assert FAKE_SECRET not in json.dumps(stub.last["body"])
         assert FAKE_SECRET not in stub.last["url"]
         assert FAKE_SECRET not in str(outcome.detail)
@@ -467,9 +467,9 @@ class TestSecretLeakage:
         assert result.final_decision == "failed"
 
 
-# --------------------------------------------------------------------------
+#
 # 7. Full service chain (offline stub through the real Service)
-# --------------------------------------------------------------------------
+#
 class TestServiceChain:
     def _run(self, db_session, transport, action="block_source_ip"):
         from tests.test_execution_service import seed_approved
@@ -513,7 +513,7 @@ class TestServiceChain:
     def test_malformed_response_chain_is_platform_protocol_violation(
         self, db_session
     ):
-        # D9: the adapter RAISES; only the platform parse writes the
+        # The adapter raises; only the platform parse writes the
         # protocol_violation verdict.
         result = self._run(db_session, StubTransport(body=b"not json"))
         assert result.final_decision == "failed"
@@ -546,20 +546,20 @@ class TestServiceChain:
             executor=executor,
             compensation_attempt_store=store,
         )
-        # RC2 / C-1: the durable pre-compensation binding was recorded.
+        # The durable pre-compensation binding was recorded.
         assert len(store.recorded) == 1
         assert store.recorded[0].original_execution_id == str(forward.execution_id)
         assert stub.calls[-1]["url"].endswith("/wf-reverse-block/execute")
         assert stub.calls[-1]["body"]["operation"] == "compensate"
 
 
-# --------------------------------------------------------------------------
+#
 # 8. Real Shuffle (external marker — deselected by default)
-# --------------------------------------------------------------------------
+#
 @pytest.mark.external
 class TestRealShuffle:
     def test_real_workflow_trigger(self):
-        """Talks to a REAL Shuffle instance. Runs ONLY with `-m external`
+        """Talks to a live Shuffle instance. Runs only with `-m external`
         and a complete SHUFFLE_* configuration; skips itself otherwise."""
         import os
 
@@ -572,7 +572,7 @@ class TestRealShuffle:
         assert executor.name == "shuffle"
         dispatch = _dispatch()
         outcome = parse_execution_outcome(executor.execute(dispatch))
-        # Terminal fact only (D10): succeeded or failed, nothing else.
+        # Terminal outcome only: succeeded or failed, nothing else.
         assert outcome.status in ("succeeded", "failed")
         if outcome.status == "succeeded":
             assert outcome.detail["result"] == "workflow triggered"

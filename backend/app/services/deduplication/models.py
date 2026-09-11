@@ -10,5 +10,5 @@ class DeduplicationResult:
 
     group: AlertGroup
     alert: Alert
-    #: True when a brand new AlertGroup had to be created for this event
+    # True when a brand new AlertGroup had to be created for this event
     created_group: bool

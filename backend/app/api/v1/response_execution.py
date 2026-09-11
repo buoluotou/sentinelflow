@@ -1,38 +1,37 @@
-"""Response-execution API (Phase 3.1.7, auth upgraded in 3.3.1).
+"""Response-execution API.
 
-Thin HTTP layer over the Execute / Compensation Service (3.1.6):
+Thin HTTP layer over the Execute / Compensation Service:
 
     Bearer Token -> Operator Auth -> Request Schema -> Service
 
-The API OWNS: Bearer token authentication on the write paths (3.3.1:
-token -> Operator identity via the static registry, with legacy
+The API owns: Bearer token authentication on the write paths (the token
+maps to an Operator identity through the static registry, with a legacy
 EXECUTION_TOKEN fallback), request-schema validation, the Service call,
-typed-exception -> HTTP mapping, commit, response serialization. The API
-NEVER judges approval status, action, target or lifecycle, never calls
-an executor and never writes execution_log rows itself — every execution
+typed-exception -> HTTP mapping, commit, response serialization. It does
+not judge approval status, action, target or lifecycle, never calls an
+executor and never writes execution_log rows itself — every execution
 fact is produced by the Service.
 
-HTTP contract (frozen):
+HTTP contract:
     401  write paths only — token missing / malformed / wrong; the auth
-         check fails BEFORE the Service runs, so 401 writes ZERO
+         check fails before the Service runs, so a 401 writes no
          execution_log rows. The token value never appears in a
          response, an exception string, audit detail or the database.
-    422  schema violation — every smuggling attempt (action / target /
-         direction / detail / created_at / status ...) dies here via
+    422  schema violation — a smuggled field (action / target /
+         direction / detail / created_at / status ...) fails here via
          extra="forbid", before the Service runs.
     404  ApprovalNotFound / ExecutionNotFound — no audit row.
-    409  the D14 conflict family — Service pre-check and DB partial
-         unique index raise the SAME typed exceptions; both map here.
-    201  EVERY write outcome: 201 means the Intent formed an execution
-         FACT, not that the underlying action succeeded — 201+succeeded,
+    409  the conflict family — the Service pre-check and the DB partial
+         unique index raise the same typed exceptions; both map here.
+    201  every write outcome: 201 means the intent formed an execution
+         fact, not that the underlying action succeeded — 201+succeeded,
          201+failed and 201+guard_rejected are all legal.
 
-GET endpoints are read-only audit views and require NO token; the list
+GET endpoints are read-only audit views and require no token; the list
 is a paged, filterable envelope (?status= / ?direction= / ?approval_id=
-/ ?page= / ?size=, most recent activity first — design §10, completed
-3.1.9) whose state comes exclusively from the frozen
-derive_execution_state(), never a reimplementation, and the detail
-returns the full history created_at ASC.
+/ ?page= / ?size=, most recent activity first) whose state comes
+exclusively from derive_execution_state(), never a reimplementation,
+and the detail returns the full history created_at ASC.
 """
 import uuid
 from datetime import datetime, timezone
@@ -81,9 +80,9 @@ from app.services.executions.policy import PolicyViolation
 
 router = APIRouter(tags=["response-execution"])
 
-#: ?status= filter vocabulary — exactly the derivable states (the
-#: ALLOWED_TRANSITIONS keys of services/executions/state.py); invalid
-#: values fail fast with 422 (incidents ?status= precedent).
+# ?status= filter vocabulary — exactly the derivable states (the
+# ALLOWED_TRANSITIONS keys of services/executions/state.py); invalid
+# values fail fast with 422, matching the incidents ?status= filter.
 StateFilter = Literal[
     "requested",
     "guard_rejected",
@@ -95,13 +94,13 @@ StateFilter = Literal[
     "compensation_failed",
 ]
 
-#: ?direction= filter vocabulary (frozen direction words, design §4).
+# ?direction= filter vocabulary (the direction recorded on the chain).
 DirectionFilter = Literal["execute", "compensate"]
 
 
-# --------------------------------------------------------------------------
+#
 # Dependencies (deployment seams, overridable in tests)
-# --------------------------------------------------------------------------
+#
 def _extract_bearer(authorization: str | None) -> str | None:
     """Extract the Bearer token from the Authorization header. Returns
     None when the header is missing or malformed — the caller decides
@@ -115,7 +114,7 @@ def _extract_bearer(authorization: str | None) -> str | None:
 def authenticate_operator(
     authorization: str | None = Header(default=None),
 ) -> Operator:
-    """Write-path gate with Operator identity (Phase 3.3.1).
+    """Write-path gate with Operator identity.
 
     Resolves the Bearer token to an authenticated Operator via the
     static registry (or legacy EXECUTION_TOKEN fallback). The returned
@@ -147,12 +146,12 @@ def authenticate_operator(
 
 
 def get_response_executor() -> ResponseExecutor:
-    """Registry-produced adapter from settings (mock by default, frozen
-    3.1.5). Tests override this dependency to drive failure paths.
+    """Registry-produced adapter from settings (mock by default). Tests
+    override this dependency to drive failure paths.
 
-    3.2.2: a misconfigured adapter is a server-side deployment fault,
-    mapped to ONE static 503 detail — the sanitized config message (and
-    anything an adapter ever whispers) never reaches the client."""
+    A misconfigured adapter is a server-side deployment fault, mapped to
+    one static 503 detail — the sanitized config message (and anything an
+    adapter ever raises about it) never reaches the client."""
     try:
         return create_executor(settings)
     except ExecutorConfigError:
@@ -164,16 +163,17 @@ def get_response_executor() -> ResponseExecutor:
 def get_dispatch_attempt_store(
     db: Session = Depends(get_db),
 ) -> DurableDispatchAttemptStore | None:
-    """Dependency seam for the durable pre-dispatch attempt store (M4-F §1).
+    """Dependency seam for the durable pre-dispatch attempt store.
 
-    Production returns a store bound to the caller's engine so ``execute_response``
-    commits the immutable dispatch intent + target binding on an INDEPENDENT
-    transaction BEFORE the external request — surviving a caller rollback /
-    terminal-write failure / crash (the "flush 不等于持久提交" fix). Tests override
-    this seam: the in-memory ``StaticPool`` harness shares ONE connection, so a real
-    independent commit cannot interleave there — the conftest ``client`` fixture
-    overrides it to ``None`` (keeping the existing endpoint journeys byte-identical)
-    and dedicated file-backed tests drive the REAL store.
+    Production returns a store bound to the caller's engine, so
+    ``execute_response`` commits the immutable dispatch intent + target binding
+    on an independent transaction before the external request — the binding
+    then survives a caller rollback, a terminal-write failure or a crash, which
+    a flush inside the caller's transaction would not. Tests override this
+    seam: the in-memory ``StaticPool`` harness shares one connection, so a real
+    independent commit cannot interleave there — the conftest ``client``
+    fixture overrides it to ``None`` (leaving the endpoint journeys unchanged)
+    and dedicated file-backed tests drive the real store.
     """
     return DurableDispatchAttemptStore(db.get_bind())
 
@@ -181,22 +181,23 @@ def get_dispatch_attempt_store(
 def get_compensation_attempt_store(
     db: Session = Depends(get_db),
 ) -> DurableCompensationAttemptStore | None:
-    """Dependency seam for the durable pre-compensation attempt store (RC2 / C-1).
+    """Dependency seam for the durable pre-compensation attempt store.
 
-    Production returns a store bound to the caller's engine so
+    Production returns a store bound to the caller's engine, so
     ``compensate_response`` commits the immutable reverse binding on an
-    INDEPENDENT transaction BEFORE the external compensation request —
-    surviving a caller rollback / terminal-write failure / crash (the reverse
-    mirror of the M4-F §1 fix). Tests override this seam to ``None`` exactly
-    like the dispatch store: the in-memory ``StaticPool`` harness shares ONE
-    connection, so dedicated file-backed tests drive the REAL store.
+    independent transaction before the external compensation request — the
+    binding then survives a caller rollback, a terminal-write failure or a
+    crash, the same guarantee the dispatch store gives on the forward path.
+    Tests override this seam to ``None`` just like the dispatch store: the
+    in-memory ``StaticPool`` harness shares one connection, so dedicated
+    file-backed tests drive the real store.
     """
     return DurableCompensationAttemptStore(db.get_bind())
 
 
-# --------------------------------------------------------------------------
+#
 # Write endpoints (token required)
-# --------------------------------------------------------------------------
+#
 @router.post(
     "/executions",
     response_model=ExecutionRead,
@@ -213,24 +214,24 @@ def create_execution(
 ) -> ExecutionRead:
     """Run one Execute Intent end-to-end. 201 = an execution fact exists;
     the verdict lives in derived_state (succeeded / failed /
-    guard_rejected). A raised Service error aborts BEFORE commit, so no
-    conflicting fact is ever persisted.
+    guard_rejected). A raised Service error aborts before commit, so no
+    conflicting fact is persisted.
 
-    3.3.1: the operator identity comes from the authenticated token —
+    The operator identity comes from the authenticated token —
     ``payload.operator`` is ignored (kept optional for backwards
     compatibility, but the server-side binding is the only source of
     truth). The client can never impersonate an operator.
 
-    3.3.2.4: a malformed execution-policy configuration is a
-    server-side deployment fault, mapped to ONE static 503 detail —
-    the transaction rolls back, so a broken policy never silently
-    becomes an allow and never leaves a half-written chain.
+    A malformed execution-policy configuration is a server-side
+    deployment fault, mapped to one static 503 detail — the transaction
+    rolls back, so a broken policy never becomes an allow and never
+    leaves a half-written chain.
 
-    M4-F §1: ``dispatch_attempt_store`` commits the immutable dispatch intent +
-    target binding on an INDEPENDENT transaction BEFORE ``executor.execute()``
-    fires the external request, so the binding survives a caller rollback /
-    terminal-write failure / crash (a flush inside this transaction would not).
-    A pre-dispatch commit failure aborts BEFORE any external call."""
+    ``dispatch_attempt_store`` commits the immutable dispatch intent +
+    target binding on an independent transaction before
+    ``executor.execute()`` fires the external request, so the binding
+    survives a caller rollback, a terminal-write failure or a crash. A
+    pre-dispatch commit failure aborts before any external call."""
     try:
         result = execute_response(
             db,
@@ -244,19 +245,19 @@ def create_execution(
     except PolicyViolation:
         # The requested intent row was already flushed inside the
         # aborted transaction — roll it back so a broken policy leaves
-        # NO half-written chain, then fail closed with one static 503.
+        # no half-written chain, then fail closed with one static 503.
         db.rollback()
         raise HTTPException(
             status_code=503, detail="Execution policy misconfigured"
         )
     except DurableStoreRequired:
-        # M4-G §2: a recognized external adapter reached the dispatch point with
-        # NO durable store (a DI gap / config fault). The requested intent row was
+        # A recognized external adapter reached the dispatch point with no
+        # durable store (a DI gap or config fault). The requested intent row was
         # already flushed inside the aborted transaction — roll it back so a
-        # refused-before-dispatch execution leaves NO half-written chain, then fail
-        # closed with ONE static 503 (the sanitized precedent of PolicyViolation /
-        # ExecutorConfigError; the internal message never reaches the client). The
-        # adapter was NEVER called, so no external effect needs reconciling.
+        # refused-before-dispatch execution leaves no half-written chain, then
+        # fail closed with one static 503, as PolicyViolation and
+        # ExecutorConfigError do; the internal message never reaches the client.
+        # The adapter was never called, so no external effect needs reconciling.
         db.rollback()
         raise HTTPException(
             status_code=503,
@@ -264,8 +265,8 @@ def create_execution(
         )
     except (ExecutionServiceError, ExecutionGuardError) as exc:
         # http_status-driven mapping: ApprovalNotFound / ExecutionNotFound
-        # carry 404, the D14 conflict family carries 409 — the base
-        # classes catch them all, the subclasses decide the status.
+        # carry 404, the conflict family carries 409 — the base classes
+        # catch them all, the subclasses decide the status.
         raise _to_http_error(exc) from exc
     response = _render_execution(result)
     db.commit()
@@ -286,12 +287,12 @@ def compensate_execution(
         get_compensation_attempt_store
     ),
 ) -> ExecutionRead:
-    """Run one Compensation Intent: a FRESH execution_id undoing a
+    """Run one Compensation Intent: a new execution_id that undoes a
     settled forward execution. approval_id / action / target are
     inherited server-side from the original chain — never accepted here.
 
-    3.3.1: operator identity from the authenticated token (same rule as
-    create_execution — payload.operator is ignored)."""
+    The operator identity comes from the authenticated token, as in
+    create_execution — payload.operator is ignored."""
     try:
         result = compensate_response(
             db,
@@ -303,15 +304,13 @@ def compensate_execution(
             compensation_attempt_store=compensation_attempt_store,
         )
     except DurableStoreRequired:
-        # RC2 / C-1 (the reverse mirror of M4-G §2): a recognized external
-        # adapter reached the reverse dispatch point with NO durable
-        # compensation store (a DI gap / config fault). The
+        # A recognized external adapter reached the reverse dispatch point
+        # with no durable compensation store (a DI gap or config fault). The
         # compensation_requested row was already flushed inside the aborted
         # transaction — roll it back so a refused-before-dispatch compensation
-        # leaves NO half-written chain, then fail closed with ONE static 503
-        # (the sanitized precedent; the internal message never reaches the
-        # client). The adapter was NEVER called, so no external reverse effect
-        # needs reconciling.
+        # leaves no half-written chain, then fail closed with one static 503;
+        # the internal message never reaches the client. The adapter was never
+        # called, so no external reverse effect needs reconciling.
         db.rollback()
         raise HTTPException(
             status_code=503,
@@ -324,9 +323,9 @@ def compensate_execution(
     return response
 
 
-# --------------------------------------------------------------------------
+#
 # Read endpoints (no token — read-only audit views)
-# --------------------------------------------------------------------------
+#
 @router.get("/executions", response_model=ExecutionListResponse)
 def list_executions(
     page: int = Query(default=1, ge=1),
@@ -342,26 +341,25 @@ def list_executions(
     ),
     db: Session = Depends(get_db),
 ) -> ExecutionListResponse:
-    """Paged audit list, most recent activity first (design §10 frozen
-    read contract, completed 3.1.9). Filters narrow the derived-state
-    view only — state comes exclusively from the frozen
-    derive_execution_state(); this layer never recomputes. Read ≠
-    execute: no token, no writes.
+    """Paged audit list, most recent activity first. Filters narrow the
+    derived-state view only — state comes exclusively from
+    derive_execution_state(); this layer never recomputes, and the read
+    endpoints take no token and write nothing.
 
-    RC2: pagination happens at the EXECUTION-CHAIN level inside SQL. The
-    previous implementation loaded the ENTIRE ``execution_log`` table into
-    Python, grouped it, filtered it and only then sliced a page — O(table)
-    memory and latency per request. Two window functions now pick exactly one
-    row per chain (its first row by ``(created_at, id)`` and its latest row by
-    the same ordering, DESC — the very ordering ``derive_execution_state``
-    uses), the chain-level filters, ordering and LIMIT/OFFSET run in the
-    database, and only the CURRENT PAGE's audit rows are hydrated. The
-    ``derived_state`` of the returned items is still produced by
-    ``derive_execution_state`` over those rows: the SQL expression is only the
-    filter/order key, and a test pins the two together."""
+    Pagination happens at the chain level inside SQL. Loading the whole
+    ``execution_log`` table into Python, grouping and filtering it in memory
+    and only then slicing a page costs O(table) memory and latency per
+    request. Two window functions pick exactly one row per chain (its first
+    row by ``(created_at, id)`` and its latest row by the same ordering,
+    DESC — the ordering ``derive_execution_state`` uses), the chain-level
+    filters, ordering and LIMIT/OFFSET run in the database, and only the
+    current page's audit rows are hydrated. The ``derived_state`` of the
+    returned items is still produced by ``derive_execution_state`` over those
+    rows: the SQL expression is only the filter/order key, and a test pins
+    the two together."""
     # 1. Rank every row inside its own chain. ``rn_first`` = the chain's first
-    #    row, ``rn_last`` = its latest row, both by the frozen (created_at, id)
-    #    ordering of derive_execution_state() (state.py).
+    # row, ``rn_last`` = its latest row, both by the (created_at, id)
+    # ordering of derive_execution_state() (state.py).
     first_rank = func.row_number().over(
         partition_by=ExecutionLog.execution_id,
         order_by=(ExecutionLog.created_at.asc(), ExecutionLog.id.asc()),
@@ -386,8 +384,8 @@ def list_executions(
     heads = select(ranked).where(ranked.c.rn_first == 1).subquery("chain_head")
     tails = select(ranked).where(ranked.c.rn_last == 1).subquery("chain_tail")
     # 2. One row per chain: the head carries the chain's own facts, the tail its
-    #    latest stamp, its latest decision (= the derived state) and the row id
-    #    used as the RC2/H-2 tie-break.
+    # latest stamp, its latest decision (= the derived state) and the row id
+    # used as the ordering tie-break.
     chains = select(
         heads.c.execution_id,
         heads.c.approval_id,
@@ -409,13 +407,13 @@ def list_executions(
         chains = chains.where(heads.c.approval_id == approval_id)
     if status is not None:
         chains = chains.where(tails.c.decision == status)
-    # 3. total = the number of CHAINS matching the filters; no audit rows are
-    #    transferred to compute it.
+    # 3. total = the number of chains matching the filters; no audit rows are
+    # transferred to compute it.
     total = db.scalar(select(func.count()).select_from(chains.subquery())) or 0
     # 4. Only the requested page of chains leaves the database. Most recent
-    #    activity first; the stamp tie resolves to the insert-ordered UUIDv7 of
-    #    the chain's last audit row (RC2 / H-2) — never a random execution_id
-    #    lottery, never a clock artifact.
+    # activity first; a tie on the stamp resolves to the insert-ordered
+    # UUIDv7 of the chain's last audit row, so the tie-break follows
+    # insertion order rather than a random execution_id or a clock artifact.
     page_rows = db.execute(
         chains.order_by(tails.c.created_at.desc(), tails.c.row_id.desc())
         .limit(size)
@@ -423,8 +421,8 @@ def list_executions(
     ).all()
     if not page_rows:
         return ExecutionListResponse(total=total, page=page, size=size, items=[])
-    # 5. Hydrate the audit rows of THOSE chains only (created_at ASC, so a chain
-    #    reads forward), then derive each state with the frozen function.
+    # 5. Hydrate the audit rows of those chains only (created_at ASC, so a chain
+    # reads forward), then derive each state with derive_execution_state().
     rows = list(
         db.scalars(
             select(ExecutionLog)
@@ -461,18 +459,18 @@ def list_executions(
 
 @router.get("/executions/metrics", response_model=ExecutionMetricsRead)
 def execution_metrics(db: Session = Depends(get_db)) -> ExecutionMetricsRead:
-    """The execution metrics READ MODEL as a read-only audit view
-    (Phase 3.3.3.2). No token, no writes, no re-execution:
+    """The execution metrics read model as a read-only audit view. No
+    token, no writes, no re-execution:
 
         GET -> collect_execution_metrics -> execution_log -> numbers
 
-    The body is the field-for-field mirror of the frozen
-    metrics.ExecutionMetrics dataclass (rates keep the None = JSON null
-    semantics of an empty denominator). The endpoint neither creates
-    nor modifies a single execution_log row — the read model is a pure
-    function of what is already stored.
+    The body is the field-for-field mirror of the metrics.ExecutionMetrics
+    dataclass (rates keep the None = JSON null semantics of an empty
+    denominator). The endpoint neither creates nor modifies a single
+    execution_log row — the read model is a pure function of what is
+    already stored.
 
-    Route registration order matters: this path is declared BEFORE
+    Route registration order matters: this path is declared before
     /executions/{execution_id} so "metrics" can never be captured as an
     execution id."""
     return ExecutionMetricsRead.model_validate(collect_execution_metrics(db))
@@ -480,20 +478,18 @@ def execution_metrics(db: Session = Depends(get_db)) -> ExecutionMetricsRead:
 
 @router.get("/executions/health", response_model=ObservedHealthRead)
 def execution_health(db: Session = Depends(get_db)) -> ObservedHealthRead:
-    """The adapter OBSERVED-HEALTH read model as a read-only audit view
-    (Phase 3.3.3.3.2). No token, no executor, no credentials, ZERO
-    external requests — health here is what the execution facts SHOW,
-    never a live probe:
+    """The adapter observed-health read model as a read-only audit view.
+    No token, no executor, no credentials, no external requests — health
+    here is what the stored execution facts show, never a live probe:
 
         GET -> collect_observed_health -> execution_log -> verdicts
 
-    The body is the field-for-field mirror of the frozen
-    health.ObservedHealth dataclass; the verdict word stays
-    ``observed_status`` (never a boolean ``healthy`` flag). Two
-    identical follow-up calls over an unchanged log agree on every
-    field except the generated_at stamp.
+    The body is the field-for-field mirror of the health.ObservedHealth
+    dataclass; the verdict word stays ``observed_status`` (never a boolean
+    ``healthy`` flag). Two identical follow-up calls over an unchanged log
+    agree on every field except the generated_at stamp.
 
-    Route registration order matters: declared BEFORE
+    Route registration order matters: declared before
     /executions/{execution_id} so "health" can never be captured as an
     execution id."""
     snapshot = collect_observed_health(db, now=datetime.now(timezone.utc))
@@ -526,11 +522,11 @@ def execution_detail(execution_id: str, db: Session = Depends(get_db)) -> Execut
     )
 
 
-# --------------------------------------------------------------------------
+#
 # Helpers
-# --------------------------------------------------------------------------
+#
 def _to_http_error(exc: Exception) -> HTTPException:
-    """http_status-driven mapping (frozen on the typed exception family):
+    """http_status-driven mapping on the typed exception family:
     404 not-found, 409 conflicts; anything unclassified stays a 500. The
     detail carries the exception class name and message — never the token."""
     status = getattr(exc, "http_status", 500)
@@ -541,7 +537,7 @@ def _to_http_error(exc: Exception) -> HTTPException:
 
 
 def _render_execution(result: ExecutionResult) -> ExecutionRead:
-    """Serialize BEFORE commit: the Service's in-memory rows carry every
+    """Serialize before commit: the Service's in-memory rows carry every
     value, so the commit boundary never re-reads expired attributes."""
     rows_asc = list(result.rows)
     first = rows_asc[0]
@@ -558,7 +554,7 @@ def _render_execution(result: ExecutionResult) -> ExecutionRead:
 
 
 def _to_uuid(value: str) -> uuid.UUID:
-    """Malformed ids map to the same 404 as unknown ids (Step 12.3 style)."""
+    """Malformed ids map to the same 404 as unknown ids."""
     try:
         return uuid.UUID(value)
     except ValueError as exc:

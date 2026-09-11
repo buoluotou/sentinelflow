@@ -15,12 +15,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
-# Approval vocabulary (Phase 2 Step 13.1, frozen): the queue STATES an item
-# can show are pending / approved / rejected — but "pending" is DERIVED
-# (a recommendation with no approval row), it is NEVER persisted. The only
-# rows ever written carry a terminal human decision, hence the DB-level
-# CHECK below. Execution-layer states (executing / executed / failed /
-# rolled_back) are explicitly OUT of scope until Step 14 / Phase 3.
+# Approval vocabulary: the states an item can show in the approval queue are
+# pending / approved / rejected, but "pending" is derived — it means a
+# recommendation with no approval row — and is never persisted. The rows
+# written carry a terminal human decision, hence the DB-level CHECK below.
+# Execution-layer states (executing / executed / failed / rolled_back) are
+# out of scope here.
 APPROVAL_STATUSES = frozenset({"pending", "approved", "rejected"})
 
 # The only values a persisted AIResponseApproval.status may hold.
@@ -28,31 +28,32 @@ APPROVAL_DECISIONS = frozenset({"approved", "rejected"})
 
 
 class AIResponseApproval(Base):
-    """One human decision about one AI response recommendation (Step 13).
+    """One human decision about one AI response recommendation.
 
-    Separation of concerns, frozen in 13.1:
+Separation of concerns:
 
-        AIResponseRecommendation = what the AI suggested
-        AIResponseApproval       = what a human decided about it
+AIResponseRecommendation = what the AI suggested
+AIResponseApproval       = what a human decided about it
 
-    Approve ≠ Execute: writing this row only records the decision. It never
-    blocks an IP, isolates a host, creates an Incident, calls Shuffle or
-    touches EventRisk — actual execution stays behind Step 14 / Phase 3.
+An approval does not execute anything: writing this row only records the
+decision. It does not block an IP, isolate a host, create an Incident,
+call Shuffle or touch EventRisk — execution is a separate concern handled
+outside this model.
 
-    At most ONE approval per recommendation (unique recommendation_id) and a
-    decision is final: no re-judging; a fresh recommendation means a fresh
-    approval. Pending is derived, not stored — rows are INSERT-only, never
-    UPDATEd through a state machine, mirroring the append-only discipline
-    of Steps 10–12.
-    """
+At most one approval per recommendation (unique recommendation_id), and a
+decision is final: it is not re-judged, and a fresh recommendation gets a
+fresh approval. Pending is derived, not stored — rows are inserted and
+never updated through a state machine, matching the append-only AI
+history rows.
+"""
 
     __tablename__ = "ai_response_approvals"
     __table_args__ = (
         UniqueConstraint(
             "recommendation_id", name="uq_ai_response_approvals_recommendation_id"
         ),
-        # Storage-level guard: only terminal human decisions ever persist —
-        # "pending" (derived) and any execution-layer word are rejected here.
+        # Storage-level guard: only terminal human decisions persist here, so
+        # "pending" (derived) and any execution-layer word are rejected.
         CheckConstraint(
             "status IN ('approved', 'rejected')",
             name="ck_ai_response_approvals_status",
@@ -72,8 +73,8 @@ class AIResponseApproval(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
 
     # Who decided. Free-form operator identifier: the platform has no
-    # authentication yet (Phase 1 known limitation), the API requires a
-    # non-empty value and records it verbatim for the audit trail.
+    # authentication yet, so the API requires a non-empty value and records
+    # it verbatim for the audit trail.
     reviewer: Mapped[str] = mapped_column(String(128), nullable=False)
 
     # When the decision was made — server clock at decision time, never
@@ -97,11 +98,11 @@ class AIResponseApproval(Base):
         back_populates="approval"
     )
 
-    # Phase 3.1: the execution-audit rows bound to this approval. At most
-    # ONE forward execution over the whole lifecycle (partial unique index
-    # on execution_log, direction='execute'); compensation runs under a
-    # fresh execution_id that inherits this same approval_id (D11), hence a
-    # collection here.
+    # Execution-audit rows bound to this approval. At most one forward
+    # execution over the whole lifecycle (partial unique index on
+    # execution_log, direction='execute'); a compensation runs under a fresh
+    # execution_id that inherits this same approval_id, hence a collection
+    # here.
     executions: Mapped[list["ExecutionLog"]] = relationship(back_populates="approval")
 
     def __repr__(self) -> str:  # pragma: no cover

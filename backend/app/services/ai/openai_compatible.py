@@ -1,9 +1,9 @@
-"""OpenAI-compatible provider (Phase 2 Step 9).
+"""OpenAI-compatible provider.
 
 Covers every endpoint speaking the /chat/completions protocol — this is also
-the frozen path for "CloudProvider": a cloud model is a deployment-time
-configuration (AI_PROVIDER=cloud + AI_BASE_URL + AI_API_KEY), not a separate
-code path, so switching local/cloud models never touches business code.
+the path for "CloudProvider": a cloud model is deployment-time configuration
+(AI_PROVIDER=cloud + AI_BASE_URL + AI_API_KEY), not a separate code path, so
+switching local/cloud models never touches business code.
 """
 import json
 

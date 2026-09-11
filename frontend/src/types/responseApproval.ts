@@ -1,8 +1,8 @@
-/** Approval-queue types — field-level mirror of backend Step 13.3 schemas.
+/** Approval-queue types — field-level mirror of the backend approval schemas.
  *
- * The queue is a backend projection: pending == recommendation with NO
+ * The queue is a backend projection: pending == recommendation with no
  * approval row. The frontend never computes pending itself, never re-sorts
- * (backend freezes created_at ASC, id ASC) and never sends reviewed_at —
+ * (backend ordering is created_at ASC, id ASC) and never sends reviewed_at —
  * the server stamps the audit clock.
  */
 import type { RecommendationItem } from './responseRecommendation'
@@ -21,7 +21,7 @@ export interface PendingApproval {
   created_at: string
 }
 
-/** Body of POST .../approve and .../reject. Deliberately NO reviewed_at:
+/** Body of POST .../approve and .../reject. No reviewed_at:
  * the backend rejects unknown fields (extra="forbid") and stamps its own
  * server clock — a client can never backdate the audit trail. */
 export interface ApprovalDecision {
@@ -30,11 +30,11 @@ export interface ApprovalDecision {
 }
 
 /** One recorded human decision — field-level mirror of backend
- * AIResponseApprovalRead (Step 14.5).
+ * AIResponseApprovalRead.
  *
- * INSERT-only audit record: status is a TERMINAL decision. "pending" never
+ * INSERT-only audit record: status is a terminal decision. "pending" never
  * appears here — it is the derived state of a recommendation whose approval
- * field is null (Step 13.2), computed nowhere and stored nowhere. */
+ * field is null, computed nowhere and stored nowhere. */
 export interface AIResponseApproval {
   id: string
   recommendation_id: string

@@ -1,10 +1,10 @@
 """Query service exposing aggregated AlertGroups as security events.
 
-Phase 1 Step 4.4: the Events API is the read-side view of deduplication —
+the Events API is the read-side view of deduplication —
 one AlertGroup == one security event, consumed by the Web Console, SOC
 analysts and (later) the AI risk engine.
 
-Phase 1 Step 5.4: the read path stays pure — risk data is JOINed from the
+the read path stays pure — risk data is JOINed from the
 pre-computed event_risk table, never recalculated here.
 """
 import uuid
@@ -25,9 +25,9 @@ def list_events(
 ) -> tuple[int, list[AlertGroup]]:
     """Return (total, page of groups) ordered by most recently seen first.
 
-    With ``level`` set, only events whose current risk matches that level are
-    returned (events without a risk record are excluded).
-    """
+With ``level`` set, only events whose current risk matches that level are
+returned (events without a risk record are excluded).
+"""
     size = min(size, MAX_PAGE_SIZE)
     total_stmt = select(func.count()).select_from(AlertGroup)
     stmt = select(AlertGroup).options(selectinload(AlertGroup.risk))

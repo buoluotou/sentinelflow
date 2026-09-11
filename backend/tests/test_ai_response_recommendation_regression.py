@@ -1,4 +1,4 @@
-"""Step 12.4: cross-layer regression for the response-recommendation pipeline.
+"""cross-layer regression for the response-recommendation pipeline.
 
 12.1 (protocol) / 12.2 (service) / 12.3 (API) each have their own unit
 suites; this file pins the whole pipeline as one module:
@@ -7,7 +7,7 @@ suites; this file pins the whole pipeline as one module:
 
 Four blocks, all at the API boundary so a regression in ANY layer trips:
 
-1. the six frozen actions each round-trip through POST -> 201
+1. the six actions each round-trip through POST -> 201
 2. the three deterministic Mock score bands (>=70 / 40..69 / <40), with
    the empty recommendation being a SUCCESS, not an error
 3. protocol violations through the real raw-output path (OllamaProvider +
@@ -37,7 +37,7 @@ from app.services.ai import (
 
 class ScriptedProvider(MockProvider):
     """Returns a fixed ResponseRecommendation — lets the regression drive
-    every frozen action through the real API path."""
+    every action through the real API path."""
 
     def __init__(self, result: ResponseRecommendation):
         super().__init__()
@@ -110,7 +110,7 @@ def _seed(db_session: Session, score: int, level: str) -> AlertGroup:
     return group
 
 
-# ------------------------------------- Block 1: six actions through the API
+# Block 1: six actions through the API
 
 
 @pytest.mark.parametrize("action", sorted(RESPONSE_ACTIONS))
@@ -138,7 +138,7 @@ def test_every_frozen_action_round_trips_via_api(client, db_session, action):
     assert [item["action"] for item in rows[0].recommendations] == [action]
 
 
-# -------------------------------------- Block 2: mock score bands via API
+# Block 2: mock score bands via API
 
 
 def test_high_score_band_contains_and_escalates_via_api(client, db_session):
@@ -180,7 +180,7 @@ def test_low_score_band_empty_is_a_success_via_api(client, db_session):
     assert latest.json()["recommendations"] == []
 
 
-# --------------------------- Block 3: violations through the raw-output path
+# Block 3: violations through the raw-output path
 
 
 def _ollama_body(content: str) -> str:
@@ -190,7 +190,7 @@ def _ollama_body(content: str) -> str:
 @pytest.mark.parametrize(
     "content",
     [
-        # Unknown action outside the frozen vocabulary.
+        # Unknown action outside the vocabulary.
         json.dumps({
             "overall_rationale": "r",
             "recommendations": [{"action": "block_ip_everywhere", "target": "", "rationale": "r"}],
@@ -239,7 +239,7 @@ def test_protocol_violations_map_to_502_and_persist_nothing(
     assert db_session.query(AIResponseRecommendation).count() == 0
 
 
-# ------------------------------------------------ Block 4: closed loop
+# Block 4: closed loop
 
 
 def test_closed_loop_post_get_post_get_with_append_only_history(client, db_session):
@@ -277,7 +277,7 @@ def test_closed_loop_post_get_post_get_with_append_only_history(client, db_sessi
 
     # The first record's content was never UPDATEd by the second POST or any
     # GET (updated_at is excluded: aging created_at above legitimately trips
-    # the ORM onupdate hook — the protocol content is the frozen part).
+    # the ORM onupdate hook — the protocol content is the part).
     db_session.refresh(first_row)
     assert first_row.overall_rationale == first_snapshot["overall_rationale"]
     assert first_row.recommendations == first_snapshot["recommendations"]
