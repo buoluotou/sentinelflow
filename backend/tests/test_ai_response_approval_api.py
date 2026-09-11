@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import event
 
 from app.models import (
     AIResponseApproval,
@@ -124,6 +125,53 @@ def test_queue_keeps_first_in_first_reviewed_order(client, db_session):
 
     ids = [entry["id"] for entry in client.get(QUEUE).json()]
     assert ids == [str(oldest.id), str(middle.id), str(newest.id)]
+
+
+# ------------------------------------------------------------ query budget
+
+
+def _queue_call_cost(client, db_session) -> tuple[list[dict], int]:
+    """One GET /approvals, returning (body, SQL statements executed)."""
+    statements: list[str] = []
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        response = client.get(QUEUE)
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
+
+    assert response.status_code == 200
+    return response.json(), len(statements)
+
+
+def test_queue_query_count_does_not_grow_with_rows(client, db_session):
+    """The queue must not issue one SQL statement per row.
+
+    Each entry exposes alert_group.title through a lazy relationship, so
+    without an eager load the endpoint pays one extra SELECT per queue entry.
+    A 30-row queue therefore has to cost exactly what a 3-row queue costs.
+    """
+    for _ in range(3):
+        _seed(db_session)
+    small_body, small = _queue_call_cost(client, db_session)
+    assert len(small_body) == 3
+
+    for _ in range(27):
+        _seed(db_session)
+    large_body, large = _queue_call_cost(client, db_session)
+
+    # The eager load still has to deliver every title (no truncation, no Nones).
+    assert len(large_body) == 30
+    assert all(
+        entry["event_title"] == "SSH Brute Force on edge-gateway" for entry in large_body
+    )
+
+    assert large == small, f"queue cost grew with the row count: {small} -> {large}"
+    assert large <= 4
 
 
 # ---------------------------------------------------------- approval detail

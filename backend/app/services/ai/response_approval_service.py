@@ -22,9 +22,9 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only, selectinload
 
-from app.models import AIResponseApproval, AIResponseRecommendation
+from app.models import AIResponseApproval, AIResponseRecommendation, AlertGroup
 from app.services.ai.service import AIEventNotFound
 
 
@@ -47,10 +47,19 @@ class AIResponseApprovalService:
         Derived semantics: pending == recommendation with NO approval row
         (outer join, not a status lookup). Ordered created_at ASC, id ASC
         so the oldest item tops the queue.
+
+        The queue response reads only alert_group.title, so the group is
+        eager-loaded in one extra statement for the whole page and restricted
+        to the id/title columns; a lazy load here would cost one query per row.
         """
         return list(
             db.execute(
                 select(AIResponseRecommendation)
+                .options(
+                    selectinload(AIResponseRecommendation.alert_group).load_only(
+                        AlertGroup.id, AlertGroup.title
+                    )
+                )
                 .outerjoin(
                     AIResponseApproval,
                     AIResponseApproval.recommendation_id

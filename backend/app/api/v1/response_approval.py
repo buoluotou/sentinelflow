@@ -178,8 +178,8 @@ def _decide(db, service, recommendation_id: str, payload: ApprovalDecisionReques
 
 
 def _to_pending(record: AIResponseRecommendation) -> PendingApprovalRead:
-    """Project a queue entry; the alert_group relationship carries the
-    human-readable event title without a second query per row."""
+    """Project a queue entry; the alert_group title is already eager-loaded
+    by the service, so this reads no lazy relationship."""
     return PendingApprovalRead.model_validate(
         {
             "id": record.id,
