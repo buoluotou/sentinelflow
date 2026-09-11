@@ -135,7 +135,8 @@ the same-origin setup. Key variables and the hardening checklist:
 ./scripts/smoke.ps1      # Windows → "SentinelFlow demo smoke test: PASS"
 ./scripts/smoke.sh       # Linux / macOS
 
-# backend: 2996 tests; the external-integration suite is deselected by default
+# backend: 2997 tests; the external-integration suite is deselected by default
+# coverage is gated: see scripts/ci/check_coverage.py for the floors
 cd backend && python -m pytest -q
 
 # frontend
@@ -288,14 +289,6 @@ empty. Every reported state is therefore refused with a static `404` or `422`
 instead of being mapped, so no outcome is fabricated. Configuring a real adapter
 does not give you `confirmed_success` today; that needs the evidenced vocabulary
 and a registered read adapter.
-
-**There is no coverage gate.** CI runs the backend suite (2996 tests collected by
-default), the frontend typecheck, tests and production build, and a compose smoke
-on PostgreSQL — but nothing measures or enforces coverage, so the number can
-regress unnoticed. For reference, `pytest --cov=app` over the default backend
-suite reports 98% statement coverage (124 of 5093 statements in
-`backend/app` uncovered). `pytest-cov` is in `backend/requirements/dev.txt`; no
-threshold is set.
 
 ## Roadmap
 

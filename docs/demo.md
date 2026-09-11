@@ -44,7 +44,7 @@ Replays 5 attack scenarios × 30 repeats = **150 alerts**. Expected summary:
 ```
 sent=150 failed=0
 
-=== GET /api/v1/events (total=5) ===
+=== GET /api/v1/events (total=5, showing 5) ===
   'Abnormal web request detected'          alert_count=30 risk_score=50 risk_level=medium
   'Suspicious process execution detected'  alert_count=30 risk_score=70 risk_level=medium
   'SSH login failure detected'             alert_count=30 risk_score=50 risk_level=medium

@@ -132,6 +132,27 @@ With `DEPLOYMENT_MODE=production`, `backend/app/core/runtime_mode.py` validates 
 
 The gate runs before adapter validation, so a misconfigured production instance fails at startup rather than at the first write. `DEPLOYMENT_MODE=demo` (the default) skips it.
 
+### Console identity in production
+
+The gate above requires operator tokens and the API enforces them on every write
+path, but the shipped console has no identity layer of its own:
+
+- Demo mode works end to end without credentials — that is what the quickstart
+  walks through.
+- The API's production auth works: approval, execution and reconcile calls take
+  a Bearer token belonging to a `reviewer` / `executor` / `admin` operator.
+- The console cannot obtain that token by itself. Approve and reject send no
+  `Authorization` header and answer `401` under `DEPLOYMENT_MODE=production`; the
+  execute dialog accepts a token an operator pastes in, which is workable for a
+  manual run but is not a session.
+- A production deployment therefore needs identity at the edge: SSO, an
+  authenticating reverse proxy, or a session layer you add. Do not put an
+  execution token in the browser — `localStorage`, a `VITE_*` variable or the
+  bundle are all readable by anyone with access to the page.
+
+Until that layer exists, treat the console as a demo-mode tool and drive
+production writes from your own authenticated API client.
+
 ## Upgrading
 
 1. `git pull`
