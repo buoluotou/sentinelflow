@@ -19,13 +19,10 @@
 #   - never runs the EXTERNAL-lab suites (TheHive / Shuffle / Wazuh real
 #     targets) — those stay opt-in on a lab host (`pytest -m external`);
 #   - the PostgreSQL durable suite runs in its own job (postgres-external);
-#   - never runs the Playwright browser E2E under backend/tests/e2e/ (excluded
-#     from collection by `collect_ignore_glob`): that harness drives uvicorn +
-#     vite against a SQLite file, where the FROZEN durable-dispatch contract
-#     fails closed (M5 audit finding H-3 — HTTP 500, no dispatch), so its
-#     execution journeys assert a 201 + "Succeeded" the current app cannot
-#     produce on SQLite; and its module-level busy-port guard can turn a broken
-#     environment into a green SKIP instead of a FAIL. Deliberately NOT wired in.
+#   - never collects backend/tests/e2e/ in the default suite: those suites need
+#     PostgreSQL, a Chromium download and the two dev ports, so they are keyed
+#     off SENTINELFLOW_BROWSER_E2E and run only in the `browser-e2e` job, which
+#     gates the pytest counts (collected > 0, passed == collected, skipped == 0).
 #
 # CI STATUS: CONFIGURED / LOCALLY VALIDATED (see docs/audit/CI-VALIDATION.md).
 # Until this file actually runs on GitHub, no "GITHUB CI PASS" claim is made.
@@ -64,8 +61,12 @@ jobs:
           python-version: "3.12"
       - name: Install exact dev lock (no floating ranges)
         run: pip install --no-cache-dir -r requirements/dev.lock
-      - name: Default suite (zero outbound; external deselected by conftest)
-        run: python -m pytest -q -ra
+      - name: Default suite with coverage (zero outbound; external deselected by conftest)
+        run: |
+          python -m pytest -q -ra \
+            --cov=app --cov-report=term --cov-report=json:coverage.json
+      - name: Coverage gate (package floor + per-module floors)
+        run: python ../scripts/ci/check_coverage.py coverage.json
 
   # --------------------------------------------------------------- frontend
   frontend:
@@ -162,6 +163,18 @@ jobs:
           assert not missing, f"missing tables: {sorted(missing)}"
           print("SCHEMA_SPOT_CHECK_OK", len(required), "tables")
           PY
+      - name: Historical upgrade (0009 with rows -> head)
+        run: |
+          python - <<'PY'
+          import os, psycopg
+          url = os.environ["DATABASE_URL"].replace("+psycopg", "")
+          with psycopg.connect(url.rsplit("/", 1)[0] + "/postgres", autocommit=True) as c:
+              c.execute("DROP DATABASE IF EXISTS sentinelflow_upgrade")
+              c.execute("CREATE DATABASE sentinelflow_upgrade")
+          print("created sentinelflow_upgrade")
+          PY
+          python ../scripts/ci/check_migration_upgrade.py \
+            --database-url "${DATABASE_URL%/*}/sentinelflow_upgrade"
 
   # --------------------------------------------------------------- docker
   docker:
@@ -486,3 +499,100 @@ jobs:
       - name: Tear the stack down (always, including on failure)
         if: always()
         run: docker compose down -v --remove-orphans
+
+  # ------------------------------------------------------------- browser-e2e
+  # The Playwright suites in backend/tests/e2e/ drive real Chromium against a
+  # real uvicorn backend and the real vite dev server. They need PostgreSQL: the
+  # execution path commits the dispatch attempt on an independent connection
+  # before the external call, which SQLite's single-writer lock cannot interleave
+  # with the caller's transaction. A missing DATABASE_URL, an unreachable server
+  # or a busy port fails the run — never a skip — and the gate at the end
+  # requires collected > 0 with passed == collected, skipped == 0, failed == 0.
+  # Only the mock adapter runs, so the job makes no external request and needs no
+  # credential beyond the local execution token it generates itself.
+  browser-e2e:
+    name: Browser E2E — PostgreSQL + Playwright
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sentinelflow
+          POSTGRES_USER: sentinelflow
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinelflow -d sentinelflow"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
+      # Lifts the tests/e2e/ collection exclusion for this job only.
+      SENTINELFLOW_BROWSER_E2E: "1"
+      # The harness archives the uvicorn/vite output here so a failure is
+      # diagnosable from the job log.
+      SENTINELFLOW_E2E_LOG_DIR: /tmp/browser-e2e-logs
+    # No job-level working-directory: every step below cd's where it needs to be,
+    # so nothing depends on how a step-level path would compose with a default.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exact dev lock (playwright + pytest-playwright pinned)
+        run: pip install --no-cache-dir -r backend/requirements/dev.lock
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Frontend dependencies (npm ci)
+        # The suite starts the vite dev server from frontend/, so node_modules
+        # must be installed there.
+        run: cd frontend && npm ci
+      - name: Install Chromium (bounded)
+        timeout-minutes: 15
+        run: python -m playwright install --with-deps chromium
+      - name: Migrate the service database to head
+        timeout-minutes: 5
+        run: |
+          cd backend
+          python -m alembic upgrade head
+          python -m alembic current | tee /tmp/browser-e2e-alembic.txt
+      - name: Collect the browser suite (must be non-empty)
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          cd backend
+          python -m pytest tests/e2e -m browser -q --collect-only | tee /tmp/e2e-collect.txt
+      - name: Browser E2E against PostgreSQL (bounded)
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cd backend
+          python -m pytest tests/e2e -m browser -q | tee /tmp/e2e-run.txt
+      - name: Anti-false-green gate (collected>0, passed==collected, skipped=0)
+        run: python scripts/ci/check_browser_e2e_result.py /tmp/e2e-collect.txt /tmp/e2e-run.txt
+      - name: Dump uvicorn/vite logs (failure only)
+        # This step only makes a failing run diagnosable; the job has already
+        # failed by the time it runs.
+        if: failure()
+        run: |
+          ls -la /tmp/browser-e2e-logs 2>/dev/null || echo "no log directory"
+          for log in /tmp/browser-e2e-logs/*.log; do
+            [ -e "$log" ] || continue
+            echo "===== ${log} (tail) ====="
+            tail -n 200 "$log" || true
+          done
+          echo "===== surviving stack processes ====="
+          ps -ef | grep -E "[u]vicorn|[v]ite" || echo "none"
+      - name: Assert the suite left no orphan stack process (always)
+        # The harness kills the vite and uvicorn process groups at teardown; a
+        # survivor would hold the fixed dev ports against the next run.
+        if: always()
+        run: |
+          if pgrep -af "[u]vicorn app.main:app|[v]ite"; then
+            echo "::error::a stack process survived the browser E2E teardown"
+            exit 1
+          fi
+          echo "NO_ORPHAN_STACK_PROCESS"
