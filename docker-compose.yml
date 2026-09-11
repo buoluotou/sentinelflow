@@ -158,7 +158,7 @@ services:
   # A missing/unreachable Ollama degrades only the AI endpoints — the platform
   # still boots and the rest of the chain works (doctor reports it as WARN).
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.34.0
     profiles: ["ollama"]
     restart: unless-stopped
     ports:
