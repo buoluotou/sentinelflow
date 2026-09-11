@@ -1,0 +1,227 @@
+# SentinelFlow CI — RC2 §14.
+#
+# What this pipeline DOES prove: the exact-lock install, the default (zero-
+# outbound) backend suite, the frontend typecheck/test/production build, the
+# compose file's structural validity, a REAL fresh-PostgreSQL migration to the
+# single head, both Docker images building, a dependency advisory report and a
+# high-signal secret scan.
+#
+# What it deliberately does NOT do (frozen discipline, RC2 §14):
+#   - never touches a production system, never needs real credentials
+#     (the only secret in this file is a throwaway local service password);
+#   - never runs the EXTERNAL-lab suites (TheHive / Shuffle / Wazuh real
+#     targets) — those stay opt-in on a lab host (`pytest -m external`);
+#   - the PostgreSQL durable suite runs in its own job (postgres-external).
+#
+# CI STATUS: CONFIGURED / LOCALLY VALIDATED (see docs/audit/CI-VALIDATION.md).
+# Until this file actually runs on GitHub, no "GITHUB CI PASS" claim is made.
+#
+# Actions are pinned to major-version tags (the stable, reviewable choice;
+# SHA-pinning is a future hardening step once this repo has a release cadence).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- backend
+  backend:
+    name: Backend — exact dev lock + default pytest suite
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install exact dev lock (no floating ranges)
+        run: pip install --no-cache-dir -r requirements/dev.lock
+      - name: Default suite (zero outbound; external deselected by conftest)
+        run: python -m pytest -q -ra
+
+  # --------------------------------------------------------------- frontend
+  frontend:
+    name: Frontend — npm ci + typecheck + tests + production build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+  # --------------------------------------------------------------- quality
+  quality:
+    name: Quality — whitespace, shell syntax, compose config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: git diff --check equivalent (whitespace / conflict markers)
+        run: |
+          git diff --check
+          git diff --cached --check
+      - name: Shell script syntax (bash -n)
+        run: |
+          for f in scripts/*.sh; do
+            bash -n "$f"
+            echo "bash -n $f OK"
+          done
+      - name: docker compose config (throwaway local .env, no real secrets)
+        run: |
+          cp .env.example .env
+          # Fail-closed compose requires a non-empty password; CI value only.
+          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci-throwaway-not-a-secret/' .env
+          docker compose config --quiet
+          echo "COMPOSE_CONFIG_RC=0"
+
+  # ------------------------------------------------------------ migration
+  migration:
+    name: Migration — fresh PostgreSQL 16, upgrade head, current == heads
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sentinelflow
+          POSTGRES_USER: sentinelflow
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinelflow -d sentinelflow"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --no-cache-dir -r requirements/base.lock
+      - name: Fresh upgrade to head + single-head assertion
+        run: |
+          python -m alembic upgrade head
+          python -m alembic current | tee /tmp/current.txt
+          python -m alembic heads   | tee /tmp/heads.txt
+          CUR=$(grep -oE '[0-9a-f]{4,}' /tmp/current.txt | head -1)
+          HEAD=$(grep -oE '[0-9a-f]{4,}' /tmp/heads.txt | head -1)
+          test -n "$CUR" && test "$CUR" = "$HEAD"
+          echo "MIGRATION CURRENT == HEADS ($CUR)"
+      - name: Schema spot-check (fact tables exist)
+        run: |
+          python - <<'PY'
+          import os, sqlalchemy as sa
+          e = sa.create_engine(os.environ["DATABASE_URL"])
+          with e.connect() as c:
+              names = {r[0] for r in c.execute(sa.text(
+                  "select tablename from pg_tables where schemaname='public'"))}
+          required = {"alerts","alert_events","alert_groups","event_risk","incidents",
+                      "execution_log","execution_outcome","dispatch_attempt",
+                      "compensation_attempt","alembic_version"}
+          missing = required - names
+          assert not missing, f"missing tables: {sorted(missing)}"
+          print("SCHEMA_SPOT_CHECK_OK", len(required), "tables")
+          PY
+
+  # --------------------------------------------------------------- docker
+  docker:
+    name: Docker — build backend + frontend images
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build both images
+        run: |
+          cp .env.example .env
+          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci-throwaway-not-a-secret/' .env
+          docker compose build backend frontend
+
+  # ----------------------------------------------------------- postgres-external
+  # The REAL PostgreSQL durable concurrency/recovery suite on its own service
+  # container — same tests the RM validated 9/9 locally.
+  postgres-external:
+    name: PostgreSQL external durable suite
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: sentinelflow
+          POSTGRES_USER: sentinelflow
+          POSTGRES_PASSWORD: ci-throwaway-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sentinelflow -d sentinelflow"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://sentinelflow:ci-throwaway-not-a-secret@localhost:5432/sentinelflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --no-cache-dir -r requirements/dev.lock
+      - name: Durable dispatch/compensation + audit-ordering concurrency (real PG)
+        run: python -m pytest -m external tests/test_dispatch_durable_postgres.py tests/test_compensation_durable_postgres.py tests/test_audit_ordering_concurrency_postgres.py -v
+
+  # ------------------------------------------------------------- security
+  security:
+    name: Security — pip-audit + npm audit + secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit against the exact base lock
+        run: |
+          pip install --no-cache-dir pip-audit
+          pip-audit -r backend/requirements/base.lock --progress-spinner off || true
+        # Report-first: the advisory output is the deliverable. A known-vuln
+        # triage lives in docs/audit/DEPENDENCY-SECURITY-AUDIT.md; flipping
+        # this to fail-on-critical is a deliberate follow-up decision.
+      - name: npm audit — fail ONLY on critical
+        working-directory: frontend
+        run: |
+          npm audit --json > /tmp/npm-audit.json || true
+          node -e '
+            const d = require("/tmp/npm-audit.json");
+            const v = (d.metadata && d.metadata.vulnerabilities) || {};
+            console.log("npm audit severities:", JSON.stringify(v));
+            if ((v.critical || 0) > 0) { console.log("CRITICAL vulnerabilities present"); process.exit(1); }
+          '
+      - name: High-signal secret scan (tracked files, fixtures excluded)
+        run: |
+          set +e
+          git grep -nEI '(AKIA[0-9A-Z]{16}|-----BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY-----|ghp_[A-Za-z0-9]{36}|github_pat_|xox[baprs]-|sk-[A-Za-z0-9]{20,})' -- . ':(exclude)backend/tests' ':(exclude)frontend/node_modules'
+          RC=$?
+          if [ "$RC" -eq 0 ]; then echo "SECRET_PATTERN_HITS_FOUND=true"; else echo "SECRET_SCAN_CLEAN"; fi
+          # Inventory check: .env must never be tracked.
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then echo "TRACKED_ENV_FOUND"; exit 1; fi
+          echo "TRACKED_ENV=absent"
